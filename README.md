@@ -156,7 +156,7 @@ When a milestone passes its checks it's committed to its branch and the coder is
 | Worker writes `QUESTION:` | that task and its dependents wait; everything else continues |
 
 ### Commands
-`orch status` · `orch ready` · `orch autopilot` · `orch lead plan|run|whoami` · `orch agents [launch <kind>|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch version` · `orch` (full help)
+`orch status` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind>|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch version` · `orch` (full help)
 
 Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (4)
 
