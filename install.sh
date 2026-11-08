@@ -200,11 +200,21 @@ rm -f "$HOME/.opencode/commands/orchestrate.md" "$HOME/.config/opencode/orch/orc
 
 if [[ $HERDR_SKILL -eq 1 ]]; then
   if command -v npx >/dev/null; then
-    npx -y skills add herdrdev/herdr --skill herdr -g >/dev/null 2>&1 \
-      && say "herdr skill installed/refreshed" \
-      || warn "could not install the herdr skill via npx — run: npx skills add herdrdev/herdr --skill herdr -g"
+    # stdin from /dev/null: under `curl | bash` stdin is the script itself, and npx would
+    # otherwise swallow the rest of it (or feed it to an interactive prompt). The second -y
+    # is for `skills add` (skip its confirmation prompts); the first is for npx.
+    SKILL_LOG=$(mktemp "${TMPDIR:-/tmp}/herdr-skill.XXXXXX")
+    if npx -y skills add herdrdev/herdr --skill herdr -g -y </dev/null >"$SKILL_LOG" 2>&1; then
+      say "herdr skill installed/refreshed"
+      rm -f "$SKILL_LOG"
+    else
+      rc=$?
+      warn "could not install the herdr skill via npx (exit $rc). Last lines of its output:"
+      tail -n 15 "$SKILL_LOG" | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/^/    /' >&2
+      warn "full log: $SKILL_LOG — retry with: npx -y skills add herdrdev/herdr --skill herdr -g -y"
+    fi
   else
-    warn "npx not found — install Node, then: npx skills add herdrdev/herdr --skill herdr -g"
+    warn "npx not found — install Node, then: npx skills add herdrdev/herdr --skill herdr -g -y"
   fi
 fi
 
