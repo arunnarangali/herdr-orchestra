@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """orch — deterministic state + scheduler for a Herdr multi-agent team.
 
-The LEAD agent (OpenCode or Amp) calls these subcommands; the bookkeeping
+The LEAD agent (any agent kind; see `orch lead plan`) calls these subcommands; the bookkeeping
 (dependencies, who is free, sentinels, worktrees, merges) lives here so the
 lead model never has to track it in its head.
 
@@ -100,6 +100,73 @@ def herdr_prompt(agent, text):
         die(f"herdr agent prompt {agent} failed: {r.stdout}{r.stderr}")
 
 
+def agent_info(st, name):
+    """Registry-derived facts about a worker or the reviewer: kind, detect (herdr can watch it), pane (@pane:<id>)."""
+    if name in st.get("workers", {}):
+        return st["workers"][name]
+    if name and name == st.get("reviewer"):
+        return st.get("reviewer_info") or {}
+    return {}
+
+
+def watched(st, name):
+    return agent_info(st, name).get("detect", True)
+
+
+def deliver(st, agent, text):
+    """Send a one-line prompt: by agent name, or by typing into the pane for `name (kind @pane:<id>)` agents."""
+    pane = agent_info(st, agent).get("pane")
+    if not pane:
+        herdr_prompt(agent, text)
+        return
+    for cmd in ([HERDR, "pane", "send-text", pane, text], [HERDR, "pane", "send-keys", pane, "enter"]):
+        r = subprocess.run(cmd, text=True, capture_output=True)
+        if r.returncode != 0:
+            die(f"{' '.join(cmd[:3])} {pane} failed for {agent} (stale pane id? re-check with `herdr pane list` "
+                f"and fix Workers/Reviewer in plan.md): {r.stdout}{r.stderr}")
+
+
+# ---------------------------------------------------------------- shipped files + agent registry
+def asset(rel):
+    """A file shipped with orch: next to this script's checkout, else the installed `current` copy."""
+    for base in (Path(__file__).resolve().parent.parent, Path.home() / ".local/share/herdr-orchestra/current"):
+        if (base / rel).exists():
+            return base / rel
+    return None
+
+
+def user_agents_file():
+    return Path(os.environ.get("ORCH_AGENTS_FILE") or Path.home() / ".config/herdr-orchestra/agents.toml")
+
+
+def registry(required=True):
+    """agents.default.toml merged with the user's agents.toml (key by key per kind). None if tomllib is missing
+    and not required, so plans keep working on Python < 3.11 with v4.2 behaviour."""
+    try:
+        import tomllib
+    except ImportError:
+        if required:
+            die(f"the agent registry needs Python >= 3.11 (tomllib); this is Python {sys.version.split()[0]}")
+        return None
+    reg = {}
+    src = asset("agents.default.toml")
+    try:
+        if src:
+            reg = tomllib.loads(src.read_text())
+        uf = user_agents_file()
+        if uf.exists():
+            for kind, vals in tomllib.loads(uf.read_text()).items():
+                if isinstance(vals, dict):
+                    reg.setdefault(kind, {}).update(vals)
+    except tomllib.TOMLDecodeError as e:
+        die(f"agent registry: {e}")
+    return reg
+
+
+def expand(p):
+    return Path(os.path.expanduser(p))
+
+
 def ensure_excluded():
     exclude = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=ROOT).stdout.strip()) / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
@@ -162,11 +229,16 @@ def has_open_questions(t):
     return bool(vals) and vals != ["none"]
 
 
+AGENT_RE = re.compile(r"([\w.-]+)\s*\(\s*([\w.-]+)(?:\s+@pane:([^\s)]+))?\s*\)")
+
+
+def parse_agents(s):
+    """`claude-1 (claude), hermes-1 (hermes @pane:w1:p3)` -> {name: (kind, pane or None)}"""
+    return {name: (kind.lower(), pane or None) for name, kind, pane in AGENT_RE.findall(s or "")}
+
+
 def parse_workers(s):
-    out = {}
-    for name, kind in re.findall(r"([\w.-]+)\s*\(\s*([\w.-]+)\s*\)", s):
-        out[name] = kind.lower()
-    return out
+    return {name: kind for name, (kind, _) in parse_agents(s).items()}
 
 
 # ---------------------------------------------------------------- commands
@@ -188,12 +260,33 @@ def cmd_sync(args):
         max_par = 2
     if isolation == "shared":
         max_par = 1
-    workers = parse_workers(get("workers"))
+    workers = parse_agents(get("workers"))
     if not workers:
         errors.append("plan header needs `Workers: claude-1 (claude), codex-1 (codex)`")
     rev = get("reviewer", "none")
     rm = re.match(r"([\w.-]+)\s*\(", rev)
     reviewer = None if rev.lower().startswith("none") or not rm else rm.group(1)
+    rev_kind, rev_pane = parse_agents(rev).get(reviewer, (None, None)) if reviewer else (None, None)
+    lead = next(iter(parse_agents(get("lead")).items()), None)          # optional `Lead: lead (claude)`
+    if get("lead") and not lead:
+        errors.append("`Lead:` must look like `Lead: lead (claude)`")
+    if lead:
+        if lead[0] in workers:
+            errors.append(f"lead {lead[0]!r} is also listed in Workers — the lead never codes in its own run")
+        if lead[0] == reviewer:
+            errors.append(f"lead {lead[0]!r} is also the Reviewer — the lead never reviews in its own run")
+    reg = registry(required=False)
+
+    def detect(kind, pane, role):
+        if pane:                       # addressed by pane id: herdr doesn't know it as an agent
+            return False
+        if reg is None:                # Python < 3.11: no registry, v4.2 behaviour
+            return True
+        if kind not in reg:
+            warns.append(f"{role} kind {kind!r} is not in the agent registry (`orch agents`) — herdr may not "
+                         f"watch it, so only its done file and time budget count")
+            return False
+        return bool(reg[kind].get("herdr_detect", True))
 
     ids = [t["id"] for t in tasks]
     dupes = {i for i in ids if ids.count(i) > 1}
@@ -298,15 +391,19 @@ def cmd_sync(args):
         "check": get("check command"),
         "setup": get("setup command", "none"),
         "reviewer": reviewer,
+        "reviewer_info": ({"kind": rev_kind, "pane": rev_pane, "detect": detect(rev_kind, rev_pane, "Reviewer")}
+                          if reviewer else None),
         "reviewer_busy": old.get("reviewer_busy"),
+        "lead": {"name": lead[0], "kind": lead[1][0]} if lead else None,
         "workers": {},
         "order": ids,
         "tasks": {},
     }
-    for name, kind in workers.items():
+    for name, (kind, pane) in workers.items():
         ow = old.get("workers", {}).get(name, {})
         st["workers"][name] = {"kind": kind, "task": ow.get("task"), "cooldown_until": ow.get("cooldown_until", 0),
-                               "dir": ow.get("dir"), "setup_done": ow.get("setup_done", False)}
+                               "dir": ow.get("dir"), "setup_done": ow.get("setup_done", False),
+                               "pane": pane, "detect": detect(kind, pane, "Workers")}
     for t in tasks:
         tid = t["id"]
         o = old_tasks.get(tid, {})
@@ -340,7 +437,7 @@ def cmd_sync(args):
     for w in warns:
         print("WARN:", w)
     print(f"OK: {len(tasks)} tasks, isolation={isolation}, max_parallel={max_par}, "
-          f"workers={list(workers)}, reviewer={reviewer}")
+          f"workers={list(workers)}, reviewer={reviewer}" + (f", lead={lead[0]}" if lead else ""))
 
 
 def task_branch(st, tid):
@@ -403,9 +500,20 @@ def cmd_start(args):
             w["dir"] = str(ROOT)
     save(st)
     print(f"BRANCH {st['branch']} (base {st['base']})")
-    for name, w in st["workers"].items():
-        alive = herdr_state(name)
-        print(f"WORKER {name} kind={w['kind']} dir={w['dir']} herdr={'found' if alive is not None else 'NOT FOUND'}")
+    agents = [(name, w, "WORKER") for name, w in st["workers"].items()]
+    if st.get("reviewer"):
+        agents.append((st["reviewer"], st.get("reviewer_info") or {}, "REVIEWER"))
+    for name, w, label in agents:
+        where = f" dir={w['dir']}" if label == "WORKER" else ""
+        if w.get("pane"):
+            ok = subprocess.run([HERDR, "pane", "get", w["pane"]], text=True, capture_output=True).returncode == 0
+            herdr = (f"pane {w['pane']} detect:off" if ok else
+                     f"STALE pane {w['pane']} — find its current id with `herdr pane list` and fix plan.md, then `orch sync`")
+        elif not w.get("detect", True):
+            herdr = "detect:off (relying on its done file)"
+        else:
+            herdr = "found" if herdr_state(name) is not None else "NOT FOUND"
+        print(f"{label} {name} kind={w.get('kind')}{where} herdr={herdr}")
 
 
 def deps_met(st, t):
@@ -451,6 +559,8 @@ def cmd_ready(args):
 def worker_free(st, name, w):
     if w.get("task") or w.get("cooldown_until", 0) > now():
         return False
+    if not w.get("detect", True):      # herdr can't watch it: no task + no cooldown = free
+        return True
     s = herdr_state(name)
     if s is None or word(s, "blocked", "working"):
         return False
@@ -535,7 +645,7 @@ def cmd_send(args):
             f"{rel}/report-{k}.md (max 20 lines: files changed, what you did, check result; if something was ambiguous, "
             f"a line starting QUESTION: and stop) and then "
             f"create the empty file {rel}/done-{k} as your very last action.")
-    herdr_prompt(t["worker"], text)
+    deliver(st, t["worker"], text)
     t["status"] = "coding"
     t["wait"] = {"agent": t["worker"], "sentinel": str(sentinel), "report": str(d / rel / f"report-{k}.md"),
                  "since": now(), "kind": "coder", "prompt": text, "nudges": 0}
@@ -653,7 +763,7 @@ def cmd_review(args):
     sentinel = rd / f"done-{k}"
     sentinel.unlink(missing_ok=True)
     rtext = f"Read {rel}/review-task-{k}.md and do exactly what it says."
-    herdr_prompt(st["reviewer"], rtext)
+    deliver(st, st["reviewer"], rtext)
     st["reviewer_busy"] = tid
     t["status"] = "reviewing"
     t["wait"] = {"agent": st["reviewer"], "sentinel": str(sentinel), "report": str(rd / f"review-{k}.md"),
@@ -686,8 +796,12 @@ def cmd_poll(args):
                     events.append(f"REVIEWED {tid} review={w['report']}")
                 t["wait"] = None
                 continue
-            s = herdr_state(agent)
             budget = (CODER_BUDGET_MIN if w["kind"] == "coder" else REVIEW_BUDGET_MIN) * 60
+            if not watched(st, agent):     # herdr can't watch it: only the done file and the time budget count
+                if age > budget:
+                    events.append(f"TIMEOUT {tid} agent={agent} after {age // 60} min")
+                continue
+            s = herdr_state(agent)
             if s is None:
                 events.append(f"GONE {tid} agent={agent}")
             elif word(s, "blocked"):
@@ -842,7 +956,8 @@ def cmd_status(args):
     for n, w in st["workers"].items():
         cd = max(0, w.get("cooldown_until", 0) - now())
         print(f"  worker {n:<12} {w['kind']:<8} task={w.get('task') or '-':<5} "
-              f"{'cooldown ' + str(cd // 60) + 'm' if cd else ''}")
+              f"{'cooldown ' + str(cd // 60) + 'm' if cd else ''}"
+              f"{'' if w.get('detect', True) else ' detect:off'}")
     for tid in st["order"]:
         t = st["tasks"][tid]
         print(f"  {tid:<4} {t['status']:<15} deps={','.join(t['deps']) or '-':<10} "
@@ -945,7 +1060,7 @@ def cmd_nudge(args):
     if w.get("nudges", 0) >= 1:
         print(f"ALREADY_NUDGED {tid}")
         sys.exit(3)
-    herdr_prompt(w["agent"], "You stopped before finishing. " + w["prompt"])
+    deliver(st, w["agent"], "You stopped before finishing. " + w["prompt"])
     w["nudges"] = w.get("nudges", 0) + 1
     w["since"] = now()
     save(st)
@@ -1020,8 +1135,15 @@ def cmd_autopilot(args):
         return True
 
     run("sync")
-    run("start")
+    _, start_out = run("start")
+    stale = [l for l in start_out.splitlines() if "STALE pane" in l]
+    if stale:
+        say("A pane id in plan.md is stale. Stopping.\n" + "\n".join(stale), True)
+        sys.exit(3)
     st = load()
+    for name in [n for n in st["workers"] if not watched(st, n)] + (
+            [st["reviewer"]] if st.get("reviewer") and not watched(st, st["reviewer"]) else []):
+        say(f"can't watch {name} through herdr; relying on its done file (and its time budget)")
     if not (ORCH / "baseline.txt").exists():
         ok, tail = check(ROOT)
         (ORCH / "baseline.txt").write_text(tail)
@@ -1225,6 +1347,11 @@ COMMANDS = {
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
+  lead plan|run            print the lead playbook (any agent can lead: "Run `orch lead plan` and follow it")
+  lead whoami              show the lead's own herdr pane and how to name it `lead`
+  agents                   the agent registry: kinds, installed?, roles, herdr detection, launch commands
+  agents launch <kind>     print the command that starts <kind> in a pane (auto-approve edits)
+  agents check             check the orch-plan / orch-run skills are installed for every installed agent
   sync                     parse .orchestrate/plan.md -> state.json (validates deps, cycles, overlaps)
   start                    switch to the integration branch; create worker worktrees (worktree mode)
   status                   table of workers + tasks; prints ALL_DONE or STUCK when relevant
@@ -1251,6 +1378,86 @@ USAGE = """usage: orch <command> [args]
   review-ok <Mn>           record that the reviewer approved Mn
 """
 
+def cmd_lead(args):
+    """orch lead plan|run -> print the lead playbook; orch lead whoami -> this pane + how to name it `lead`."""
+    sub = args[0] if args else ""
+    if sub in ("plan", "run"):
+        pb = asset(f"playbooks/{sub}.md") or die(f"playbooks/{sub}.md not found next to orch or in the install")
+        print(f"herdr-orchestra {installed_version()} — lead playbook: {sub}\n")
+        print(pb.read_text(), end="")
+        return
+    if sub == "whoami":
+        try:
+            r = subprocess.run([HERDR, "pane", "current"], text=True, capture_output=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            die(f"herdr pane current failed: {e}")
+        if r.returncode != 0:
+            die("not inside a herdr pane (`herdr pane current` failed) — start this agent from a Herdr pane: "
+                + (r.stdout + r.stderr).strip())
+        out = r.stdout.strip()
+        try:
+            pane = json.loads(out)["result"]["pane"]
+            pid, status = pane.get("pane_id"), pane.get("agent_status", "unknown")
+            print(f"PANE {pid} agent_status={status}")
+        except (ValueError, KeyError, TypeError):
+            pid = (re.search(r'"?pane_id"?\s*[:=]\s*"?([\w:.-]+)', out) or [None, None])[1]
+            print(out)
+        print(f"This pane is YOU (the lead). Name it:  herdr agent rename {pid or '<pane id>'} lead\n"
+              f"Write `Lead: lead (<your kind>)` in the plan header, and never prompt this pane.")
+        return
+    die("usage: orch lead plan | run | whoami")
+
+
+def cmd_agents(args):
+    """orch agents [launch <kind> | check | dirs] -> the agent registry."""
+    reg = registry()
+    sub = args[0] if args else ""
+    installed = {k: bool(shutil.which(v.get("binary", k))) for k, v in reg.items()}
+    if sub == "launch":
+        kind = args[1] if len(args) > 1 else die("usage: orch agents launch <kind>")
+        v = reg.get(kind) or die(f"unknown agent kind {kind!r} — known: {', '.join(reg)} "
+                                 f"(add it in {user_agents_file()})")
+        print(v.get("launch") or v.get("binary", kind))
+        return
+    if sub == "dirs":           # for install.sh: <kind>\t<skills|commands|invoke>\t<dir or text>[\t<commands_from>]
+        for k, v in reg.items():
+            if not installed[k]:
+                continue
+            print(f"{k}\tinvoke\t{v.get('invoke', 'Run `orch lead plan` and follow it. Feature: <feature>')}")
+            for d in v.get("skills_dirs", []):
+                print(f"{k}\tskills\t{expand(d)}")
+            for d in v.get("commands_dirs", []):
+                print(f"{k}\tcommands\t{expand(d)}\t{v.get('commands_from', 'claude-commands')}")
+        return
+    if sub == "check":
+        bad = 0
+        for k, v in reg.items():
+            if not installed[k]:
+                continue
+            for d in v.get("skills_dirs", []):
+                for s in ("orch-plan", "orch-run"):
+                    ok = (expand(d) / s / "SKILL.md").exists()
+                    bad += not ok
+                    print(f"{'ok  ' if ok else 'MISSING'} {k:<9} skill   {expand(d) / s / 'SKILL.md'}")
+            for d in v.get("commands_dirs", []):
+                for s in ("orch-plan", "orch-run"):
+                    ok = (expand(d) / f"{s}.md").exists()
+                    bad += not ok
+                    print(f"{'ok  ' if ok else 'MISSING'} {k:<9} command {expand(d) / (s + '.md')}")
+        if bad:
+            print(f"{bad} missing — re-run the installer")
+            sys.exit(1)
+        return
+    if sub:
+        die("usage: orch agents [launch <kind> | check | dirs]")
+    print(f"{'kind':<9} {'installed':<9} {'detect':<6} {'verified':<8} {'roles':<22} launch")
+    for k, v in reg.items():
+        print(f"{k:<9} {'yes' if installed[k] else 'no':<9} {'yes' if v.get('herdr_detect', True) else 'no':<6} "
+              f"{'yes' if v.get('verified') else 'no':<8} {','.join(v.get('roles', [])):<22} "
+              f"{v.get('launch', v.get('binary', k))}")
+    print(f"\nOverride or add kinds in {user_agents_file()}")
+
+
 def installed_version():
     for p in (Path(__file__).resolve().parent.parent / "VERSION",
               Path.home() / ".local/share/herdr-orchestra/VERSION"):
@@ -1262,6 +1469,10 @@ def installed_version():
 if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] in ("version", "--version", "-v"):
         print(f"herdr-orchestra {installed_version()}")
+        sys.exit(0)
+    NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents}
+    if len(sys.argv) >= 2 and sys.argv[1] in NO_REPO_COMMANDS:   # work outside a git repo
+        NO_REPO_COMMANDS[sys.argv[1]](sys.argv[2:])
         sys.exit(0)
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(USAGE)

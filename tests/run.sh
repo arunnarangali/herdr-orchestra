@@ -7,6 +7,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ORCH="$ROOT/bin/orch"
 export HERDR="$ROOT/tests/sim/herdr" ORCH_POLL_STEP_S=1 ORCH_IDLE_GRACE_S=4
 WORK=$(mktemp -d); trap 'pkill -f -- "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+export ORCH_AGENTS_FILE="$WORK/user-agents.toml"   # keep the developer's own agents.toml out of the tests
 pass=0 fail=0
 ok()   { echo "  ok   $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $*"; fail=$((fail+1)); }
@@ -163,6 +164,62 @@ sed -i 's/Isolation: worktree/Isolation: shared/' .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1)
 check "shared mode suggests worktree for independent milestones" 'grep -q "M2 and M3 are independent" <<<"$out"'
 check "orch version prints" '"$ORCH" version | grep -q "herdr-orchestra"'
+
+echo "8. any agent can lead: playbooks, Lead header, agent registry"
+out=$("$ORCH" lead plan)
+check "lead plan prints version line + playbook" 'grep -q "^herdr-orchestra .* lead playbook: plan" <<<"$out" && grep -q "You are the LEAD" <<<"$out"'
+out=$("$ORCH" lead run)
+check "lead run prints version line + playbook" 'grep -q "lead playbook: run" <<<"$out" && grep -q "Scheduler loop" <<<"$out"'
+check "lead commands work outside a git repo" '(cd "$WORK" && "$ORCH" lead plan >/dev/null && "$ORCH" agents >/dev/null)'
+check "lead whoami names the pane" '"$ORCH" lead whoami | grep -q "herdr agent rename w1:p1 lead"'
+newrepo ld
+printf '# Plan: t\nBranch: orch/ld\nCheck command: true\nLead: lead (claude)\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M1: a\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "Lead header stored by sync" '[ $code -eq 0 ] && python3 -c "import json,sys;l=json.load(open(\".orchestrate/state.json\"))[\"lead\"];sys.exit(l!={\"name\":\"lead\",\"kind\":\"claude\"})"'
+sed -i 's/^Lead: .*/Lead: claude-1 (claude)/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "lead that is also a worker is an ERROR" '[ $code -eq 2 ] && grep -q "also listed in Workers" <<<"$out"'
+sed -i 's/^Lead: .*/Lead: reviewer (agy)/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "lead that is also the reviewer is an ERROR" '[ $code -eq 2 ] && grep -q "also the Reviewer" <<<"$out"'
+check "registry defaults load" '"$ORCH" agents | grep -q "^hermes" && [ "$("$ORCH" agents launch claude)" = "claude --permission-mode acceptEdits" ]'
+printf '[claude]\nlaunch = "claude --model opus"\n\n[mystery]\nbinary = "mystery"\nlaunch = "mystery --yolo"\n' > "$ORCH_AGENTS_FILE"
+check "user agents.toml overrides and adds kinds" '[ "$("$ORCH" agents launch claude)" = "claude --model opus" ] && [ "$("$ORCH" agents launch mystery)" = "mystery --yolo" ]'
+rm -f "$ORCH_AGENTS_FILE"
+
+echo "9. agents herdr can't watch rely on their done file"
+newrepo nd; echo "$APP/../app-wt/odd-1" > "$FH/odd-1.dir"; touch "$FH/odd-1.gone"
+printf '# Plan: t\nBranch: orch/nd\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: odd-1 (oddagent)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "unknown kind warns, not an error" 'grep -q "WARN: Workers kind .oddagent. is not in the agent registry" <<<"$out"'
+timeout 120 "$ORCH" autopilot > "$WORK/nd.log" 2>&1; code=$?
+check "detect=false worker finished via its done file" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ]'
+check "never parked as GONE" '! grep -qi "gone" "$WORK/nd.log" && grep -q "can.t watch odd-1" "$WORK/nd.log"'
+check "status shows detect:off" '"$ORCH" status | grep -q "odd-1 .*detect:off"'
+
+echo "10. @pane: workers get prompts typed into their pane"
+newrepo pn; echo "$APP/../app-wt/hermes-1" > "$FH/hermes-1.dir"; echo hermes-1 > "$FH/pane-w9:p2.name"
+printf '# Plan: t\nBranch: orch/pn\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: hermes-1 (hermes @pane:w9:p2)\nReviewer: none\n\n## [x] M6: g\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 120 "$ORCH" autopilot > "$WORK/pn.log" 2>&1; code=$?
+check "pane worker finished" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ]'
+check "prompt went through pane send-text + enter" 'grep -q "pane w9:p2 (hermes-1) <- Read .orch-task/M6/task.md" "$FH/pane-prompts.log" && grep -q "pane w9:p2 keys enter" "$FH/pane-prompts.log"'
+check "agent prompt was not used for it" '! grep -q "^hermes-1 <-" "$FH/prompts.log" 2>/dev/null'
+sed -i 's/@pane:w9:p2/@pane:w9:p7/' .orchestrate/plan.md; "$ORCH" sync >/dev/null
+check "stale pane id reported by start" '"$ORCH" start | grep -q "STALE pane w9:p7"'
+
+echo "11. installer puts the thin skills in every installed agent's folders"
+FAKEBIN="$WORK/fakebin"; IH="$WORK/home"; mkdir -p "$FAKEBIN" "$IH"
+for b in claude codex hermes agy; do printf '#!/bin/sh\n' > "$FAKEBIN/$b"; chmod +x "$FAKEBIN/$b"; done
+SAFE_PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin"
+HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --no-herdr-skill > "$WORK/install.log" 2>&1; code=$?
+check "installer ran" '[ $code -eq 0 ]'
+check "skills in each installed agent's folder" '(for d in .claude/skills .codex/skills .hermes/skills .gemini/config/skills .agents/skills; do [ -f "$IH/$d/orch-plan/SKILL.md" ] && [ -f "$IH/$d/orch-run/SKILL.md" ] || exit 1; done)'
+check "claude slash commands installed" '[ -f "$IH/.claude/commands/orch-plan.md" ] && grep -q "orch lead plan" "$IH/.claude/commands/orch-plan.md"'
+check "agents that aren't installed are skipped" '[ ! -e "$IH/.config/agents/skills" ]'
+check "installed skills are thin wrappers" 'grep -q "Run \`orch lead plan\`" "$IH/.hermes/skills/orch-plan/SKILL.md"'
+check "playbooks installed" '[ -f "$IH/.local/share/herdr-orchestra/current/playbooks/plan.md" ]'
+HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --uninstall > /dev/null 2>&1
+check "uninstall removes them all" '[ -z "$(find "$IH" -name "orch-*")" ] && [ ! -e "$IH/.local/bin/orch" ]'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

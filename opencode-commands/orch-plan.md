@@ -1,5 +1,5 @@
 ---
-description: "Orchestrator step 1 — plan a feature for the Herdr agent team (loads the shared orch-plan skill)"
+description: "Orchestrator step 1 — plan a feature for the Herdr agent team (you are the lead)"
 ---
-Read ~/.agents/skills/orch-plan/SKILL.md and follow it exactly. You are the lead.
+Run `orch lead plan` (or `~/.local/bin/orch lead plan` if `orch` is not on PATH) and follow its output exactly. You are the lead.
 Feature request: $ARGUMENTS

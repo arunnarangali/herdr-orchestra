@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Fake herdr for tests: agents are background scripts (behave.sh); state lives in $FH.
+# Panes addressed by id (@pane:<id>) map to an agent name through $FH/pane-<id>.name.
 FH=${FH:?}
 case "$1 $2" in
   "agent get")  [ -f "$FH/$3.gone" ] && { echo "no such agent $3" >&2; exit 1; }
@@ -7,4 +8,11 @@ case "$1 $2" in
   "agent prompt") echo "$3 <- $4" >> "$FH/prompts.log"; echo working > "$FH/$3.status"
                   nohup "$(dirname "$0")/behave.sh" "$3" "$(cat "$FH/$3.dir")" "$4" >> "$FH/behave.log" 2>&1 &;;
   "agent read") cat "$FH/$3.pane" 2>/dev/null;;
+  "pane get")   [ -f "$FH/pane-$3.name" ] || { echo "pane $3 not found" >&2; exit 1; }
+                echo "{\"result\":{\"pane\":{\"pane_id\":\"$3\"}}}";;
+  "pane current") echo '{"id":"cli:pane:current","result":{"pane":{"agent_status":"idle","pane_id":"w1:p1"},"type":"pane_current"}}';;
+  "pane send-text") [ -f "$FH/pane-$3.name" ] || { echo "pane $3 not found" >&2; exit 1; }
+                    agent=$(cat "$FH/pane-$3.name"); echo "pane $3 ($agent) <- $4" >> "$FH/pane-prompts.log"
+                    nohup "$(dirname "$0")/behave.sh" "$agent" "$(cat "$FH/$agent.dir")" "$4" >> "$FH/behave.log" 2>&1 &;;
+  "pane send-keys") echo "pane $3 keys ${*:4}" >> "$FH/pane-prompts.log";;
 esac

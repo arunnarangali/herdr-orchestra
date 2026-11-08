@@ -18,6 +18,8 @@ SHARE="$HOME/.local/share/herdr-orchestra"
 BIN="$HOME/.local/bin"
 SKILLS="$HOME/.agents/skills"
 OC_CMDS=("$HOME/.config/opencode/commands" "$HOME/.config/opencode/command")
+MANIFEST="$SHARE/manifest.txt"   # files installed outside $SHARE, removed by --uninstall
+SHIP=(bin skills opencode-commands claude-commands playbooks agents.default.toml VERSION)
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
@@ -81,6 +83,11 @@ case "$ACTION" in
     if [[ -f "$SHARE/current/VERSION" ]]; then echo "v$(cat "$SHARE/current/VERSION")"; else echo "not installed"; fi
     exit 0;;
   uninstall)
+    if [[ -f "$MANIFEST" ]]; then         # everything the installer put into agents' folders
+      while IFS= read -r p; do
+        case "$(basename "$p")" in orch-plan|orch-run|orch-plan.md|orch-run.md) rm -rf "$p";; esac
+      done < "$MANIFEST"
+    fi
     rm -f "$BIN/orch"
     rm -rf "$SKILLS/orch-plan" "$SKILLS/orch-run" "$SHARE"
     for d in "${OC_CMDS[@]}"; do rm -f "$d/orch-plan.md" "$d/orch-run.md"; done
@@ -94,6 +101,12 @@ command -v git >/dev/null || die "git is required"
 command -v herdr >/dev/null || warn "herdr not found — install it from https://herdr.dev before running a plan"
 
 # ---------------------------------------------------------------- pick the source
+copy_release() {  # copy_release <src> <dest>: older releases lack some of SHIP
+  local x
+  for x in "${SHIP[@]}"; do [[ -e "$1/$x" ]] && cp -r "$1/$x" "$2/"; done
+  return 0
+}
+
 SELF_DIR=""
 if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
   SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -116,7 +129,7 @@ if [[ -z "$WANT" && -n "$SELF_DIR" && -f "$SELF_DIR/bin/orch" && -f "$SELF_DIR/V
   fi
   DEST="$SHARE/$VER"
   rm -rf "$DEST"; mkdir -p "$DEST"
-  cp -r "$SRC/bin" "$SRC/skills" "$SRC/opencode-commands" "$SRC/VERSION" "$DEST/"
+  copy_release "$SRC" "$DEST"
 else
   command -v curl >/dev/null || die "curl is required to download a release (or install from a git checkout)"
   if [[ -z "$WANT" ]]; then VER=$(latest_version); else VER=$(norm "$WANT"); fi
@@ -132,7 +145,7 @@ else
     SRC=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)
     [[ -f "$SRC/bin/orch" ]] || die "$VER does not look like a herdr-orchestra release"
     mkdir -p "$DEST"
-    cp -r "$SRC/bin" "$SRC/skills" "$SRC/opencode-commands" "$SRC/VERSION" "$DEST/"
+    copy_release "$SRC" "$DEST"
   fi
 fi
 
@@ -142,13 +155,45 @@ ln -sfn "$DEST" "$SHARE/current"
 mkdir -p "$BIN"
 ln -sfn "$SHARE/current/bin/orch" "$BIN/orch"
 
-for s in orch-plan orch-run; do
-  rm -rf "${SKILLS:?}/$s"; mkdir -p "$SKILLS/$s"
-  cp "$SHARE/current/skills/$s/SKILL.md" "$SKILLS/$s/SKILL.md"
-done
-for d in "${OC_CMDS[@]}"; do
-  mkdir -p "$d"; cp "$SHARE/current/opencode-commands/"orch-*.md "$d/"
-done
+CUR="$SHARE/current"
+touch "$MANIFEST"
+record() { grep -qxF "$1" "$MANIFEST" || echo "$1" >> "$MANIFEST"; }
+install_skills() {  # install_skills <skills dir>
+  local s
+  for s in orch-plan orch-run; do
+    rm -rf "${1:?}/$s"; mkdir -p "$1/$s"
+    cp "$CUR/skills/$s/SKILL.md" "$1/$s/SKILL.md"; record "$1/$s"
+  done
+}
+install_commands() {  # install_commands <commands dir> <claude-commands|opencode-commands>
+  local f
+  [[ -d "$CUR/$2" ]] || return 0
+  mkdir -p "$1"
+  for f in "$CUR/$2/"orch-*.md; do cp "$f" "$1/"; record "$1/$(basename "$f")"; done
+}
+
+install_skills "$SKILLS"                                   # ~/.agents/skills: Amp, OpenCode and Codex read it
+for d in "${OC_CMDS[@]}"; do install_commands "$d" opencode-commands; done
+
+SUMMARY="" ROW_KIND="" ROW_WHAT="" ROW_HOW=""   # plain strings: macOS ships bash 3.2 (no associative arrays)
+flush_row() {
+  [[ -n "$ROW_KIND" ]] && SUMMARY+=$(printf '  %-9s %-58s %s' "$ROW_KIND" "${ROW_WHAT:-skills: ~/.agents/skills}" "$ROW_HOW")$'\n'
+  ROW_WHAT=""; ROW_HOW=""
+}
+if AGENT_DIRS=$("$CUR/bin/orch" agents dirs 2>/dev/null); then
+  while IFS=$'\t' read -r kind what dir from; do
+    [[ -n "$kind" ]] || continue
+    if [[ "$kind" != "$ROW_KIND" ]]; then flush_row; ROW_KIND="$kind"; fi
+    case "$what" in
+      invoke)   ROW_HOW="$dir";;
+      skills)   install_skills "$dir"; ROW_WHAT+="skills: ${dir/#$HOME/\~}  ";;
+      commands) install_commands "$dir" "$from"; ROW_WHAT+="commands: ${dir/#$HOME/\~}  ";;
+    esac
+  done <<< "$AGENT_DIRS"
+  flush_row
+else
+  warn "skipped per-agent skills: this version has no agent registry, or Python < 3.11 (orch agents needs tomllib)"
+fi
 
 # clean up files from pre-repo kit versions
 rm -f "$HOME/.opencode/commands/orchestrate.md" "$HOME/.config/opencode/orch/orch-wait.sh" "$BIN/orch-wait.sh" 2>/dev/null || true
@@ -166,11 +211,16 @@ fi
 case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH — add: export PATH=\"\$HOME/.local/bin:\$PATH\"";; esac
 
 say "herdr-orchestra $VER is active"
-cat <<EOF
+if [[ -n "$SUMMARY" ]]; then
+  echo
+  printf '  %-9s %-58s %s\n' "Agent" "Installed" "Start the lead with"
+  printf '%s' "$SUMMARY"
+fi
+cat <<'MSG'
 
-  Plan    OpenCode: /orch-plan <feature>        Amp: "use the orch-plan skill: <feature>"
-  Run     orch autopilot                         (or /orch-run · "use the orch-run skill")
-  Status  orch status        Version  orch version
+  Any agent   Run `orch lead plan` and follow it. Feature: <feature>
+  Run         orch autopilot        (or ask the lead: /orch-run, or "Run `orch lead run` and follow it")
+  Agents      orch agents           Status  orch status        Version  orch version
 
-  Restart OpenCode / start a new Amp thread so they pick up the skills and commands.
-EOF
+  Restart running agents (or start a new thread) so they pick up the new skills and commands.
+MSG
