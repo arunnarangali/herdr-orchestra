@@ -1348,6 +1348,7 @@ COMMANDS = {
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
   lead plan|run            print the lead playbook (any agent can lead: "Run `orch lead plan` and follow it")
+  lead check               preflight: is this agent in a Herdr pane / can it reach herdr?
   lead whoami              show the lead's own herdr pane and how to name it `lead`
   agents                   the agent registry: kinds, installed?, roles, herdr detection, launch commands
   agents launch <kind>     print the command that starts <kind> in a pane (auto-approve edits)
@@ -1378,6 +1379,35 @@ USAGE = """usage: orch <command> [args]
   review-ok <Mn>           record that the reviewer approved Mn
 """
 
+# Env vars a Herdr pane carries. Agents whose tools run in a separate background process (Hermes runs
+# every session in one gateway) don't pass them on to their shell tool, so HERDR_ENV can be unset there
+# even though the agent sits in a Herdr pane.
+HERDR_PANE_ENV = ("HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH")
+
+
+def lead_check():
+    """Preflight: is this agent driving Herdr? HERDR_ENV=1 is the fast path; otherwise ask the herdr server."""
+    if os.environ.get("HERDR_ENV") == "1":
+        print(f"OK inside a Herdr pane (HERDR_ENV=1, pane {os.environ.get('HERDR_PANE_ID') or '?'})")
+        return
+    try:
+        r = subprocess.run([HERDR, "pane", "current"], text=True, capture_output=True, timeout=20)
+        reachable, detail = r.returncode == 0, (r.stdout + r.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        reachable, detail = False, str(e)
+    hermes_fix = ("If the agent is Hermes, its tools run in the Hermes gateway, which does not see the pane's env. "
+                  "Add this to ~/.hermes/config.yaml, then restart Hermes:\n"
+                  "    terminal:\n      client_env_passthrough: [" + ", ".join(HERDR_PANE_ENV) + "]")
+    if reachable:
+        print("OK herdr is reachable, but this shell has no HERDR_ENV, so herdr cannot tell which pane is yours.\n"
+              "  Carry on; `orch lead whoami` will show the focused pane — confirm it is yours.\n  " + hermes_fix)
+        return
+    die("Herdr not detected: HERDR_ENV is not 1 and `herdr pane current` failed"
+        + (f" ({detail.splitlines()[-1]})" if detail else "") + ".\n"
+        "  Start this agent from a Herdr pane, and make sure `herdr` is on PATH (or set HERDR=/path/to/herdr).\n  "
+        + hermes_fix)
+
+
 def cmd_lead(args):
     """orch lead plan|run -> print the lead playbook; orch lead whoami -> this pane + how to name it `lead`."""
     sub = args[0] if args else ""
@@ -1385,6 +1415,9 @@ def cmd_lead(args):
         pb = asset(f"playbooks/{sub}.md") or die(f"playbooks/{sub}.md not found next to orch or in the install")
         print(f"herdr-orchestra {installed_version()} — lead playbook: {sub}\n")
         print(pb.read_text(), end="")
+        return
+    if sub == "check":
+        lead_check()
         return
     if sub == "whoami":
         try:
@@ -1394,6 +1427,9 @@ def cmd_lead(args):
         if r.returncode != 0:
             die("not inside a herdr pane (`herdr pane current` failed) — start this agent from a Herdr pane: "
                 + (r.stdout + r.stderr).strip())
+        if not os.environ.get("HERDR_PANE_ID"):
+            print("NOTE: HERDR_PANE_ID is not set in this shell, so herdr reported the FOCUSED pane. "
+                  "Check it is the pane you are running in before renaming it.")
         out = r.stdout.strip()
         try:
             pane = json.loads(out)["result"]["pane"]
@@ -1405,7 +1441,7 @@ def cmd_lead(args):
         print(f"This pane is YOU (the lead). Name it:  herdr agent rename {pid or '<pane id>'} lead\n"
               f"Write `Lead: lead (<your kind>)` in the plan header, and never prompt this pane.")
         return
-    die("usage: orch lead plan | run | whoami")
+    die("usage: orch lead plan | run | check | whoami")
 
 
 def cmd_agents(args):

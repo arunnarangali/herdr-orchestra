@@ -67,7 +67,7 @@ roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.hermes/skills"]
 invoke = "use the orch-plan skill: <feature>"
 verified = false
-notes = "Not installed on the machine this was written on: launch flag and skills folder unverified. herdr 0.9.5 lists 'hermes' as a known kind."
+notes = "Not installed on the machine this was written on: launch flag and skills folder unverified. herdr 0.9.5 lists 'hermes' as a known kind. Hermes runs tools in its gateway, so the pane's HERDR_* env is missing there unless ~/.hermes/config.yaml sets terminal.client_env_passthrough: [HERDR_ENV, HERDR_PANE_ID, HERDR_SOCKET_PATH, HERDR_BIN_PATH] (see `orch lead check`)."
 
 [agy]
 binary = "agy"

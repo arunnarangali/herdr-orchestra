@@ -2,6 +2,12 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [Unreleased]
+
+### Fixed
+- The plan playbook's preflight no longer stops a lead that really is in a Herdr pane. It used to test `$HERDR_ENV` in the agent's shell tool, but Herdr's pane env doesn't reach that shell for agents whose tools run in a background process (Hermes runs every session in one gateway). The new `orch lead check` passes on `HERDR_ENV=1`, falls back to asking the herdr server (`herdr pane current`), and when it fails says how to fix it, including the Hermes `terminal.client_env_passthrough` setting.
+- `orch lead whoami` warns when `HERDR_PANE_ID` is unset, because herdr then reports the focused pane.
+
 ## [4.3.1] - 2026-11-08
 
 ### Fixed

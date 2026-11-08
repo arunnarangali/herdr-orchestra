@@ -13,7 +13,7 @@ Load the `herdr` skill for exact CLI syntax if you have it (otherwise `herdr --s
 Feature request = the user's message that asked you to run this playbook.
 
 ## 1. Preflight (stop and report if any check fails)
-- `echo $HERDR_ENV` prints `1`. If not, tell the user to start you from a Herdr pane, then stop.
+- `orch lead check` prints `OK`. If it fails, show the user its message (it says how to fix it), then stop. Do not test `$HERDR_ENV` yourself: some agents (Hermes) run their shell tool outside the pane's environment, so it can be empty inside a real Herdr pane.
 - Inside a git repo, and `git status --porcelain` is empty. If not, ask the user to commit or stash first.
 - `mkdir -p .orchestrate`.
 
