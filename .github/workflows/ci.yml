@@ -1,0 +1,26 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint shell scripts
+        run: shellcheck -S warning install.sh scripts/release.sh tests/run.sh tests/sim/herdr tests/sim/behave.sh
+      - name: Compile orch
+        run: python3 -m py_compile bin/orch
+      - name: End-to-end tests (fake agents)
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name ci
+          bash tests/run.sh
+      - name: Installer from checkout
+        run: |
+          export HOME=$(mktemp -d)
+          bash install.sh --no-herdr-skill
+          "$HOME/.local/bin/orch" version
+          test -f "$HOME/.agents/skills/orch-plan/SKILL.md"
+          test -f "$HOME/.config/opencode/commands/orch-run.md"
