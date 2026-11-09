@@ -163,6 +163,15 @@ check "step-by-step how in a milestone warns" 'grep -q "M3 reads like step-by-st
 sed -i 's/Isolation: worktree/Isolation: shared/' .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1)
 check "shared mode suggests worktree for independent milestones" 'grep -q "M2 and M3 are independent" <<<"$out"'
+printf '# Plan: t\nBranch: orch/v\nCheck command: true\nIsolation: shared\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M1: api\nDepends on: none\nOpen questions:\n- none\n\n## [x] M2: web\nDepends on: M1 (needs the API)\nOpen questions:\n- none\n' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "2 coders on a fully sequential plan warns" 'grep -q "2 coders but every milestone depends" <<<"$out"'
+sed -i 's/^Depends on: M1 (needs the API)/Depends on: none/; s/Isolation: shared/Isolation: worktree/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "backend and frontend in parallel: no idle-coder warning" '! grep -q "every milestone depends" <<<"$out"'
+sed -i 's/^Workers: .*/Workers: claude-1 (claude)/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "1 coder with parallel milestones suggests shared" 'grep -q "1 coder: independent milestones" <<<"$out"'
 check "orch version prints" '"$ORCH" version | grep -q "herdr-orchestra"'
 
 echo "8. any agent can lead: playbooks, Lead header, agent registry"
