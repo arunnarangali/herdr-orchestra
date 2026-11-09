@@ -45,6 +45,14 @@ It installs:
 | `/orch-plan`, `/orch-run` OpenCode commands | `~/.config/opencode/commands/` |
 | every installed version, side by side | `~/.local/share/herdr-orchestra/` |
 
+Install once — you don't need to run the installer again when you add an agent. After installing Claude, Hermes, Amp or anything else, run:
+
+```bash
+orch agents sync
+```
+
+It finds every installed agent (binary on `PATH`), copies the `orch-plan` / `orch-run` skills and slash commands into that agent's folders, and records them so `--uninstall` still removes exactly what was installed. `orch agents` prints a hint when a new agent is missing its skills.
+
 ## Versions
 
 Every release is a git tag (`v4.2.0`) with a GitHub Release that carries its own `install.sh`. Every installed version is kept side by side, so switching back is instant.
@@ -117,7 +125,7 @@ roles = ["coder"]
 skills_dirs = ["~/.myagent/skills"]
 ```
 
-`orch agents launch <kind>` prints the command · `orch agents check` confirms the skills are installed for every installed agent. The installer copies the skills into each installed agent's folders (`~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.hermes/skills`, `~/.gemini/config/skills`) plus Claude Code and OpenCode slash commands.
+`orch agents launch <kind>` prints the command · `orch agents sync` installs the skills for every installed agent (run it after adding a new one) · `orch agents check` confirms the skills are installed for every installed agent. The installer copies the skills into each installed agent's folders (`~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.hermes/skills`, `~/.gemini/config/skills`) plus Claude Code and OpenCode slash commands.
 
 ### Agents herdr can't watch
 For a kind with `herdr_detect = false` (or one missing from the registry, which `orch sync` warns about), `orch` relies only on the **done file and the time budget**: it never reports GONE, BLOCKED or IDLE for it, treats it as free whenever it has no task, and `orch status` marks it `detect:off`. If herdr doesn't recognise the pane as an agent at all, address it by pane id: `Workers: hermes-1 (hermes @pane:w1:p3)`. `orch` then types prompts into that pane, and `orch start` reports a `STALE pane` when the id has changed (`herdr pane list` shows the current ids).
@@ -156,7 +164,7 @@ When a milestone passes its checks it's committed to its branch and the coder is
 | Worker writes `QUESTION:` | that task and its dependents wait; everything else continues |
 
 ### Commands
-`orch status` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind>|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch version` · `orch` (full help)
+`orch status` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind>|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch version` · `orch` (full help)
 
 Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (4)
 

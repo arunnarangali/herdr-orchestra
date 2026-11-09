@@ -234,6 +234,19 @@ check "claude slash commands installed" '[ -f "$IH/.claude/commands/orch-plan.md
 check "agents that aren't installed are skipped" '[ ! -e "$IH/.config/agents/skills" ]'
 check "installed skills are thin wrappers" 'grep -q "Run \`orch lead plan\`" "$IH/.hermes/skills/orch-plan/SKILL.md"'
 check "playbooks installed" '[ -f "$IH/.local/share/herdr-orchestra/current/playbooks/plan.md" ]'
+check "installer ran orch agents sync" 'grep -q "synced .* row" "$WORK/install.log"'
+
+# a new agent installed later — no need to re-run the installer
+printf '#!/bin/sh\n' > "$FAKEBIN/amp"; chmod +x "$FAKEBIN/amp"
+out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents sync 2>&1); code=$?
+check "orch agents sync picks up a newly installed agent" '[ $code -eq 0 ] && grep -qE "^ +NEW +amp" <<<"$out"'
+check "it installs that agent's skills" '[ -f "$IH/.config/agents/skills/orch-plan/SKILL.md" ] && [ -f "$IH/.config/agents/skills/orch-run/SKILL.md" ]'
+check "manifest records them for --uninstall" 'grep -q ".config/agents/skills/orch-plan" "$IH/.local/share/herdr-orchestra/manifest.txt"'
+check "agents check passes after sync" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check >/dev/null 2>&1'
+out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents sync 2>&1)
+check "second sync is idempotent (ok, nothing NEW)" '[ -z "$(grep NEW <<<"$out")" ] && grep -qE "^ +ok +amp" <<<"$out"'
+rm -rf "$IH/.config/agents/skills"
+check "orch agents hints to sync when skills go missing" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents 2>&1 | grep -q "orch agents sync"'
 HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --uninstall > /dev/null 2>&1
 check "uninstall removes them all" '[ -z "$(find "$IH" -name "orch-*")" ] && [ ! -e "$IH/.local/bin/orch" ]'
 

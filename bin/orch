@@ -1361,6 +1361,7 @@ USAGE = """usage: orch <command> [args]
   lead whoami              show the lead's own herdr pane and how to name it `lead`
   agents                   the agent registry: kinds, installed?, roles, herdr detection, launch commands
   agents launch <kind>     print the command that starts <kind> in a pane (auto-approve edits)
+  agents sync [kind...]    install the orch-plan / orch-run skills for every installed agent (run it after adding a new agent)
   agents check             check the orch-plan / orch-run skills are installed for every installed agent
   sync                     parse .orchestrate/plan.md -> state.json (validates deps, cycles, overlaps)
   start                    switch to the integration branch; create worker worktrees (worktree mode)
@@ -1453,8 +1454,109 @@ def cmd_lead(args):
     die("usage: orch lead plan | run | check | whoami")
 
 
+def manifest_path():
+    return Path.home() / ".local/share/herdr-orchestra" / "manifest.txt"
+
+
+def short(p):
+    """~/path for display."""
+    p = str(p)
+    home = str(Path.home())
+    return "~" + p[len(home):] if p.startswith(home) else p
+
+
+def manifest_record(*paths):
+    """Append paths to the installer's manifest so `install.sh --uninstall` removes them."""
+    mf = manifest_path()
+    mf.parent.mkdir(parents=True, exist_ok=True)
+    lines = mf.read_text().splitlines() if mf.exists() else []
+    for p in paths:
+        if str(p) not in lines:
+            lines.append(str(p))
+    mf.write_text("".join(line + "\n" for line in lines))
+
+
+def _copy_asset(src, dst):
+    """Copy src -> dst, creating parents. True if dst was created or changed."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() and dst.read_bytes() == src.read_bytes():
+        return False
+    shutil.copy2(src, dst)
+    return True
+
+
+def sync_skills(d):
+    """Copy orch-plan / orch-run into <d>/<skill>/SKILL.md. Returns (changed, paths to record)."""
+    src = asset("skills") or die("skills/ not found next to orch or in the install")
+    changed, recs = False, []
+    for s in ("orch-plan", "orch-run"):
+        changed |= _copy_asset(src / s / "SKILL.md", d / s / "SKILL.md")
+        recs.append(d / s)
+    return changed, recs
+
+
+def sync_commands(d, flavor):
+    """Copy the orch-*.md slash commands into d. Returns (changed, paths to record)."""
+    src = asset(flavor)
+    if not src:
+        return False, []
+    changed, recs = False, []
+    for f in sorted(src.glob("orch-*.md")):
+        changed |= _copy_asset(f, d / f.name)
+        recs.append(d / f.name)
+    return changed, recs
+
+
+def agent_assets(v):
+    """[(path, installed?)] for every skill/slash-command the registry says an agent should have."""
+    out = []
+    for d in v.get("skills_dirs", []):
+        for s in ("orch-plan", "orch-run"):
+            p = expand(d) / s / "SKILL.md"
+            out.append((p, p.exists()))
+    for d in v.get("commands_dirs", []):
+        for s in ("orch-plan", "orch-run"):
+            p = expand(d) / f"{s}.md"
+            out.append((p, p.exists()))
+    return out
+
+
+def agents_sync(reg, installed, want=None):
+    """Copy the orch skills/commands into the shared dirs + every installed agent's folders.
+    Idempotent; records each written path in the uninstall manifest. Prints a status table."""
+    home = expand("~")
+    targets = [("base", [("skills", home / ".agents/skills", None)] +
+               [("commands", d, "opencode-commands")
+                for d in (home / ".config/opencode/commands", home / ".config/opencode/command")], "")]
+    for k, v in reg.items():
+        if want is not None and k not in want:
+            continue
+        if not installed[k]:
+            if want is not None:
+                print(f"skip {k:<9} not installed")
+            continue
+        items = [("skills", expand(d), None) for d in v.get("skills_dirs", [])]
+        items += [("commands", expand(d), v.get("commands_from", "claude-commands"))
+                  for d in v.get("commands_dirs", [])]
+        targets.append((k, items, v.get("invoke", "Run `orch lead plan` and follow it. Feature: <feature>")))
+    new = same = 0
+    for k, items, invoke in targets:
+        changed, recs = False, []
+        for what, d, flavor in items:
+            c, r = sync_skills(d) if what == "skills" else sync_commands(d, flavor)
+            changed, recs = changed or c, recs + r
+        manifest_record(*recs)
+        new += changed
+        same += not changed
+        status, whats = ("NEW" if changed else "ok  "), "  ".join(
+            f"{what}: {short(d)}" for what, d, _ in items)
+        print(f"  {status} {k:<8} {whats}" + (f"  {invoke}" if invoke else ""))
+    print(f"synced {len(targets)} row(s): {new} new, {same} unchanged — "
+          f"restart running agents so they pick up the skills")
+
+
 def cmd_agents(args):
-    """orch agents [launch <kind> | check | dirs] -> the agent registry."""
+    """orch agents [launch <kind> | check | sync | dirs] -> the agent registry."""
     reg = registry()
     sub = args[0] if args else ""
     installed = {k: bool(shutil.which(v.get("binary", k))) for k, v in reg.items()}
@@ -1479,27 +1581,34 @@ def cmd_agents(args):
         for k, v in reg.items():
             if not installed[k]:
                 continue
-            for d in v.get("skills_dirs", []):
-                for s in ("orch-plan", "orch-run"):
-                    ok = (expand(d) / s / "SKILL.md").exists()
-                    bad += not ok
-                    print(f"{'ok  ' if ok else 'MISSING'} {k:<9} skill   {expand(d) / s / 'SKILL.md'}")
-            for d in v.get("commands_dirs", []):
-                for s in ("orch-plan", "orch-run"):
-                    ok = (expand(d) / f"{s}.md").exists()
-                    bad += not ok
-                    print(f"{'ok  ' if ok else 'MISSING'} {k:<9} command {expand(d) / (s + '.md')}")
+            for p, ok in agent_assets(v):
+                bad += not ok
+                label = "skill   " if p.name == "SKILL.md" else "command "
+                print(f"{'ok  ' if ok else 'MISSING'} {k:<9} {label}{p}")
         if bad:
-            print(f"{bad} missing — re-run the installer")
+            print(f"{bad} missing — run: orch agents sync")
             sys.exit(1)
         return
+    if sub == "sync":
+        want = {k.lower() for k in args[1:]} if len(args) > 1 else None
+        if want:
+            unknown = sorted(want - set(reg))
+            if unknown:
+                die(f"unknown agent kind {', '.join(unknown)} — known: {', '.join(reg)} "
+                    f"(add it in {user_agents_file()})")
+        agents_sync(reg, installed, want)
+        return
     if sub:
-        die("usage: orch agents [launch <kind> | check | dirs]")
+        die("usage: orch agents [launch <kind> | check | sync | dirs]")
     print(f"{'kind':<9} {'installed':<9} {'detect':<6} {'verified':<8} {'roles':<22} launch")
     for k, v in reg.items():
         print(f"{k:<9} {'yes' if installed[k] else 'no':<9} {'yes' if v.get('herdr_detect', True) else 'no':<6} "
               f"{'yes' if v.get('verified') else 'no':<8} {','.join(v.get('roles', [])):<22} "
               f"{v.get('launch', v.get('binary', k))}")
+    missing = [k for k, v in reg.items()
+               if installed[k] and any(not ok for _, ok in agent_assets(v))]
+    if missing:
+        print(f"\n{', '.join(missing)}: orch-plan/orch-run missing — run: orch agents sync")
     print(f"\nOverride or add kinds in {user_agents_file()}")
 
 

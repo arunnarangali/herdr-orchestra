@@ -172,27 +172,13 @@ install_commands() {  # install_commands <commands dir> <claude-commands|opencod
   for f in "$CUR/$2/"orch-*.md; do cp "$f" "$1/"; record "$1/$(basename "$f")"; done
 }
 
-install_skills "$SKILLS"                                   # ~/.agents/skills: Amp, OpenCode and Codex read it
-for d in "${OC_CMDS[@]}"; do install_commands "$d" opencode-commands; done
-
-SUMMARY="" ROW_KIND="" ROW_WHAT="" ROW_HOW=""   # plain strings: macOS ships bash 3.2 (no associative arrays)
-flush_row() {
-  [[ -n "$ROW_KIND" ]] && SUMMARY+=$(printf '  %-9s %-58s %s' "$ROW_KIND" "${ROW_WHAT:-skills: ~/.agents/skills}" "$ROW_HOW")$'\n'
-  ROW_WHAT=""; ROW_HOW=""
-}
-if AGENT_DIRS=$("$CUR/bin/orch" agents dirs 2>/dev/null); then
-  while IFS=$'\t' read -r kind what dir from; do
-    [[ -n "$kind" ]] || continue
-    if [[ "$kind" != "$ROW_KIND" ]]; then flush_row; ROW_KIND="$kind"; fi
-    case "$what" in
-      invoke)   ROW_HOW="$dir";;
-      skills)   install_skills "$dir"; ROW_WHAT+="skills: ${dir/#$HOME/\~}  ";;
-      commands) install_commands "$dir" "$from"; ROW_WHAT+="commands: ${dir/#$HOME/\~}  ";;
-    esac
-  done <<< "$AGENT_DIRS"
-  flush_row
-else
-  warn "skipped per-agent skills: this version has no agent registry, or Python < 3.11 (orch agents needs tomllib)"
+# skills + slash commands for the shared dirs and every installed agent — one implementation, in orch
+echo
+if ! "$CUR/bin/orch" agents sync; then
+  # Python < 3.11 (no agent registry): fall back to the shared dirs only, as in 4.2
+  warn "per-agent skills skipped (orch agents sync failed — Python >= 3.11 needed for the agent registry)"
+  install_skills "$SKILLS"                               # ~/.agents/skills: Amp, OpenCode and Codex read it
+  for d in "${OC_CMDS[@]}"; do install_commands "$d" opencode-commands; done
 fi
 
 # clean up files from pre-repo kit versions
@@ -221,16 +207,12 @@ fi
 case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH — add: export PATH=\"\$HOME/.local/bin:\$PATH\"";; esac
 
 say "herdr-orchestra $VER is active"
-if [[ -n "$SUMMARY" ]]; then
-  echo
-  printf '  %-9s %-58s %s\n' "Agent" "Installed" "Start the lead with"
-  printf '%s' "$SUMMARY"
-fi
 cat <<'MSG'
 
   Any agent   Run `orch lead plan` and follow it. Feature: <feature>
   Run         orch autopilot        (or ask the lead: /orch-run, or "Run `orch lead run` and follow it")
-  Agents      orch agents           Status  orch status        Version  orch version
+  Agents      orch agents           New agent installed later?  orch agents sync
+  Status      orch status           Version  orch version
 
   Restart running agents (or start a new thread) so they pick up the new skills and commands.
 MSG
