@@ -20,6 +20,7 @@ Feature request = the user's message that asked you to run this playbook.
 ## 2. Research (read-only, before planning anything)
 - Read `AGENTS.md` / `CLAUDE.md` / `README` and any spec the request points to.
 - Map the parts of the codebase the feature touches: entry points, the modules and files involved, existing patterns to follow (how similar features are built), data models and tables, tests and how they run.
+- **Monorepo?** (workspaces in `package.json`/`pnpm-workspace.yaml`/`turbo.json`/`nx.json`, or folders like `apps/*`, `packages/*`, `backend/` + `frontend/`, `server/` + `client/`): list each app/package the feature touches, what it owns (API, web UI, mobile, shared types), and how each one is checked. For a feature that spans backend and frontend, understand BOTH sides well enough to write the contract between them: endpoints, request/response fields, where the shared types live.
 - Find the **shared hotspot files** this feature will need to change: `package.json`/lockfiles, `pubspec.yaml`, `go.mod`, routes/router, `App.tsx`, nav/menu, global store, `docker-compose.yml`, `Makefile`, shared types.
 - Use web docs only for facts the repo can't answer (a library's API, a protocol).
 - Keep notes short: you'll put the relevant facts into each milestone's **Context**. List anything you could not determine as an open question; never assume.
@@ -34,6 +35,14 @@ Feature request = the user's message that asked you to run this playbook.
 - If it's unclear which pane should play which role, ask.
 
 ## 4. Milestones: as few as possible, never more than 4
+Count the coders you found in step 3 (N). Split for the team you actually have:
+- **N = 1**: never split for parallelism; there is nobody to run in parallel with. 1–2 milestones in order, `Isolation: shared`.
+- **N ≥ 2 and the feature spans backend and frontend** (two apps in a monorepo, or server + client folders): split it **by side** so each coder gets a comparable share, even when the feature is small. Backend and frontend run in parallel; neither waits for the other. Make that possible with the contract: write the exact API shape and shared types identically under **Interfaces** in both milestones. If both sides need the same shared type file (e.g. `packages/shared`), make a tiny contract milestone first that only adds the types (plus any new packages), and have both sides depend on it. Do not put the contract inside the backend milestone; that makes the frontend wait.
+  Default shape: `M1 contract (shared types) → M2 backend ∥ M3 frontend` (add `→ M4 integration` only if wiring or e2e is real work). If the shared types live in only one side, drop M1: `M1 backend ∥ M2 frontend`.
+- **N ≥ 3**: use a third parallel milestone only when there is a real independent slice (another app such as mobile or admin, a separate service, a big independent UI part). Never invent work to keep a coder busy; an idle coder is fine.
+- **Even split**: parallel milestones should be roughly the same size. If one side is much bigger, move a cohesive part of it into its own parallel milestone (when N allows) rather than leaving one coder with most of the work.
+
+Size, after the team rule above:
 - small feature (one area, a few files) → **1–2** milestones · medium (backend + UI, several modules) → **3–4**
 - bigger than 4 milestones' worth → tell the developer it should be split into separate runs (each its own plan and branch), propose the split, and plan only the first run.
 - Each milestone is a cohesive slice one coder can finish in one sitting. Keep tightly coupled work together (schema + queries + endpoint = one milestone).
@@ -51,7 +60,8 @@ Then apply these rules:
 
 Typical shapes:
 ```
-Backend + UI:    M1 contract (API + types) → M2 backend ∥ M3 UI → M4 integration
+Backend + UI, 2+ coders:  M1 contract (API + types) → M2 backend ∥ M3 UI → M4 integration (optional)
+Backend + UI, 1 coder:    M1 backend → M2 UI   (shared mode)
 Frontend only:   M1 scaffold (route, nav, packages, types) → M2 component A ∥ M3 component B → M4 wire-up
 Small:           M1 the whole thing   (or M1 core → M2 polish)
 ```
@@ -114,7 +124,7 @@ Rules for every milestone:
 - Each section must stand alone: autopilot hands it to the coder verbatim, together with the global instructions and the reports of merged dependencies.
 
 ## 9. Validate and hand back
-- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, more than 4 milestones, independent milestones in shared mode.
+- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, more than 4 milestones, independent milestones in shared mode, coders left idle by a fully sequential plan.
 - Run `orch status`. Show the developer: the milestones, the parallel shape (which run together), the research facts that shaped the plan, and all open questions.
 - Then say: "Plan written to .orchestrate/plan.md. Edit it: untick `[x]` to skip a milestone, change `Depends on`/`Prefer`, answer open questions under 'Notes from user' and set 'Open questions: - none'. Then run `orch autopilot` in a terminal (cheapest), or ask me to drive: `/orch-run`, "use the orch-run skill", or "Run `orch lead run` and follow it"."
 - STOP.

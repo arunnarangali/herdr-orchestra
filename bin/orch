@@ -335,11 +335,12 @@ def cmd_sync(args):
     files = {n: {f.strip().strip("`") for f in re.split(r"[,\s]+", field(by_id[n], "likely files")) if f.strip()}
              for n in by_id}
     enabled = [t["id"] for t in tasks if t["enabled"]]
-    parallel_pairs, hot_warned = [], set()
+    parallel_pairs, hot_warned, any_parallel = [], set(), False
     for i, a in enumerate(enabled):
         for b in enabled[i + 1:]:
             if a in anc[b] or b in anc[a]:
                 continue
+            any_parallel = True
             common = files[a] & files[b]
             if common and isolation == "worktree":
                 warns.append(f"{a} and {b} may run in parallel but both touch {sorted(common)} — "
@@ -352,6 +353,14 @@ def cmd_sync(args):
                     hot_warned.add(x)
                     warns.append(f"{x} touches shared hotspot file(s) {hot} but can run in parallel with "
                                  f"{b if x == a else a} — move those edits into a scaffold milestone both depend on")
+    # split for the team you have: idle coders on a chain, or parallel work with nobody to run it
+    if len(workers) >= 2 and len(enabled) >= 2 and not any_parallel:
+        warns.append(f"{len(workers)} coders but every milestone depends on the one before, so only one coder "
+                     f"works at a time — if the feature spans backend and frontend, put the contract under "
+                     f"Interfaces (or in a small contract milestone) so both sides can run in parallel")
+    if len(workers) == 1 and any_parallel and isolation == "worktree":
+        warns.append("1 coder: independent milestones will still run one at a time — "
+                     "`Isolation: shared` is simpler unless you will add coders")
     if parallel_pairs:
         a, b = parallel_pairs[0]
         warns.append(f"{a} and {b} are independent — with `Isolation: worktree` they could run in parallel "
