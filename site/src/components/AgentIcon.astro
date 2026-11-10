@@ -1,0 +1,12 @@
+---
+// Inline SVG mark for an agent kind; falls back to a two-letter monogram for kinds without one.
+const marks = import.meta.glob('../assets/agents/*.svg', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+interface Props { kind: string; size?: number }
+const { kind, size = 22 } = Astro.props;
+const raw = marks[`../assets/agents/${kind}.svg`];
+const svg = raw
+  ?.replace(/\s(width|height)="1em"/g, '')
+  .replace(/style="[^"]*"/, '')
+  .replace('<svg ', `<svg width="${size}" height="${size}" aria-hidden="true" focusable="false" `);
+---
+{svg ? <span class="agent-icon" set:html={svg} /> : <span class="agent-icon mono" aria-hidden="true">{kind.slice(0, 2)}</span>}

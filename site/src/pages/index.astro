@@ -10,6 +10,11 @@ import { REPO_URL, version } from '../lib/repo';
 
 const roles = [
   {
+    c: 'var(--text)', tag: 'you', name: 'You',
+    does: 'Describe the feature, edit the plan, answer questions when asked, and review one pull request.',
+    never: 'Babysit agents or copy work between them.',
+  },
+  {
     c: 'var(--lead)', tag: 'lead · any agent', name: 'Lead',
     does: 'Researches the codebase and writes 1 to 4 milestones as issues: goal, why, acceptance criteria, interfaces, dependencies with reasons.',
     never: 'Writes code or tells coders how to build it.',
@@ -24,11 +29,6 @@ const roles = [
     does: 'Reads every diff and reports problems as BLOCKER: file:line — what — why.',
     never: 'Edits code or prescribes the fix.',
   },
-  {
-    c: 'var(--auto)', tag: 'orch autopilot · a script', name: 'Autopilot',
-    does: 'Moves work around, runs your checks, routes reviews and fix jobs, merges finished milestones.',
-    never: 'Thinks. That is why it costs nothing to run.',
-  },
 ];
 
 const handles = [
@@ -36,8 +36,8 @@ const handles = [
   { trigger: 'BLOCKER', title: 'Queues a fix job', body: 'The problem, not the solution, goes to the next free coder, preferring the author.', limit: 'up to 2 rounds' },
   { trigger: 'merge conflict', title: 'Hands back the merge', body: 'A coder merges the branch in its worktree and resolves both sides.', limit: 'up to 2 rounds' },
   { trigger: 'usage limit', title: 'Benches the agent', body: 'Another coder continues with the work so far.', limit: '60 min cooldown' },
+  { trigger: 'agent disappears', title: 'Moves the work on', body: 'Its task continues on another coder with the work so far; it rejoins when it is back.', limit: '10 min bench' },
   { trigger: 'permission prompt', title: 'Alerts you', body: 'A desktop notification; every other task keeps running.', limit: 'no waiting' },
-  { trigger: 'agent stops early', title: 'Nudges it once', body: 'If it stays idle, the task is parked for you.', limit: '1 nudge' },
   { trigger: 'QUESTION:', title: 'Waits only where needed', body: 'That task and its dependents pause. Everything else continues.', limit: 'answer in plan.md' },
   { trigger: 'coder freed', title: 'Pipelines review', body: 'Once checks pass, the coder takes the next milestone while the reviewer reads.', limit: 'worktree mode' },
 ];
@@ -46,9 +46,9 @@ const handles = [
   <section class="first">
     <div class="wrap hero">
       <div>
-        <a class="version-pill" href="/changelog"><b>{version()}</b> Any agent can be lead, coder or reviewer</a>
+        <a class="version-pill" href="/changelog"><b>{version()}</b> One feature branch per run, one pull request</a>
         <h1>Your AI agents, <span>working as a team.</span></h1>
-        <p class="lede">A lead plans. Coders build in parallel. A reviewer checks every diff. A plain script runs the loop, so you only pay for AI when real judgment is needed.</p>
+        <p class="lede">A lead plans the feature. Coders build it in parallel. A reviewer checks every diff. You get one clean pull request.</p>
         <Install />
         <div class="actions">
           <a class="btn primary" href="/docs/quick-start">Quick start</a>
@@ -98,10 +98,10 @@ const handles = [
       <div class="section-head">
         <p class="eyebrow">How a run works</p>
         <h2>You touch it three times.</h2>
-        <p class="lede">You describe the feature, edit the plan, and review the pull request. Everything in the shaded box is a script.</p>
+        <p class="lede">You describe the feature, edit the plan, and review the pull request. The team does everything in between.</p>
       </div>
       <div class="diagram reveal"><RunFlow /></div>
-      <p class="diagram-note"><a href="/how-it-works">Walk through a full run, with the real autopilot log →</a></p>
+      <p class="diagram-note"><a href="/how-it-works">Walk through a full run, step by step →</a></p>
     </div>
   </section>
 
@@ -116,7 +116,7 @@ const handles = [
       <div class="grid cols-3" style="margin-top:16px">
         <div class="card"><h3>Contract first</h3><p>Parallel milestones that must fit together depend on a small milestone that defines the shared types or API.</p></div>
         <div class="card"><h3>Scaffold first</h3><p>Routes, nav, <code>package.json</code> and other hotspot files change in one early milestone, so parallel work never collides.</p></div>
-        <div class="card"><h3>A normal branch and PR</h3><p>The run lives on one <code>feature/&lt;name&gt;</code> branch with real commits, and ends in a pull request you review like any other.</p></div>
+        <div class="card"><h3>A normal branch and PR</h3><p>One <code>feature/&lt;name&gt;</code> branch, one commit per milestone with a real message, and <code>orch finish</code> opens the pull request.</p></div>
       </div>
     </div>
   </section>
@@ -124,9 +124,9 @@ const handles = [
   <section>
     <div class="wrap">
       <div class="section-head">
-        <p class="eyebrow">Autopilot handles it</p>
+        <p class="eyebrow">Built to keep going</p>
         <h2>It stops only when it needs you.</h2>
-        <p class="lede">When something goes wrong, <code>orch autopilot</code> routes it to the right agent with a round limit. When it can't, you get a desktop notification and a line in <code>.orchestrate/autopilot.log</code>.</p>
+        <p class="lede">Failed checks, review findings, conflicts and tired agents are routed to the right place with a round limit. When a run really needs you, you get a desktop notification that says why.</p>
       </div>
       <div class="grid cols-4">
         {handles.map((h) => (
@@ -137,6 +137,28 @@ const handles = [
             <span class="limit">{h.limit}</span>
           </div>
         ))}
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap drive">
+      <div class="section-head">
+        <p class="eyebrow">Your choice of driver</p>
+        <h2>Let the lead run it, or a script.</h2>
+        <p class="lede">The same loop can be driven two ways. Switch any time; the run picks up where it left off.</p>
+      </div>
+      <div class="grid cols-2">
+        <div class="card">
+          <h3>The lead drives <code>/orch-run</code></h3>
+          <p>Your lead agent hands out milestones, runs checks and reviews, and reads panes when something looks off.</p>
+          <ul><li>Judgment on unclear failures</li><li>Works when the baseline check already fails</li></ul>
+        </div>
+        <div class="card">
+          <h3>A script drives <code>orch autopilot</code></h3>
+          <p>The same steps as a plain program in a spare terminal. Agents only spend tokens on coding and review.</p>
+          <ul><li>No AI cost for scheduling</li><li>Good for long and overnight runs</li></ul>
+        </div>
       </div>
     </div>
   </section>
@@ -155,15 +177,16 @@ const handles = [
     <div class="wrap">
       <p class="eyebrow">Install and go</p>
       <h2>One line to install. Three steps to a first run.</h2>
-      <p class="lede">Needs Herdr, git, python3 (3.11+ for the agent registry) and curl. Every version stays installed side by side, so switching back is instant.</p>
+      <p class="lede">Every version stays installed side by side, so switching back is instant.</p>
       <Install />
+      <p class="reqs">Runs in <a href="https://herdr.dev">Herdr</a> with git, python3 and curl. <a href="/docs/installation/">Requirements</a></p>
       <div class="first-run">
-        <span><b>orch agents</b> &nbsp;# see which agents you have and how to launch them</span>
-        <span><b>/orch-plan &lt;feature&gt;</b> &nbsp;# in the lead's pane</span>
-        <span><b>orch autopilot</b> &nbsp;# in a spare terminal</span>
+        <span><b>/orch-plan &lt;feature&gt;</b> &nbsp;# the lead plans it</span>
+        <span><b>/orch-run</b> &nbsp;# the team builds it</span>
+        <span><b>orch finish</b> &nbsp;# push the branch, open the PR</span>
       </div>
       <div class="actions center" style="margin-top:28px">
-        <a class="btn primary" href="/docs/quick-start">Read the quick start</a>
+        <a class="btn primary" href="/docs/quick-start/">Read the quick start</a>
         <a class="btn" href={REPO_URL}>View on GitHub</a>
       </div>
     </div>

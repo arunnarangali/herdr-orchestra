@@ -1,5 +1,5 @@
 ---
-title: Agents
+title: Agents and roles
 description: The agent registry, choosing a lead, and adding your own agent.
 ---
 
@@ -16,6 +16,14 @@ The agent whose pane you start the plan playbook in becomes the lead. It names i
 | Codex | `$orch-plan <feature>` or "use the orch-plan skill: &lt;feature&gt;" |
 | Amp, Hermes, Antigravity | "use the orch-plan skill: &lt;feature&gt;" |
 | any agent | "Run `orch lead plan` and follow it. Feature: &lt;feature&gt;" |
+
+## Pick roles for your team
+
+- **Lead:** the agent you talk to most. It reads a lot of code, so pick one you trust with research.
+- **Coders:** one or more. With two, a backend + frontend feature is split so both work at once.
+- **Reviewer:** optional, any spare agent. A different kind from the coders gives a second opinion.
+
+The plan's `Prefer:` line can steer a milestone to a kind, for example `claude` for UI and multi-file refactors and `codex` for focused backend work and tests. It is a preference, not a lock.
 
 ## The registry
 

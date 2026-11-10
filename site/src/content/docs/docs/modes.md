@@ -1,22 +1,27 @@
 ---
-title: Modes and branches
-description: Worktree and shared modes, and how a run uses one feature branch and a pull request.
+title: Modes
+description: Worktree mode runs milestones in parallel; shared mode runs them one at a time in your folder.
 ---
 
-## Modes
+Set the mode with `Isolation:` in the plan header.
 
-- **worktree:** each coder works in `../<repo>-wt/<name>`. Independent milestones run in parallel, and each lands when it passes checks and review. Start each coder inside its own worktree.
-- **shared:** everyone works in your folder, one milestone at a time. Two agents in one folder would overwrite each other's files, so this is only safe sequentially. Use it when every milestone depends on the previous one.
+## Worktree
 
-## Branches
+Each coder works in its own git worktree next to your repo, `../<repo>-wt/<name>`. Independent milestones run at the same time, and each one lands when it passes checks and review.
 
-A run lives on one `feature/<name>` branch.
+```text
+~/code/app                 # your folder, on feature/csv-import
+~/code/app-wt/claude-1     # M2 backend
+~/code/app-wt/codex-1      # M3 frontend
+```
 
-- The branch is created when work starts.
-- Each milestone lands as a real commit with a normal commit message. There are no bookkeeping branches and no milestone-labelled commits in your history.
-- Milestones in progress are kept out of your branch list.
-- When every milestone is in, the branch is pushed and a pull request is opened for you to review and merge.
+- Pick it when milestones can be built independently, which is usual with two or more coders.
+- Review is pipelined: coders move on while the reviewer reads.
+- `Setup command:` runs once in each new worktree.
 
-:::note
-This feature-branch flow is the intended behavior and is landing in an upcoming release. Earlier versions (4.4 and before) used an `orch/<slug>` integration branch that you merged yourself.
-:::
+## Shared
+
+Everyone works in your folder, one milestone at a time. Two agents in one folder would overwrite each other's files, so this mode is strictly sequential. Unfinished work is parked in the milestone's hidden ref and restored for the next coder, so the tree is clean between milestones.
+
+- Pick it when every milestone depends on the one before, or when you have one coder.
+- `orch sync` warns when independent milestones are left in shared mode.

