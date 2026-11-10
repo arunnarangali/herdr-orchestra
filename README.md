@@ -93,8 +93,8 @@ Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `.
 
 2. **Plan:** start the plan playbook in the lead's pane (see [Choose your lead](#choose-your-lead)).
    Then edit `.orchestrate/plan.md`: dependencies, preferred coder, review yes/no, and your answers to open questions.
-3. **Run:** `orch autopilot` in a spare terminal (or ask the lead to drive: `/orch-run`, "use the orch-run skill", or "Run `orch lead run` and follow it").
-4. **When it stops** (desktop notification + `.orchestrate/autopilot.log`): answer under "Notes from user" in the plan, run `orch set Mn pending`, then run `orch autopilot` again. Or ask the lead to handle it with you.
+3. **Run:** `orch autopilot` in a spare terminal. It is the only driver of a run: while it runs, other `orch` commands that would change the run are refused (`orch status`, `orch report` and `orch approve` still work).
+4. **When it stops** (desktop notification + `.orchestrate/autopilot.log`): answer under "Notes from user" in the plan, run `orch set Mn pending` (or `orch approve Mn` for a held milestone), then run `orch autopilot` again. Or ask the lead to handle it with you: `/orch-run`, "use the orch-run skill", or "Run `orch lead run` and follow it".
 5. **When it's done:** read `.orchestrate/summary.md`, test it, then run `orch finish`. It re-runs the check, removes the worktrees, pushes `feature/<name>` and opens a PR into `main` (with `gh`, or prints the compare link).
 
 ### Git: one branch per run, real commits, one PR
@@ -132,7 +132,7 @@ roles = ["coder"]
 skills_dirs = ["~/.myagent/skills"]
 ```
 
-`orch agents launch <kind>` prints the command · `orch agents sync` installs the skills for every installed agent (run it after adding a new one) · `orch agents check` confirms the skills are installed for every installed agent. The installer copies the skills into each installed agent's folders (`~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.hermes/skills`, `~/.gemini/config/skills`) plus Claude Code and OpenCode slash commands.
+`orch doctor [kind]` checks an installed agent against the real tool (version, whether the launch flags still exist in its `--help`, skills, herdr detection). `orch agents launch <kind>` prints the command · `orch agents sync` installs the skills for every installed agent (run it after adding a new one) · `orch agents check` confirms the skills are installed for every installed agent. The installer copies the skills into each installed agent's folders (`~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.hermes/skills`, `~/.gemini/config/skills`) plus Claude Code and OpenCode slash commands.
 
 ### Agents herdr can't watch
 For a kind with `herdr_detect = false` (or one missing from the registry, which `orch sync` warns about), `orch` relies only on the **done file and the time budget**: it never reports GONE, BLOCKED or IDLE for it, treats it as free whenever it has no task, and `orch status` marks it `detect:off`. If herdr doesn't recognise the pane as an agent at all, address it by pane id: `Workers: hermes-1 (hermes @pane:w1:p3)`. `orch` then types prompts into that pane, and `orch start` reports a `STALE pane` when the id has changed (`herdr pane list` shows the current ids).
@@ -164,25 +164,39 @@ When a milestone passes its checks it's saved to its hidden ref and the coder is
 |---|---|
 | Checks fail | sends the last 60 lines back to the coder, up to 3 rounds |
 | Reviewer blockers | queued as a problem-only fix job for the next free coder, up to 2 rounds |
-| Merge conflict | the same coder merges the feature branch and resolves it, up to 2 rounds |
+| Merge conflict | the same coder merges the feature branch and resolves it, up to 2 rounds; if the milestone was already approved, the reviewer sees the resolution before it lands |
+| Passes alone, fails once merged | the check runs on the merged result **before** the commit; a failure commits nothing and goes back to a coder as a fix round |
 | A coder hits a usage limit | benches it for 60 min; the other coder continues, with the work so far (also in shared mode) |
 | An agent disappears | coder: its task moves on with the work so far; reviewer: only the review waits. Either is used again as soon as it's back |
-| A prompt can't be delivered | the task goes back in the queue (its job kept) and that agent is retried after 2 min |
+| A prompt can't be delivered | the task goes back in the queue (its job kept) and that agent is retried after 2 min; 3 in a row bench it for 30 min |
+| Attempts keep getting lost (unreachable, gone, rate-limited) | after 4 (`ORCH_MAX_LOST`) the task fails with the history instead of looping |
+| Autopilot is killed mid-step | the next run confirms or re-sends an unconfirmed prompt to the same agent, and finishes or undoes a half-done merge |
+| Lockfiles changed since a folder was set up | the setup command runs again there (and in your main folder before the merge check) |
+| Risky change (deleted file, migration, CI config, secrets file, unlisted dependency change, very large diff) | the milestone is **held** until you run `orch approve Mn`; the rest keeps going |
+| A coder changes files outside its `Likely files` | listed in the summary (`Scope: strict` sends it back instead) |
 | An orch step fails for one task | that task is paused with the error; the others keep running |
-| The check fails on the branch after a merge | stops; the next run re-checks and carries on once it passes |
+| The final check fails on the branch | stops; the next run re-checks and carries on once it passes |
 | Permission prompt | desktop alert, other tasks keep running |
 | Agent stops early | nudged once, then parked |
 | Worker writes `QUESTION:` | that task and its dependents wait; everything else continues |
 
-### Commands
-`orch status` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind>|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch` (full help)
+### Contracts and reports
+`plan.md` stays the file you edit. From it `orch` generates a `task.json` for each milestone (numbered acceptance criteria `AC1…`, allowed files, interfaces, the commits of its dependencies). Coders answer with a `result-N.json` (status, commit message, files changed, the check they ran, each criterion met or not), and the reviewer with a `review-N.json` (a verdict per criterion plus findings). The old line formats (`COMMIT:`, `QUESTION:`, `BLOCKER:`) still work as a fallback. The shapes are in [docs/contracts.md](docs/contracts.md).
 
-Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (4) · `ORCH_GONE_COOLDOWN_MIN` (10) · `ORCH_SEND_RETRY_S` (120) · `ORCH_HERDR_TIMEOUT_S` (30)
+Every status change is written to `.orchestrate/events.jsonl`, and `orch report [--json]` shows time per milestone, fix/review/conflict rounds, first-pass rate and wasted work. Tokens and cost appear only when an agent reports `usage` in its result file.
+
+Optional plan header lines: `Scope: warn | strict` · `Risk hold: on | off` · `Budget: 3h` (autopilot stops when its running time is used up) · `Setup inputs: <globs>` (which files mean "run setup again"; default: lockfiles and manifests). Per milestone: `Parallel: allow` lets it run next to a milestone that shares its `Likely files`.
+
+### Commands
+`orch status` · `orch report` · `orch approve Mn` · `orch doctor [kind]` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind>|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch` (full help)
+
+Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (4) · `ORCH_GONE_COOLDOWN_MIN` (10) · `ORCH_SEND_RETRY_S` (120) · `ORCH_HERDR_TIMEOUT_S` (30) · `ORCH_MAX_LOST` (4) · `ORCH_UNREACHABLE_MIN` (30) · `ORCH_CONFIRM_S` (30) · `ORCH_RISK_MAX_LINES` (1500)
 
 ## Develop and release
 
 ```bash
 bash tests/run.sh          # end-to-end tests with fake agents (no AI, no network)
+bash tests/live/run.sh claude codex   # opt-in: one tiny real run per agent kind (needs herdr and the agents; uses their credits)
 bash install.sh            # install your checkout (vX.Y.Z at a tag, vX.Y.Z-dev otherwise)
 bash scripts/release.sh 4.2.0   # bump VERSION, check the CHANGELOG, commit, tag
 git push && git push origin v4.2.0   # CI tests the tag and publishes the GitHub Release

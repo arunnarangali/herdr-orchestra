@@ -4,16 +4,36 @@ agent=$1; dir=$2; prompt=$3; FH=${FH:?}
 cd "$dir" || exit 1
 file=$(grep -oE '(\.orch-task|\.orchestrate/review)/M[0-9]+/[a-z0-9-]+\.md' <<<"$prompt" | head -1)
 report=$(grep -oE '\.orch-task/M[0-9]+/report-[0-9]+\.md' <<<"$prompt" | head -1)
+result=$(grep -oE '\.orch-task/M[0-9]+/result-[0-9]+\.json' <<<"$prompt" | head -1)
 done_=$(grep -oE '\.orch-task/M[0-9]+/done-[0-9]+' <<<"$prompt" | head -1)
 tid=$(grep -oE 'M[0-9]+' <<<"$file" | head -1); base=$(basename "$file")
 sleep 1
-finish(){ [ -n "$report" ] && printf '%s\n' "$1" > "$report"; [ -n "$done_" ] && touch "$done_"; echo idle > "$FH/$agent.status"; }
+# finish "<report text>" [result json]: the report, the result file (derived from the report unless given), the done file
+finish(){
+  [ -n "$report" ] && printf '%s\n' "$1" > "$report"
+  if [ -n "$result" ] && [ ! -f "$FH/noresult" ]; then
+    if [ -n "${2:-}" ]; then printf '%s\n' "$2" > "$result"
+    else python3 - "$1" "$result" <<'PY'
+import json, sys
+text, out = sys.argv[1], sys.argv[2]
+q = [l.split(":", 1)[1].strip() for l in text.splitlines() if l.upper().startswith("QUESTION:")]
+c = [l.split(":", 1)[1].strip() for l in text.splitlines() if l.upper().startswith("COMMIT:")]
+json.dump({"status": "question" if q else "done", "commit": c[-1] if c else "", "files_changed": [],
+           "check": {"ran": True, "passed": True}, "criteria": [], "questions": q,
+           "usage": {"input_tokens": 1000, "output_tokens": 200}}, open(out, "w"))
+PY
+    fi
+  fi
+  [ -n "$done_" ] && touch "$done_"; echo idle > "$FH/$agent.status"; }
 if [[ $file == .orchestrate/review/* ]]; then           # reviewer
   [ -f "$FH/slow-review" ] && sleep 4
   k=$(grep -oE 'review-task-[0-9]+' <<<"$base" | grep -oE '[0-9]+')
-  out=.orchestrate/review/$tid/review-$k.md
-  if [ "$tid" = M2 ] && [ "$k" = 1 ]; then echo "BLOCKER: b.txt must say validated" > $out; echo "SUGGESTION: add docs" >> $out
-  else echo "NO FINDINGS" > $out; fi
+  out=.orchestrate/review/$tid/review-$k
+  if [ "$tid" = M2 ] && [ "$k" = 1 ]; then
+    if [ -f "$FH/review-md" ]; then echo "BLOCKER: b.txt must say validated" > $out.md; echo "SUGGESTION: add docs" >> $out.md
+    else echo '{"verdict":"changes","criteria":[],"findings":[{"severity":"blocker","file":"b.txt","line":1,"problem":"b.txt must say validated","why":"AC1"},{"severity":"suggestion","file":"b.txt","line":1,"problem":"add docs","why":"readers"}]}' > $out.json; fi
+  elif [ -f "$FH/review-md" ]; then echo "NO FINDINGS" > $out.md
+  else echo '{"verdict":"approve","criteria":[],"findings":[]}' > $out.json; fi
   touch .orchestrate/review/$tid/done-$k; echo idle > "$FH/$agent.status"; exit 0
 fi
 # scenario hook: rate limit once for this agent+task
@@ -38,5 +58,21 @@ COMMIT: feat(api): add the categories endpoint";;
               echo h > h.txt; finish "built h";;
   M10:task.md) echo boom > boom.txt; finish "built boom";;
   M8:task.md) echo blocked > "$FH/$agent.status"; sleep 6; echo f > f.txt; finish "done after approval";;
+  # dependency files: M11 changes the lockfile, M12 (after M11) must get a fresh setup, M13 sets a coder up early
+  M11:task.md) echo '{"lockfileVersion": 3}' > package-lock.json; finish "added a dependency
+COMMIT: build: add a dependency";;
+  M12:task.md) echo l > l.txt; finish "built l";;
+  M13:task.md) echo m > m.txt; finish "built m";;
+  # an invalid result file first, a valid one after the result-fix prompt
+  M14:task.md) echo n > n.txt; finish "built n" '{"status": "finished", "commit": 7}';;
+  M14:result-fix-*) finish "rewrote the result";;
+  # leaves its Likely files (scope check), then undoes it on the scope fix
+  M15:task.md) echo o > o.txt; echo stray > stray.txt; finish "built o";;
+  M15:scope-fix-*) rm -f stray.txt; finish "removed the stray file";;
+  # deletes a tracked file: held for approval
+  M16:task.md) git rm -q -f shared.txt; finish "removed shared.txt";;
+  # says one acceptance criterion is not met, then meets it
+  M17:task.md) echo p > p.txt; finish "built p" '{"status":"done","commit":"feat: p","criteria":[{"id":"AC1","met":false,"evidence":"no test yet"}]}';;
+  M17:criteria-fix-*) echo t > p.test; finish "added the test" '{"status":"done","commit":"feat: p","criteria":[{"id":"AC1","met":true,"evidence":"p.test"}]}';;
   *) finish "nothing to do for $tid:$base";;
 esac

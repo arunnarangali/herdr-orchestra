@@ -46,6 +46,7 @@ Depends on: none
 Prefer: codex
 Review: yes
 Likely files: shared.txt, b.txt
+Parallel: allow
 Open questions:
 - none
 
@@ -74,6 +75,7 @@ check "commit subject is the coder's COMMIT line" 'git log --format=%s | grep -q
 check "no milestone-named commits on the branch" '! git log --format=%s | grep -qE "^(orch|wip)[( ]"'
 check "the run made one branch, no milestone branches" '[ "$(git branch --format="%(refname:short)" | sort | tr "\n" " ")" = "feature/cat main " ]'
 check "parked M4 keeps its work in a hidden ref only" '! git branch -a | grep -q M4'
+check "a conflict fix on an approved milestone is reviewed again, with the resolution" '[ -s .orchestrate/review/M2/resolution.patch ] && grep -q "MERGE-CONFLICT RESOLUTION" .orchestrate/review/M2/review-task-3.md'
 
 echo "2. resume after the developer answers"
 python3 - "$APP/.orchestrate/plan.md" <<'PY'
@@ -121,6 +123,7 @@ timeout 120 "$ORCH" autopilot > "$WORK/bl.log" 2>&1; code=$?
 check "alerted about the permission prompt" 'grep -q PERMISSION "$WORK/bl.log"'
 check "blocked task still finished" '[ "$(status_of M8)" = merged ]'
 check "staller nudged then parked" 'grep -q "nudged once" "$WORK/bl.log" && [ "$(status_of M9)" = paused ]'
+check "the permission alert is remembered in state (no second alert after a restart)" '[ "$(grep -c PERMISSION "$WORK/bl.log")" -eq 1 ] && python3 -c "import json; assert json.load(open(\".orchestrate/state.json\"))[\"notified\"]"'
 
 echo "7. review pipelining: the coder takes another milestone while its work is in review"
 newrepo pl; touch "$FH/slow-review"
@@ -190,7 +193,7 @@ echo "8. any agent can lead: playbooks, Lead header, agent registry"
 out=$("$ORCH" lead plan)
 check "lead plan prints version line + playbook" 'grep -q "^herdr-orchestra .* lead playbook: plan" <<<"$out" && grep -q "You are the LEAD" <<<"$out"'
 out=$("$ORCH" lead run)
-check "lead run prints version line + playbook" 'grep -q "lead playbook: run" <<<"$out" && grep -q "Scheduler loop" <<<"$out"'
+check "lead run prints version line + playbook" 'grep -q "lead playbook: run" <<<"$out" && grep -q "exception handler" <<<"$out"'
 check "lead commands work outside a git repo" '(cd "$WORK" && "$ORCH" lead plan >/dev/null && "$ORCH" agents >/dev/null)'
 check "lead whoami names the pane" '"$ORCH" lead whoami | grep -q "herdr agent rename w1:p1 lead"'
 check "lead check passes on HERDR_ENV=1" 'HERDR_ENV=1 "$ORCH" lead check | grep -q "^OK inside a Herdr pane"'
@@ -288,13 +291,16 @@ check "herdr status is read from its JSON field (agent named working-1 is free)"
 
 newrepo ib; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
 printf '# Plan: t\nBranch: feature/ib\nCheck command: test "$(git rev-parse --abbrev-ref HEAD)" = HEAD || test ! -f boom.txt\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M10: Boom\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
-timeout 60 "$ORCH" autopilot > "$WORK/ib.log" 2>&1; code=$?
-check "integration check failure stops the run" '[ $code -eq 3 ] && grep -q "Integration branch check FAILED" "$WORK/ib.log"'
+timeout 90 "$ORCH" autopilot > "$WORK/ib.log" 2>&1; code=$?
+check "a milestone that fails the check once merged is never committed" '[ $code -eq 3 ] && [ "$(git rev-parse feature/ib)" = "$(git rev-parse main)" ] && [ -z "$(git status --porcelain)" ]'
+check "…it gets fix rounds, then fails with the reason" '[ "$(status_of M10)" = failed ] && grep -q "passes alone but fails the check on feature/ib" "$WORK/ib.log" && [ -f "$APP/../app-wt/claude-1/.orch-task/M10/integration-fix-1.md" ]'
+echo boom > boom.txt && git add boom.txt && git commit -qm "break the branch by hand"
+python3 -c "import json; p='.orchestrate/state.json'; s=json.load(open(p)); s['integration_broken']='a manual commit'; json.dump(s, open(p,'w'))"
 timeout 60 "$ORCH" autopilot > "$WORK/ib2.log" 2>&1; code=$?
-check "next run re-checks and stops while still broken" '[ $code -eq 3 ] && grep -q "still fails its check" "$WORK/ib2.log"'
+check "a branch broken by hand: the next run re-checks and stops" '[ $code -eq 3 ] && grep -q "still fails its check" "$WORK/ib2.log"'
 git rm -q boom.txt && git commit -qm "fix: remove boom"
 timeout 60 "$ORCH" autopilot > "$WORK/ib3.log" 2>&1; code=$?
-check "after the fix it carries on" '[ $code -eq 0 ] && grep -q "passes its check again" "$WORK/ib3.log"'
+check "after the fix it carries on" 'grep -q "passes its check again" "$WORK/ib3.log"'
 
 echo "13. git flow: feature branch, plan header rules, legacy runs"
 newrepo sg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; echo "$APP/../app-wt/codex-1" > "$FH/codex-1.dir"
@@ -320,6 +326,189 @@ newrepo ob; git switch -qc feature/ob
 printf '# Plan: t\nBranch: feature/ob\nCheck command: true\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 "$ORCH" sync >/dev/null; "$ORCH" start >/dev/null 2>&1
 check "starting on the branch itself still records the real base" '"$ORCH" status | grep -q "base=main "'
+
+echo "14. one driver per run"
+P1='# Plan: t\nBranch: feature/x\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n'
+newrepo ls; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; touch "$FH/slow-review"
+printf '# Plan: t\nBranch: feature/ls\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: reviewer (agy)\n\n## [x] M5: E\nDepends on: none\nReview: yes\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 120 "$ORCH" autopilot > "$WORK/ls.log" 2>&1 & first=$!
+for _ in $(seq 100); do "$ORCH" status 2>/dev/null | grep -q "^driven by" && break; sleep 0.2; done
+out=$(timeout 30 "$ORCH" autopilot 2>&1); code=$?
+check "a second autopilot is refused" '[ $code -eq 2 ] && grep -q "already driven by orch autopilot (pid" <<<"$out"'
+out=$("$ORCH" set M5 paused 2>&1); code=$?
+check "changing the run by hand is refused while autopilot drives" '[ $code -eq 2 ] && grep -q "driven by" <<<"$out"'
+check "status still works and shows the driver" '"$ORCH" status | grep -q "^driven by orch autopilot (pid"'
+wait $first; code=$?
+check "the first autopilot was not disturbed" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && ! grep -q "orch error" "$WORK/ls.log"'
+check "the lease is free again afterwards" '! "$ORCH" status | grep -q "^driven by" && "$ORCH" set M5 merged --force >/dev/null'
+
+newrepo lk; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+{ printf '%b' "$P1"; printf '## [x] M8: Slow\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+"$ORCH" autopilot > "$WORK/lk.log" 2>&1 & first=$!
+for _ in $(seq 100); do grep -q "M8 -> claude-1" "$WORK/lk.log" 2>/dev/null && break; sleep 0.2; done
+kill -9 $first; wait $first 2>/dev/null
+timeout 120 "$ORCH" autopilot > "$WORK/lk2.log" 2>&1; code=$?
+check "a killed autopilot leaves no stale lease; the next one finishes the run" '[ $code -eq 0 ] && [ "$(status_of M8)" = merged ]'
+check "the restart did not hand the milestone to a coder twice" '[ "$(grep -c "M8/task.md" "$FH/prompts.log")" -eq 1 ]'
+
+echo "15. crash safety: a crash at any step is recovered on the next run"
+crash_then_resume() {   # crash_then_resume <fault point> <name>: sets ccode (crashed run) and code (resumed run)
+  newrepo "$2"; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+  { printf '%b' "$P1"; printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+  ORCH_FAULT=$1 timeout 60 "$ORCH" autopilot > "$WORK/$2-crash.log" 2>&1; ccode=$?
+  sleep 2
+  ORCH_CONFIRM_S=2 timeout 90 "$ORCH" autopilot > "$WORK/$2.log" 2>&1; code=$?
+}
+landed_once() { [ "$(git log --format=%B | grep -c "^Milestone: M6$")" -eq 1 ] && [ -z "$(git status --porcelain)" ] && [ -z "$(git for-each-ref refs/orch)" ]; }
+crash_then_resume after-deliver cd1
+check "crash right after a prompt went out: the run was really killed" '[ $ccode -ne 0 ] && [ $ccode -ne 3 ] && ! grep -q "orch error" "$WORK/cd1-crash.log"'
+check "…the same coder's work is used, nobody else is prompted" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ] && [ "$(grep -c "M6/task.md" "$FH/prompts.log")" -eq 1 ] && ! grep -q ORPHAN "$WORK/cd1.log"'
+crash_then_resume after-squash cs1
+check "crash between squash and check: undone, merged again, one commit" '[ $ccode -ne 0 ] && [ $code -eq 0 ] && landed_once && grep -q "RECOVERED M6: undid the half-done merge" "$WORK/cs1.log"'
+crash_then_resume after-check cc1
+check "crash between check and commit: one commit" '[ $ccode -ne 0 ] && [ $code -eq 0 ] && landed_once'
+crash_then_resume after-merge-commit cm1
+check "crash right after the commit: not merged twice" '[ $ccode -ne 0 ] && [ $code -eq 0 ] && landed_once && grep -q "RECOVERED M6: its commit had landed" "$WORK/cm1.log"'
+
+newrepo uc; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+{ printf '%b' "$P1"; printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null && "$ORCH" prepare M6 claude-1 >/dev/null && "$ORCH" write-task M6 >/dev/null
+ORCH_FAULT=after-deliver "$ORCH" send M6 task.md >/dev/null 2>&1; code=$?
+sleep 3; rm -f "$APP/../app-wt/claude-1/.orch-task/M6/"{done-1,result-1.json,report-1.md}   # as if the prompt was lost
+out=$(ORCH_CONFIRM_S=0 "$ORCH" poll 2 2>&1)
+check "a recorded prompt that herdr can't confirm is reported, not treated as an orphan" '[ $code -eq 99 ] && grep -q "^UNCONFIRMED M6 agent=claude-1" <<<"$out" && ! grep -q ORPHAN <<<"$out"'
+out=$("$ORCH" resend M6 2>&1); sleep 3; out2=$("$ORCH" poll 5 2>&1)
+check "orch resend sends it again to the same agent, same attempt" 'grep -q "^RESENT M6 -> claude-1" <<<"$out" && [ "$(grep -c "^claude-1 <- .*M6/task.md.*done-1" "$FH/prompts.log")" -eq 2 ] && grep -q "^DONE M6" <<<"$out2"'
+
+echo "16. retries are bounded"
+newrepo df; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; touch "$FH/claude-1.deaf"
+{ printf '%b' "$P1"; printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+ORCH_MAX_LOST=3 ORCH_SEND_RETRY_S=1 timeout 120 "$ORCH" autopilot > "$WORK/df.log" 2>&1; code=$?
+check "an agent that never takes a prompt: the task fails after ORCH_MAX_LOST, no endless loop" '[ $code -eq 3 ] && [ "$(status_of M6)" = failed ] && grep -q "lost 3 attempts" "$WORK/df.log"'
+check "…and the agent is benched after 3 failed prompts in a row" 'grep -q "BENCHED claude-1" "$WORK/df.log"'
+
+echo "17. dependencies are installed again when lockfiles change"
+newrepo dp; echo ".installed" >> .git/info/exclude
+printf '# Plan: t\nBranch: feature/dp\nCheck command: test "$(git ls-files -s package-lock.json)" = "$(cat .installed 2>/dev/null)"\nSetup command: git ls-files -s package-lock.json > .installed\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M11: Deps\nDepends on: none\nPrefer: claude\nLikely files: package-lock.json\nOpen questions:\n- none\n\n## [x] M13: Other\nDepends on: none\nPrefer: codex\nOpen questions:\n- none\n\n## [x] M12: Uses the dep\nDepends on: M11 (needs the package)\nPrefer: codex\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 120 "$ORCH" autopilot > "$WORK/dp.log" 2>&1; code=$?
+fix_of(){ python3 -c "import json;print(json.load(open('$APP/.orchestrate/state.json'))['tasks']['$1']['fix'])"; }
+check "all three landed" '[ $code -eq 0 ] && [ "$(status_of M11)$(status_of M12)$(status_of M13)" = mergedmergedmerged ]'
+check "the worktree set up before the lockfile changed was set up again" 'grep -q "installing dependencies in .*(dependency files changed)" "$WORK/dp.log"'
+check "…so the dependent milestone needed no fix round" '[ "$(fix_of M12)" = 0 ] && [ "$(fix_of M11)" = 0 ]'
+
+echo "18. contracts: task.json, result.json, scope, overlap, risk hold"
+newrepo rj; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+{ printf '%b' "$P1"; printf '## [x] M14: N\nDepends on: none\nOpen questions:\n- none\n\n## [x] M17: P\nDepends on: M14 (order)\nAcceptance criteria:\n- p has a test\n- p is documented\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+timeout 120 "$ORCH" autopilot > "$WORK/rj.log" 2>&1; code=$?
+check "an invalid result file gets one request to rewrite it, then lands" '[ $code -eq 0 ] && [ "$(status_of M14)" = merged ] && [ "$(grep -c "result file not usable" "$WORK/rj.log")" -eq 1 ]'
+check "a criterion the coder reports as not met goes back for a fix" 'grep -q "M17: the coder reports AC1 not met" "$WORK/rj.log" && [ "$(status_of M17)" = merged ] && [ -f p.test ]'
+check "task.json carries numbered acceptance criteria and the dependency's commit" 'python3 -c "
+import json; c=json.load(open(\"$APP/../app-wt/claude-1/.orch-task/M17/task.json\"))
+assert [a[\"id\"] for a in c[\"acceptance_criteria\"]] == [\"AC1\", \"AC2\"], c
+assert c[\"depends_on\"][0][\"task\"] == \"M14\" and len(c[\"depends_on\"][0][\"commit\"]) == 40, c
+assert \"status\" in c[\"result_format\"]"'
+check "the commit subject comes from result.json" 'git log --format=%s | grep -qx "feat: p"'
+
+newrepo nr; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; touch "$FH/noresult"
+{ printf '%b' "$P1"; printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+timeout 60 "$ORCH" autopilot > "$WORK/nr.log" 2>&1; code=$?
+check "a coder that writes only the report still lands (fallback)" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ]'
+
+newrepo sc; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+printf '# Plan: t\nBranch: feature/sc\nScope: strict\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M15: O\nDepends on: none\nLikely files: o.txt\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 60 "$ORCH" autopilot > "$WORK/sc.log" 2>&1; code=$?
+check "Scope: strict sends back a change outside Likely files" '[ $code -eq 0 ] && grep -q "outside its Likely files: stray.txt -> fix round" "$WORK/sc.log" && [ -f o.txt ] && [ ! -f stray.txt ]'
+newrepo sw; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+{ printf '%b' "$P1"; printf '## [x] M15: O\nDepends on: none\nLikely files: o.txt\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+timeout 60 "$ORCH" autopilot > "$WORK/sw.log" 2>&1; code=$?
+check "the default (warn) lands it and lists it in the summary" '[ $code -eq 0 ] && [ -f stray.txt ] && grep -q "M15: stray.txt" .orchestrate/summary.md'
+
+newrepo ov
+printf '# Plan: t\nBranch: feature/ov\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M5: E\nDepends on: none\nLikely files: same.txt, e.txt\nOpen questions:\n- none\n\n## [x] M6: G\nDepends on: none\nLikely files: same.txt, g.txt\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync > "$WORK/ov-sync.log" 2>&1; "$ORCH" start >/dev/null 2>&1; out=$("$ORCH" ready)
+check "milestones that share Likely files are not started together" 'grep -q "^READY M5" <<<"$out" && grep -q "^WAIT M6 shares files with M5" <<<"$out" && ! grep -q "^READY M6" <<<"$out"'
+timeout 90 "$ORCH" autopilot > "$WORK/ov.log" 2>&1; code=$?
+check "…they run one after the other and both land" '[ $code -eq 0 ] && [ "$(status_of M5)$(status_of M6)" = mergedmerged ] && ! grep -q "merge conflict" "$WORK/ov.log"'
+
+newrepo rk; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+{ printf '%b' "$P1"; printf '## [x] M16: Remove a file\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+timeout 90 "$ORCH" autopilot > "$WORK/rk.log" 2>&1; code=$?
+check "a milestone that deletes a file is held, the rest lands" '[ $code -eq 3 ] && [ "$(status_of M16)" = held ] && [ "$(status_of M6)" = merged ] && grep -q "M16 is HELD for your approval: deletes shared.txt" "$WORK/rk.log" && [ -f shared.txt ]'
+out=$("$ORCH" approve M16 2>&1)
+timeout 60 "$ORCH" autopilot > "$WORK/rk2.log" 2>&1; code=$?
+check "orch approve lets it land" 'grep -q "^APPROVED M16" <<<"$out" && [ $code -eq 0 ] && [ "$(status_of M16)" = merged ] && [ ! -f shared.txt ]'
+
+newrepo rs; echo "$APP" > "$FH/claude-1.dir"
+printf '# Plan: t\nBranch: feature/rs\nCheck command: true\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M16: Remove a file\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 60 "$ORCH" autopilot > "$WORK/rs.log" 2>&1; code=$?
+"$ORCH" approve M16 >/dev/null 2>&1; timeout 60 "$ORCH" autopilot > "$WORK/rs2.log" 2>&1; code2=$?
+check "shared mode: held, then lands after approve" '[ $code -eq 3 ] && grep -q "M16 is HELD" "$WORK/rs.log" && [ $code2 -eq 0 ] && [ "$(status_of M16)" = merged ] && git show --stat HEAD | grep -q shared.txt'
+
+echo "19. state: transitions, migration, events, report, budget"
+out=$("$ORCH" set M16 coding 2>&1); code=$?
+check "orch set refuses statuses that skip the real steps" '[ $code -eq 2 ] && grep -q "add --force" <<<"$out"'
+out=$("$ORCH" set M16 pending 2>&1); code=$?
+check "merged is final: no transition out of it" '[ $code -eq 2 ] && grep -q "merged -> pending is not an allowed transition" <<<"$out"'
+check "no status is assigned outside move()" '[ "$(grep -cE "\[\"status\"\]\s*=[^=]|status=\"" "$ROOT/bin/orch")" -eq 1 ]'
+check "every status has a transition entry" 'python3 -c "
+import importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader(\"orch\", \"$ROOT/bin/orch\"); m = importlib.util.module_from_spec(importlib.util.spec_from_loader(\"orch\", l)); l.exec_module(m)
+assert set(m.TRANSITIONS) == m.STATUSES, set(m.TRANSITIONS) ^ m.STATUSES
+assert all(v <= m.STATUSES for v in m.TRANSITIONS.values())"'
+check "events.jsonl replays to the final state" 'python3 -c "
+import json
+st = json.load(open(\".orchestrate/state.json\")); last = {}
+for l in open(\".orchestrate/events.jsonl\"): e = json.loads(l); last[e[\"task\"]] = e[\"to\"]
+assert all(last.get(k, \"pending\") == v[\"status\"] for k, v in st[\"tasks\"].items()), (last, st[\"tasks\"])"'
+python3 - <<'PY'
+import json; p = ".orchestrate/state.json"; st = json.load(open(p))
+for k in ("schema", "notified", "merging", "run", "root_setup_hash"): st.pop(k, None)
+for t in st["tasks"].values():
+    for k in ("history", "lost", "attempts"): t.pop(k, None)
+json.dump(st, open(p, "w"))
+PY
+out=$("$ORCH" status 2>&1); code=$?; "$ORCH" sync >/dev/null 2>&1
+check "a state file from 4.5 (no schema) loads and is migrated" '[ $code -eq 0 ] && grep -q "M16 .*merged" <<<"$out" && python3 -c "
+import json; st = json.load(open(\".orchestrate/state.json\")); assert st[\"schema\"] == 1 and st[\"notified\"] == [] and st[\"tasks\"][\"M16\"][\"lost\"] == 0"'
+cd "$WORK/rj/app" && FH="$WORK/rj/fh"; APP="$WORK/rj/app"
+out=$("$ORCH" report 2>&1); code=$?
+check "orch report: per-task rows, first-pass rate, usage the agents reported" '[ $code -eq 0 ] && grep -qE "^M14 +merged" <<<"$out" && grep -q "first pass 0/2" <<<"$out" && grep -q "input tokens" <<<"$out"'
+check "orch report --json is machine-readable" '"$ORCH" report --json | python3 -c "import json,sys; r=json.load(sys.stdin); assert r[\"totals\"][\"merged\"] == 2 and r[\"totals\"][\"fix_rounds\"] >= 1"'
+check "the summary includes the run report" 'grep -q "## Run report" .orchestrate/summary.md && grep -q "first pass" .orchestrate/summary.md'
+
+newrepo bg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+printf '# Plan: t\nBranch: feature/bg\nBudget: 0.01m\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M8: Slow\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 60 "$ORCH" autopilot > "$WORK/bg.log" 2>&1; code=$?
+check "Budget: stops the run cleanly when it is used up" '[ $code -eq 3 ] && grep -q "budget .* is used up" "$WORK/bg.log" && [ "$(status_of M8)" != failed ]'
+printf '# Plan: t\nBranch: feature/bg\nBudget: soon\nCheck command: true\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M8: Slow\nDepends on: none\nOpen questions:\n- none\n' > "$WORK/badplan.md"
+newrepo bb; cp "$WORK/badplan.md" .orchestrate/plan.md; out=$("$ORCH" sync 2>&1); code=$?
+check "a Budget orch can't read is an error" '[ $code -eq 2 ] && grep -q "Budget must look like" <<<"$out"'
+
+echo "20. orch doctor and real-output fixtures"
+DOC="$WORK/docbin"; mkdir -p "$DOC"
+printf '#!/bin/sh\ncase "$1" in --version) echo "goodagent 1.2.3";; --help) echo "  --yolo   approve everything";; esac\n' > "$DOC/goodagent"
+printf '#!/bin/sh\ncase "$1" in --version) echo "oldagent 0.1";; --help) echo "  --careful   ask first";; esac\n' > "$DOC/oldagent"
+chmod +x "$DOC/goodagent" "$DOC/oldagent"
+printf '[goodagent]\nbinary = "goodagent"\nlaunch = "goodagent --yolo"\nherdr_detect = false\nroles = ["coder"]\n\n[oldagent]\nbinary = "oldagent"\nlaunch = "oldagent --yolo"\nherdr_detect = false\nroles = ["coder"]\n' > "$ORCH_AGENTS_FILE"
+out=$(PATH="$DOC:$PATH" "$ORCH" doctor goodagent 2>&1); code=$?
+check "doctor passes an agent whose launch flag is in --help" '[ $code -eq 0 ] && grep -q "^ok .*goodagent" <<<"$out" && grep -q "version: goodagent 1.2.3" <<<"$out"'
+out=$(PATH="$DOC:$PATH" "$ORCH" doctor oldagent 2>&1); code=$?
+check "doctor reports a launch flag the tool no longer has" '[ $code -eq 1 ] && grep -q "^BROKEN .*oldagent" <<<"$out" && grep -q "launch flag --yolo is NOT in" <<<"$out"'
+out=$("$ORCH" doctor mystery-nope 2>&1); code=$?
+check "doctor: unknown kind is reported, not a traceback" '[ $code -eq 1 ] && ! grep -q Traceback <<<"$out"'
+rm -f "$ORCH_AGENTS_FILE"
+check "pane fixtures: rate-limit samples match, others don't" 'python3 - "$ROOT" <<PY
+import importlib.machinery, importlib.util, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+l = importlib.machinery.SourceFileLoader("orch", str(root / "bin/orch")); m = importlib.util.module_from_spec(importlib.util.spec_from_loader("orch", l)); l.exec_module(m)
+files = sorted((root / "tests/fixtures/panes").glob("*.txt"))
+assert files, "no fixtures"
+for f in files:
+    hit = bool(m.RATE_RE.search(f.read_text()))
+    assert hit == ("ratelimit" in f.name), (f.name, hit)
+PY'
+out=$("$ORCH" lead run)
+check "the run playbook no longer has the lead drive the scheduler" '! grep -qE "orch (poll|send|prepare|merge)\b" <<<"$out" && grep -q "orch autopilot" <<<"$out"'
 
 echo "11. installer puts the thin skills in every installed agent's folders"
 FAKEBIN="$WORK/fakebin"; IH="$WORK/home"; mkdir -p "$FAKEBIN" "$IH"

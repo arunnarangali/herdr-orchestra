@@ -20,7 +20,10 @@ Run `orch` with no arguments for the full help.
 | `orch agents check` | Confirm the skills are installed |
 | `orch handoff Mn` | Commit a milestone and free its coder (worktree mode) |
 | `orch needs-fix Mn` | Queue review findings as a fix job |
-| `orch set Mn pending` | Put a milestone back in the queue |
+| `orch set Mn pending` | Put a milestone back in the queue (`set` accepts pending, paused, failed, skipped) |
+| `orch approve Mn` | Let a milestone held for risky changes land |
+| `orch report [--json]` | Time, rounds, first-pass rate and wasted work for the run |
+| `orch doctor [kind]` | Check installed agents against the real tool |
 | `orch park Mn paused "why"` | Free the worker and keep the work |
 | `orch cooldown claude-1 60` | Bench an agent for 60 minutes |
 | `orch cleanup` | Remove finished worktrees |

@@ -53,7 +53,7 @@ Then edit `.orchestrate/plan.md`: dependencies, preferred coder, review yes or n
 orch autopilot
 ```
 
-Run it in a spare terminal. Or ask the lead to drive with `/orch-run`.
+Run it in a spare terminal. When it stops for you, `/orch-run` asks the lead to help with what it stopped on.
 
 ## 4. When it stops
 

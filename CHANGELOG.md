@@ -2,6 +2,36 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [Unreleased]
+
+Answers the architecture review: one driver, checked state transitions, nothing red committed, bounded retries, structured contracts, and a record of what each run did. Plan format and existing commands keep working; in-flight 4.5 runs are migrated on load.
+
+### Changed
+- **Autopilot is the only driver of a run.** While `orch autopilot` runs it holds a lease (`.orchestrate/driver.lock`): a second autopilot is refused, and so is any `orch` command that would change the run from another process (`status`, `ready`, `pick`, `report` and `approve` still work). The kernel frees the lease if autopilot dies. The AI-driven scheduler loop is gone from `orch lead run`: the lead now handles what autopilot stopped on (questions, failed or held milestones, a red baseline) and finishes the summary. Recovery rules live in one place, the code.
+- **The check runs before the commit.** `orch merge` squashes the milestone, runs the check on the merged result and commits only if it passes. A milestone that passes alone but fails once merged commits nothing, and goes back to a coder as an `integration-fix` round (exit 6, counted against the 3 fix rounds). Before this, the commit landed first and the run stopped on a red branch.
+- **Every status change goes through one function** with a transition table and a per-task history. `orch set` only accepts `pending`, `paused`, `failed` and `skipped`; anything else needs `--force` and is logged. `merged` is final.
+- A conflict fix on a milestone the reviewer had already approved is reviewed again; the reviewer gets `resolution.patch` (what changed to resolve it).
+- Milestones that share a `Likely files` entry run one after the other instead of only producing a warning. `Parallel: allow` on a milestone opts out.
+- A red baseline stops autopilot with the failing lines; it no longer leaves a `baseline.txt` behind that made the next run skip the check.
+- `orch poll` returns after 5 s when no agent is working, so a short bench doesn't cost a full wait.
+
+### Added
+- **Crash safety.** A prompt is recorded before it is sent; after a crash it is confirmed with herdr or re-sent to the same agent (`orch resend`, `UNCONFIRMED` event) and never handed to a second coder. A merge is journaled: the next run finishes it if the commit had landed, or undoes the staged squash and merges again from the saved work.
+- **Bounded retries.** Attempts lost to an unreachable, vanished or rate-limited agent are counted (`orch park --lost`); at `ORCH_MAX_LOST` (4) the task fails with the reason. Three failed prompts in a row bench an agent for `ORCH_UNREACHABLE_MIN` (30).
+- **Fresh dependencies.** A worktree's setup command runs again when its lockfiles or manifests changed since its last setup (or the files in `Setup inputs:`), and the main folder gets the same before the merge check.
+- **Contracts as data** (`docs/contracts.md`): `task.json` per milestone, generated from `plan.md` (numbered acceptance criteria, allowed files, interfaces, the commits of its dependencies); `result-N.json` from coders (status, commit, the check, each criterion met or not, optional usage); `review-N.json` from the reviewer (a verdict per criterion, findings). An invalid result gets one request to rewrite it; an unmet criterion is a fix round or a blocker. The `COMMIT:` / `QUESTION:` / `BLOCKER:` line formats still work when the JSON file is missing.
+- **Scope check.** The coder's real diff is compared with `Likely files`: `Scope: warn` (default) lists strays in the summary, `Scope: strict` sends them back.
+- **Risk hold.** A milestone that deletes files, touches migrations, CI configuration or secrets files, changes dependency files it didn't list, or exceeds `ORCH_RISK_MAX_LINES` (1500) is `held` before it lands until `orch approve Mn`. `Risk hold: off` disables it.
+- **Observability.** `.orchestrate/events.jsonl` (one line per transition), per-attempt timing and check timing in state, `orch report [--json]` (time, rounds, first-pass rate, wasted work; tokens and cost only when agents report them), and the report in `summary.md`. `Budget: 3h` in the plan header stops autopilot when its running time is used up.
+- **`orch doctor [kind]`**: checks an installed agent against the real tool (version, whether each launch flag is still in its `--help`, skills, herdr detection). `orch start` warns about a launch flag that is gone. Optional registry keys `version_cmd` and `help_cmd`.
+- `tests/live/`: an opt-in smoke run with real agents, and `tests/fixtures/panes/` for captured pane text. The fixtures shipped are synthetic and labelled so; no live run has been recorded yet.
+- `state.json` carries `schema: 1` and is migrated on load. `ORCH_FAULT` is a test hook that kills orch at a named step.
+
+### Upgrade notes
+- A run that an AI lead was driving by hand should be finished with `orch autopilot`.
+- Every worktree runs its setup command once more after the upgrade (no setup fingerprint was stored before).
+- `orch sync` warns about a milestone without acceptance criteria. It is a warning, not an error, so existing plans keep running.
+
 ## [4.5.0] - 2026-11-10
 
 ### Changed

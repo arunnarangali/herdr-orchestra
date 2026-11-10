@@ -8,11 +8,12 @@ lead model never has to track it in its head.
 State:   <main-repo>/.orchestrate/state.json
 Plan:    <main-repo>/.orchestrate/plan.md   (human-editable, see orch-plan skill)
 
-Task status flow
+Task status flow (every change goes through move(), which checks TRANSITIONS)
   pending -> coding -> verifying -> [awaiting-review -> reviewing -> reviewed] -> committed -> merged
-  side states: needs-answer, paused, failed, conflict, skipped
+  side states: needs-answer, paused, failed, conflict, needs-fix, held (waiting for `orch approve`), skipped
+Also: .orchestrate/events.jsonl (one line per transition), driver.lock (held by autopilot while it drives).
 """
-import contextlib, fcntl, hashlib, json, os, re, shutil, signal, socket, subprocess, sys, time
+import contextlib, fcntl, fnmatch, hashlib, json, os, re, shlex, shutil, signal, socket, subprocess, sys, time
 from pathlib import Path
 
 HERDR = os.environ.get("HERDR", "herdr")
@@ -23,6 +24,10 @@ POLL_STEP_S = float(os.environ.get("ORCH_POLL_STEP_S", "10"))
 HERDR_TIMEOUT_S = int(os.environ.get("ORCH_HERDR_TIMEOUT_S", "30"))
 SEND_RETRY_S = int(os.environ.get("ORCH_SEND_RETRY_S", "120"))      # bench an agent we could not prompt
 GONE_COOLDOWN_MIN = int(os.environ.get("ORCH_GONE_COOLDOWN_MIN", "10"))  # ends early once herdr sees it again
+CONFIRM_S = int(os.environ.get("ORCH_CONFIRM_S", "30"))           # a prompt not confirmed by then is re-sent
+MAX_LOST = int(os.environ.get("ORCH_MAX_LOST", "4"))               # lost attempts (unreachable, gone, rate limit)
+UNREACHABLE_AFTER = int(os.environ.get("ORCH_UNREACHABLE_AFTER", "3"))   # failed prompts in a row before a long bench
+UNREACHABLE_MIN = int(os.environ.get("ORCH_UNREACHABLE_MIN", "30"))
 MAX_FIX = 3
 MAX_REVIEW = 2
 MAX_CONFLICT = 2
@@ -34,6 +39,21 @@ HOTSPOT_RE = re.compile(
     r"go\.(mod|sum)|pom\.xml|build\.gradle(\.kts)?|settings\.gradle|Cargo\.(toml|lock)|requirements\.txt|"
     r"pyproject\.toml|poetry\.lock|uv\.lock|docker-compose\.ya?ml|compose\.ya?ml|Makefile|\.env\.example|"
     r"App\.(tsx|jsx|vue|svelte)|main\.(ts|tsx|js|dart|go)|routes?\.\w+|router\.\w+)$", re.I)          # inside each work dir, git-excluded
+# dependency manifests + lockfiles: when they change, a folder's setup command has to run again
+LOCKFILE_RE = re.compile(
+    r"(^|/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|"
+    r"pubspec\.(yaml|lock)|go\.(mod|sum)|pom\.xml|build\.gradle(\.kts)?|Cargo\.(toml|lock)|requirements[\w.-]*\.txt|"
+    r"pyproject\.toml|poetry\.lock|uv\.lock|Pipfile(\.lock)?|Gemfile(\.lock)?|composer\.(json|lock))$", re.I)
+# changes that wait for `orch approve` before they land (plan header `Risk hold: off` turns this off)
+RISK_RULES = [
+    (re.compile(r"(^|/)(migrations?|migrate|alembic)/", re.I), "database migration"),
+    (re.compile(r"^\.github/|(^|/)\.gitlab-ci\.ya?ml$|(^|/)Jenkinsfile$|^\.circleci/|(^|/)azure-pipelines\.ya?ml$"),
+     "CI configuration"),
+    (re.compile(r"(^|/)\.env(\.(?!example$|sample$|template$)[^/]+)?$|(^|/)[^/]*\.(pem|key|p12)$", re.I),
+     "secrets or environment file"),
+]
+RISK_MAX_LINES = int(os.environ.get("ORCH_RISK_MAX_LINES", "1500"))
+CHECK_TIMEOUT_S = int(os.environ.get("ORCH_CHECK_TIMEOUT_MIN", "30")) * 60
 ACTIVE = {"coding", "verifying", "awaiting-review", "reviewing", "reviewed", "committed", "conflict", "needs-fix",
           "held"}
 TERMINAL_OK = {"merged"}
@@ -119,6 +139,65 @@ def state_lock():
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
+LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot"}   # usable while autopilot drives
+_LEASE = None
+
+
+def driver_info():
+    try:
+        return json.loads((ORCH / "driver.lock").read_text() or "{}")
+    except (OSError, ValueError):
+        return {}
+
+
+def driver_alive():
+    """True while an `orch autopilot` holds the run's driver lease (the kernel drops it if autopilot dies)."""
+    p = ORCH / "driver.lock"
+    if not p.exists():
+        return False
+    with open(p, "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return False
+
+
+def driver_line(info):
+    started = time.strftime("%H:%M:%S", time.localtime(info.get("started", 0)))
+    return f"orch autopilot (pid {info.get('pid', '?')} on {info.get('host', '?')}, started {started})"
+
+
+def require_driver():
+    """Refuse to change a run another process is driving, unless we are that driver's own subcommand."""
+    if not driver_alive():
+        return
+    info = driver_info()
+    if os.environ.get("ORCH_DRIVER") and os.environ.get("ORCH_DRIVER") == info.get("token"):
+        return
+    die(f"this run is driven by {driver_line(info)} — wait for it to stop (or stop it) before changing the run "
+        f"by hand; `orch status` and `orch approve` still work")
+
+
+def take_lease():
+    """Autopilot: hold .orchestrate/driver.lock for the whole run. A second driver fails here."""
+    global _LEASE
+    f = open(ORCH / "driver.lock", "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        die(f"this run is already driven by {driver_line(driver_info())}")
+    token = os.urandom(8).hex()
+    f.seek(0)
+    f.truncate()
+    f.write(json.dumps({"pid": os.getpid(), "host": socket.gethostname(), "started": now(), "token": token}))
+    f.flush()
+    os.environ["ORCH_DRIVER"], os.environ["ORCH_DRIVER_PID"] = token, str(os.getpid())
+    _LEASE = f
+
+
 def task(st, tid):
     if tid not in st["tasks"]:
         die(f"unknown task {tid!r} — known: {', '.join(st['order']) or 'none'}")
@@ -162,10 +241,10 @@ TRANSITIONS = {
     "needs-answer": {"pending", "skipped"},
     "skipped": {"pending"},
     "coding": {"verifying", "needs-fix", "conflict"} | _PARK,
-    "verifying": {"coding", "awaiting-review", "reviewing", "committed", "merged", "needs-fix"} | _PARK,
+    "verifying": {"coding", "awaiting-review", "reviewing", "committed", "merged", "needs-fix", "held"} | _PARK,
     "awaiting-review": {"reviewing"} | _PARK,
     "reviewing": {"reviewed", "awaiting-review"} | _PARK,
-    "reviewed": {"needs-fix", "committed", "merged"} | _PARK,
+    "reviewed": {"needs-fix", "committed", "merged", "held"} | _PARK,
     "needs-fix": {"coding"} | _PARK,
     "committed": {"merged", "conflict", "needs-fix", "held"} | _PARK,
     "held": {"committed"} | _PARK,
@@ -438,6 +517,17 @@ def cmd_sync(args):
         max_par = 2
     if isolation == "shared":
         max_par = 1
+    scope = get("scope", "warn").split()[0].lower()
+    if scope not in ("warn", "strict"):
+        errors.append(f"Scope must be warn or strict, got {scope!r}")
+    risk_hold = not get("risk hold", "on").lower().startswith("off")
+    budget_s = None
+    if get("budget"):
+        bm = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(h|m|min|hours?|minutes?)?\s*", get("budget"), re.I)
+        if not bm:
+            errors.append(f"Budget must look like `3h` or `90m`, got {get('budget')!r}")
+        else:
+            budget_s = max(1, int(float(bm.group(1)) * (60 if (bm.group(2) or "h").lower().startswith("m") else 3600)))
     workers = parse_agents(get("workers"))
     if not workers:
         errors.append("plan header needs `Workers: claude-1 (claude), codex-1 (codex)`")
@@ -520,9 +610,12 @@ def cmd_sync(args):
                 continue
             any_parallel = True
             common = files[a] & files[b]
+            par = any(field(by_id[x], "parallel", "").lower().startswith("allow") for x in (a, b))
             if common and isolation == "worktree":
-                warns.append(f"{a} and {b} may run in parallel but both touch {sorted(common)} — "
-                             f"add `Depends on` or accept a likely merge conflict")
+                warns.append(f"{a} and {b} both touch {sorted(common)}: " +
+                             ("`Parallel: allow` runs them together — expect a merge conflict" if par else
+                              "orch runs them one after the other (add `Depends on` to fix the order, or "
+                              "`Parallel: allow` to run them together)"))
             if isolation == "shared":
                 parallel_pairs.append((a, b))
             for x in (a, b):
@@ -558,6 +651,11 @@ def cmd_sync(args):
             warns.append(f"{tid} reads like step-by-step implementation — state the goal and acceptance "
                          f"criteria; the coder decides how")
 
+    for tid in enabled:
+        crit = [v.lstrip("- ").strip() for v in by_id[tid]["fields"].get("acceptance criteria", [])]
+        if not [c for c in crit if c and c.lower() != "none"]:
+            warns.append(f"{tid} has no Acceptance criteria — the coder's result and the review check each one")
+
     max_tasks = int(os.environ.get("ORCH_MAX_TASKS", "4"))
     if len(enabled) > max_tasks:
         warns.append(f"{len(enabled)} enabled milestones (> {max_tasks}). Prefer merging coupled milestones or "
@@ -592,6 +690,10 @@ def cmd_sync(args):
         "run": old.get("run", {}),
         "isolation": isolation,
         "max_parallel": max_par,
+        "setup_inputs": [p.strip("`") for p in re.split(r"[,\s]+", get("setup inputs")) if p.strip("`")],
+        "scope": scope,
+        "risk_hold": risk_hold,
+        "budget_s": budget_s,
         "check": get("check command"),
         "setup": get("setup command", "none"),
         "reviewer": reviewer,
@@ -635,6 +737,8 @@ def cmd_sync(args):
             "worker": o.get("worker"), "dir": o.get("dir"), "attempt": o.get("attempt", 0),
             "fix": o.get("fix", 0), "review_round": o.get("review_round", 0),
             "wait": o.get("wait"),
+            "files": sorted(files[tid]),
+            "parallel": field(t, "parallel", "").lower().startswith("allow"),
         }
         if status != st["tasks"][tid]["status"]:
             move(st, tid, status, {"skipped": "unticked in plan.md", "needs-answer": "open questions in plan.md"}
@@ -740,6 +844,175 @@ def report_commit_line(path):
     return lines[-1][:120] if lines else None
 
 
+def read_json(path):
+    """(data, None) or (None, "missing" | "not valid JSON: ...")."""
+    try:
+        return json.loads(Path(path).read_text()), None
+    except FileNotFoundError:
+        return None, "missing"
+    except (OSError, ValueError) as e:
+        return None, f"not valid JSON: {e}"
+
+
+RESULT_FORMAT = {
+    "status": "done | question | blocked",
+    "commit": "feat(api): add the categories endpoint",
+    "files_changed": ["src/routes/categories.ts", "test/categories.test.ts"],
+    "check": {"ran": True, "passed": True, "summary": "lint ok, 42 tests pass"},
+    "criteria": [{"id": "AC1", "met": True, "evidence": "test 'rejects a missing amount column' passes"}],
+    "questions": ["only when status is question: what you need decided, with 2-3 options"],
+    "usage": {"input_tokens": None, "output_tokens": None, "cost_usd": None},
+}
+REVIEW_FORMAT = {
+    "verdict": "approve | changes",
+    "criteria": [{"id": "AC1", "met": True, "note": "covered by test_upload_rejects_missing_amount"}],
+    "findings": [{"severity": "blocker | suggestion", "file": "src/upload.ts", "line": 42,
+                  "problem": "what is wrong", "why": "why it matters", "criterion": "AC1"}],
+}
+
+
+def read_result(path):
+    """A coder's result-k.json, validated: (result, None) or (None, why it can't be used)."""
+    if not path:
+        return None, "missing"
+    d, err = read_json(path)
+    if err:
+        return None, err
+    if not isinstance(d, dict):
+        return None, "must be a JSON object"
+    if d.get("status") not in ("done", "question", "blocked"):
+        return None, "`status` must be done, question or blocked"
+    for k in ("files_changed", "criteria", "questions"):
+        if k in d and not isinstance(d[k], list):
+            return None, f"`{k}` must be a list"
+    if "check" in d and not isinstance(d["check"], dict):
+        return None, "`check` must be an object"
+    for c in d.get("criteria", []):
+        if not isinstance(c, dict) or "id" not in c or not isinstance(c.get("met"), bool):
+            return None, "each entry in `criteria` needs `id` and `met` (true or false)"
+    if d.get("commit") is not None and not isinstance(d["commit"], str):
+        return None, "`commit` must be a string"
+    return d, None
+
+
+def read_usage(path):
+    d, _ = read_json(path) if path else (None, None)
+    u = d.get("usage") if isinstance(d, dict) else None
+    return {k: v for k, v in u.items() if v is not None} or None if isinstance(u, dict) else None
+
+
+def review_findings(tid, k):
+    """(blockers, suggestions, known) for review round k: review-k.json, else the BLOCKER:/SUGGESTION: lines of
+    review-k.md. known=False when neither is usable."""
+    rd = ORCH / "review" / tid
+    d, err = read_json(rd / f"review-{k}.json")
+    if isinstance(d, dict) and isinstance(d.get("findings", []), list):
+        blockers, sugg = [], []
+        for f in d.get("findings", []):
+            if not isinstance(f, dict):
+                continue
+            line = f"{f.get('file', '?')}:{f.get('line', '?')} — {f.get('problem', '')} — {f.get('why', '')}"
+            if f.get("criterion"):
+                line += f" ({f['criterion']})"
+            (blockers if str(f.get("severity", "")).lower().startswith("block") else sugg).append(line)
+        for c in d.get("criteria", []) if isinstance(d.get("criteria", []), list) else []:
+            if isinstance(c, dict) and c.get("met") is False:
+                blockers.append(f"{c.get('id', '?')} not met — {c.get('note', '')}")
+        return [f"BLOCKER: {b}" for b in blockers], [f"SUGGESTION: {s}" for s in sugg], True
+    rp = rd / f"review-{k}.md"
+    lines = [l.strip() for l in (rp.read_text().splitlines() if rp.exists() else []) if l.strip()]
+    blockers = [l for l in lines if l.upper().startswith("BLOCKER")]
+    sugg = [l for l in lines if l.upper().startswith("SUGGESTION")]
+    known = bool(blockers or sugg or any(l.upper().startswith("NO FINDINGS") for l in lines))
+    return blockers, sugg, known
+
+
+def run_check(st, cwd):
+    """(passed, last 60 lines, seconds) for the plan's check command in cwd."""
+    if not st.get("check"):
+        return True, "", 0
+    t0 = time.time()
+    try:
+        r = subprocess.run(st["check"], shell=True, cwd=cwd, text=True, capture_output=True, timeout=CHECK_TIMEOUT_S)
+        ok, tail = r.returncode == 0, "\n".join((r.stdout + r.stderr).splitlines()[-60:])
+    except subprocess.TimeoutExpired:
+        ok, tail = False, f"check command timed out after {CHECK_TIMEOUT_S // 60} min"
+    return ok, tail, round(time.time() - t0, 1)
+
+
+def path_allowed(path, patterns):
+    return any(path == p or fnmatch.fnmatch(path, p) or path.startswith(p.rstrip("/") + "/") for p in patterns)
+
+
+def setup_hash(st, d):
+    """Fingerprint of the dependency files in d's index (the plan's `Setup inputs:` globs, else LOCKFILE_RE)."""
+    files = [f for f in git("ls-files", cwd=d, check=False).stdout.splitlines() if f]
+    pats = st.get("setup_inputs") or []
+    sel = [f for f in files if (path_allowed(f, pats) if pats else LOCKFILE_RE.search(f))]
+    if not sel:
+        return "none"
+    return hashlib.sha1(git("ls-files", "-s", "--", *sel, cwd=d).stdout.encode()).hexdigest()[:16]
+
+
+def ensure_root_setup(st):
+    """Run the setup command in the main folder when its dependency files changed (before checking a merge)."""
+    if (st.get("setup") or "none").lower() == "none":
+        return True, ""
+    h = setup_hash(st, ROOT)
+    if h == st.get("root_setup_hash"):
+        return True, ""
+    try:
+        r = subprocess.run(st["setup"], shell=True, cwd=ROOT, text=True, capture_output=True, timeout=CHECK_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return False, f"setup command timed out in {ROOT}"
+    if r.returncode != 0:
+        return False, f"setup command failed in {ROOT}:\n" + "\n".join((r.stdout + r.stderr).splitlines()[-30:])
+    st["root_setup_hash"] = h
+    print(f"SETUP ran `{st['setup']}` in the main folder (dependency files changed)")
+    return True, ""
+
+
+def changed_files(st, t):
+    """Files the milestone's coder changed in its folder (committed on its saved work or not), excluding files
+    that only differ because other milestones landed meanwhile."""
+    d = t.get("dir")
+    if not d or not Path(d).exists():
+        return []
+    untracked = set(git("ls-files", "--others", "--exclude-standard", cwd=d, check=False).stdout.split())
+    if st["isolation"] == "shared":
+        return sorted(set(git("diff", "--name-only", "HEAD", cwd=d, check=False).stdout.split()) | untracked)
+    mb = git("merge-base", st["branch"], "HEAD", cwd=d, check=False).stdout.strip() or st["branch"]
+    vs_base = set(git("diff", "--name-only", mb, cwd=d, check=False).stdout.split())
+    vs_tip = set(git("diff", "--name-only", st["branch"], cwd=d, check=False).stdout.split())
+    return sorted((vs_base & vs_tip) | untracked)
+
+
+def risk_flags(st, tid, diff_args, cwd):
+    """Deterministic reasons to hold a milestone for the developer's approval before it lands."""
+    if not st.get("risk_hold", True):
+        return []
+    t = st["tasks"][tid]
+    likely = t.get("files") or []
+    out = []
+    for line in git("diff", "--name-status", "--no-renames", *diff_args, cwd=cwd, check=False).stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        stt, path = parts[0], parts[-1]
+        if stt.startswith("D"):
+            out.append(f"deletes {path}")
+        out += [f"{what}: {path}" for rx, what in RISK_RULES if rx.search(path)]
+        if LOCKFILE_RE.search(path) and not path_allowed(path, likely):
+            out.append(f"dependency change not listed in Likely files: {path}")
+    total = 0
+    for line in git("diff", "--numstat", *diff_args, cwd=cwd, check=False).stdout.splitlines():
+        a, b = (line.split("\t") + ["0", "0"])[:2]
+        total += (int(a) if a.isdigit() else 0) + (int(b) if b.isdigit() else 0)
+    if total > RISK_MAX_LINES:
+        out.append(f"large change: {total} lines (limit ORCH_RISK_MAX_LINES={RISK_MAX_LINES})")
+    return out[:20]
+
+
 def snapshot_diff(d, base):
     """Diff of the working tree (incl. new files) vs the merge-base with `base`, using a temporary index
     so the real index and any in-progress merge are left untouched."""
@@ -811,8 +1084,17 @@ def cmd_start(args):
     else:
         for w in st["workers"].values():
             w["dir"] = str(ROOT)
+    if st.get("root_setup_hash") is None and (st.get("setup") or "none").lower() != "none":
+        st["root_setup_hash"] = setup_hash(st, ROOT)      # the developer's main folder is set up for this
     save(st)
+    recover_merge(st)
     print(f"BRANCH {st['branch']} (base {st['base']})")
+    reg = registry(required=False) if os.environ.get("ORCH_DOCTOR", "1") != "0" else None
+    kinds = {w.get("kind") for w in st["workers"].values()} | ({(st.get("reviewer_info") or {}).get("kind")} - {None})
+    for kind in sorted(k for k in kinds if reg and k in reg):
+        for ok, m in doctor_kind(kind, reg[kind], full=False) or []:
+            if not ok:
+                print(f"WARN agent {kind}: {m}")
     agents = [(name, w, "WORKER") for name, w in st["workers"].items()]
     if st.get("reviewer"):
         agents.append((st["reviewer"], st.get("reviewer_info") or {}, "REVIEWER"))
@@ -865,7 +1147,24 @@ def fix_jobs(st):
 
 def cmd_ready(args):
     st = load()
-    out = [tid for tid in st["order"] if st["tasks"][tid]["status"] == "pending" and deps_met(st, st["tasks"][tid])]
+    cand = [tid for tid in st["order"] if st["tasks"][tid]["status"] == "pending" and deps_met(st, st["tasks"][tid])]
+    # milestones that share Likely files run one after the other unless one says `Parallel: allow`
+    busy = {}
+    for tid, t in st["tasks"].items():
+        if t["status"] in ACTIVE and not t.get("parallel"):
+            for f in t.get("files") or []:
+                busy[f] = tid
+    out, waits = [], []
+    for tid in cand:
+        t = st["tasks"][tid]
+        clash = sorted({busy[f] for f in t.get("files") or [] if f in busy})
+        if clash and not t.get("parallel") and st["isolation"] == "worktree":
+            waits.append(f"WAIT {tid} shares files with {', '.join(clash)}")
+            continue
+        out.append(tid)
+        if not t.get("parallel"):
+            for f in t.get("files") or []:
+                busy[f] = tid
     slots = free_slots(st)
     if st["isolation"] == "shared" and slots <= 0 and active_count(st) == len(fix_jobs(st)) and fix_jobs(st):
         slots = 1          # shared mode: a queued fix job IS the active milestone, and it needs a coder
@@ -874,6 +1173,8 @@ def cmd_ready(args):
         print(f"FIX {tid} {st['tasks'][tid]['status']} {st['tasks'][tid]['title']}")
     for tid in out:
         print(f"READY {tid} {st['tasks'][tid]['title']}")
+    for line in waits:
+        print(line)
 
 
 def cooling(name, info):
@@ -951,8 +1252,11 @@ def cmd_prepare(args):
     save(st)
     print(f"DIR {d}")
     print(f"TASKDIR {d / TASK_DIR / tid}")
-    if st["isolation"] == "worktree" and not w.get("setup_done") and st["setup"].lower() != "none":
-        print(f"SETUP_NEEDED run `{st['setup']}` in {d}, then `orch setup-done {worker}`")
+    if st["isolation"] == "worktree" and st["setup"].lower() != "none":
+        h = setup_hash(st, d)
+        if not w.get("setup_done") or w.get("setup_hash") != h:
+            why = " (dependency files changed since its last setup)" if w.get("setup_done") else ""
+            print(f"SETUP_NEEDED run `{st['setup']}` in {d}, then `orch setup-done {worker}`{why}")
 
 
 def cmd_setup_done(args):
@@ -960,14 +1264,46 @@ def cmd_setup_done(args):
     st = load()
     w = st["workers"].get(args[0]) or die(f"unknown worker {args[0]}")
     w["setup_done"] = True
+    w["setup_hash"] = setup_hash(st, Path(w["dir"])) if w.get("dir") and Path(w["dir"]).exists() else None
     save(st)
     print("OK")
+
+
+def record_attempt(t, outcome, usage=None):
+    """Close the task's current wait as one attempt in its metrics (Phase 3: orch report)."""
+    w = t.get("wait")
+    if not w:
+        return
+    start = w.get("started", w.get("since", now()))
+    a = {"kind": w.get("kind"), "agent": w.get("agent"), "file": w.get("file"), "start": start, "end": now(),
+         "secs": max(0, now() - start), "nudges": w.get("nudges", 0), "outcome": outcome}
+    if usage:
+        a["usage"] = usage
+    t.setdefault("attempts", []).append(a)
+    del t["attempts"][:-100]
+
+
+def _delivered(st, agent):
+    info = agent_info(st, agent)
+    if info:
+        info["delivery_fails"] = 0
+
+
+def _lost(st, tid, status, reason):
+    """Count a lost attempt (agent unreachable, gone, rate-limited, stopped). At MAX_LOST the task fails."""
+    t = st["tasks"][tid]
+    t["lost"] = t.get("lost", 0) + 1
+    if t["lost"] >= MAX_LOST:
+        return "failed", f"lost {t['lost']} attempts (last: {reason}) — check the agents, then `orch set {tid} pending`"
+    return status, reason
 
 
 def _delivery_failed(st, tid, fname, path, err):
     """The prompt never reached the coder: put the task back where it was, keep its job, bench the coder briefly."""
     t = st["tasks"][tid]
     agent = t["worker"]
+    record_attempt(t, "not delivered")
+    t["wait"] = None
     job = t.get("job")
     if job and job.get("file") == fname:
         status = "conflict" if fname.startswith("conflict-") else "needs-fix"
@@ -978,9 +1314,14 @@ def _delivery_failed(st, tid, fname, path, err):
         status = "needs-fix"
     w = st["workers"].get(agent)
     if w:
-        w["cooldown_until"], w["cooldown_reason"] = now() + SEND_RETRY_S, "unreachable"
-    _park(st, tid, status, f"could not prompt {agent}: {err.splitlines()[0] if err else 'herdr failed'}")
-    print(f"DELIVERY_FAILED {tid} -> {agent}: {err}")
+        w["delivery_fails"] = w.get("delivery_fails", 0) + 1
+        bench = UNREACHABLE_MIN * 60 if w["delivery_fails"] >= UNREACHABLE_AFTER else SEND_RETRY_S
+        w["cooldown_until"], w["cooldown_reason"] = now() + bench, "unreachable"
+        if w["delivery_fails"] >= UNREACHABLE_AFTER:
+            print(f"BENCHED {agent} for {UNREACHABLE_MIN} min: {w['delivery_fails']} prompts in a row did not reach it")
+    status, reason = _lost(st, tid, status, f"could not prompt {agent}: {err.splitlines()[0] if err else 'herdr failed'}")
+    _park(st, tid, status, reason)
+    print(f"DELIVERY_FAILED {tid} -> {agent}: {err}" + (f"\nFAILED {tid}: {reason}" if status == "failed" else ""))
     sys.exit(5)
 
 
@@ -999,20 +1340,33 @@ def cmd_send(args):
     k = t["attempt"] + 1
     sentinel = d / rel / f"done-{k}"
     sentinel.unlink(missing_ok=True)
-    text = (f"Read {rel}/{fname} and carry it out exactly. When completely finished, write your report to "
-            f"{rel}/report-{k}.md (max 20 lines: files changed, what you did, check result; if something was ambiguous, "
-            f"a line starting QUESTION: and stop; last line `COMMIT: <one-line commit message for the change>`) and then "
-            f"create the empty file {rel}/done-{k} as your very last action.")
+    if fname != "task.md":                       # fix / review-fix / conflict / integration-fix job: say which
+        kind = re.sub(r"-\d+\.md$", "", fname)
+        (d / rel / f"job-{k}.json").write_text(json.dumps(
+            {"schema": 1, "task_id": tid, "kind": kind, "file": fname, "contract": "task.json", "attempt": k}, indent=2))
+    text = (f"Read {rel}/{fname} and carry it out exactly (the milestone's contract is {rel}/task.json). When "
+            f"completely finished, write {rel}/result-{k}.json in the `result_format` shape from task.json, and a "
+            f"short report {rel}/report-{k}.md (max 20 lines: files changed, what you did, check result; if something "
+            f"was ambiguous, status `question` in the result, a line starting QUESTION: here, and stop; last line "
+            f"`COMMIT: <one-line commit message for the change>`), then create the empty file {rel}/done-{k} as your "
+            f"very last action.")
+    # record the intent first: after a crash, a `delivering` wait is confirmed or re-sent to the SAME agent,
+    # never handed to another coder as an orphan
+    t["attempt"] = k
+    move(st, tid, "coding")
+    t["wait"] = {"agent": t["worker"], "sentinel": str(sentinel), "report": str(d / rel / f"report-{k}.md"),
+                 "result": str(d / rel / f"result-{k}.json"), "since": now(), "started": now(), "kind": "coder",
+                 "prompt": text, "nudges": 0, "file": fname, "delivering": True}
+    save(st)
     try:
         deliver(st, t["worker"], text)
     except DeliveryError as e:
         _delivery_failed(st, tid, fname, d / rel / fname, str(e))
-    t["attempt"] = k
+    _delivered(st, t["worker"])
+    fault("after-deliver")
     if (t.get("job") or {}).get("file") == fname:
         t["job"] = None                          # delivered: the job is now the coder's
-    move(st, tid, "coding")
-    t["wait"] = {"agent": t["worker"], "sentinel": str(sentinel), "report": str(d / rel / f"report-{k}.md"),
-                 "since": now(), "kind": "coder", "prompt": text, "nudges": 0}
+    t["wait"]["delivering"] = False
     save(st)
     print(f"SENT {tid} -> {t['worker']} (attempt {k})")
 
@@ -1060,11 +1414,9 @@ def cmd_needs_fix(args):
     st = load()
     t = task(st, tid)
     k = t["review_round"]
-    rp = ORCH / "review" / tid / f"review-{k}.md"
-    blockers = [l.strip() for l in (rp.read_text().splitlines() if rp.exists() else [])
-                if l.strip().upper().startswith("BLOCKER")]
+    blockers, _, _ = review_findings(tid, k)
     if not blockers:
-        die(f"no BLOCKER lines in {rp}")
+        die(f"no blockers in review round {k} of {tid} (.orchestrate/review/{tid}/review-{k}.json or .md)")
     t["job"] = {"file": f"review-fix-{k}.md", "body":
                 f"# Review findings for {tid}: {t['title']} (round {k})\n\n"
                 "The reviewer found the problems below. You own the fix: investigate each one and decide how to "
@@ -1081,7 +1433,9 @@ def cmd_review_ok(args):
     """orch review-ok Mn -> record that the reviewer approved Mn (later conflict fixes won't need re-review)."""
     need(args, 1, "review-ok <Mn>")
     st = load()
-    task(st, args[0])["review_ok"] = True
+    t = task(st, args[0])
+    t["review_ok"] = True
+    t.pop("pre_conflict", None)
     save(st)
     print(f"OK {args[0]} review approved")
 
@@ -1112,41 +1466,93 @@ def cmd_review(args):
     else:
         diff = snapshot_diff(d, st["branch"] if st["isolation"] == "worktree" else "HEAD")
     (rd / "diff.patch").write_text(diff)
+    resolution = ""
+    if t.get("pre_conflict") and st["isolation"] == "worktree" and work_ref(st, tid):
+        (rd / "resolution.patch").write_text(git("diff", t["pre_conflict"], work_ref(st, tid), cwd=ROOT).stdout)
+        resolution = (f"This round reviews a MERGE-CONFLICT RESOLUTION: you approved this milestone before, then it "
+                      f"conflicted with work that landed meanwhile. What the coder changed to resolve it: "
+                      f"{{rel}}/resolution.patch (the whole milestone is still in diff.patch).\n\n")
     task_md = d / TASK_DIR / tid / "task.md"
     if task_md.exists():
         shutil.copy(task_md, rd / "task.md")
+    task_json = d / TASK_DIR / tid / "task.json"
+    if task_json.exists():
+        shutil.copy(task_json, rd / "task.json")
     k = t["review_round"] + 1
     rel = f".orchestrate/review/{tid}"
     (rd / f"review-task-{k}.md").write_text(
         f"# Review {tid}: {t['title']} (round {k})\n\n"
-        f"Spec and acceptance criteria: {rel}/task.md\nChanges: {rel}/diff.patch\n\n"
+        f"Spec and acceptance criteria: {rel}/task.md (criteria ids AC1, AC2… in {rel}/task.json)\n"
+        f"Changes: {rel}/diff.patch\n\n" + resolution.replace("{rel}", rel) +
         "Review for correctness against the acceptance criteria, API/contract consistency, UI/UX, security, "
         "edge cases and missing tests. Do NOT edit any code.\n"
-        "Report PROBLEMS, not solutions: the coder decides how to fix. One finding per line (max 15 lines):\n"
-        "`BLOCKER: <file:line> — <what is wrong> — <why it matters / which acceptance criterion>` (must fix before merge)\n"
-        "`SUGGESTION: <file:line> — <what could be better> — <why>` (optional)\n"
-        f"Write them to {rel}/review-{k}.md (write `NO FINDINGS` if clean), then create the empty file "
-        f"{rel}/done-{k} as your very last action.\n")
+        "Report PROBLEMS, not solutions: the coder decides how to fix. At most 15 findings. A `blocker` must be "
+        "fixed before merge; a `suggestion` is optional. Say for EVERY acceptance criterion whether it is met; an "
+        "unmet criterion counts as a blocker.\n"
+        f"Write your review to {rel}/review-{k}.json in exactly this shape (an empty `findings` list and every "
+        f"criterion met means approve):\n\n```json\n{json.dumps(REVIEW_FORMAT, indent=2)}\n```\n\n"
+        f"Then create the empty file {rel}/done-{k} as your very last action.\n")
     sentinel = rd / f"done-{k}"
     sentinel.unlink(missing_ok=True)
     rtext = f"Read {rel}/review-task-{k}.md and do exactly what it says."
-    try:
-        deliver(st, st["reviewer"], rtext)
-    except DeliveryError as e:
-        move(st, tid, "awaiting-review")
-        if st.get("reviewer_info") is not None:
-            st["reviewer_info"]["cooldown_until"] = now() + SEND_RETRY_S
-            st["reviewer_info"]["cooldown_reason"] = "unreachable"
-        save(st)
-        print(f"DELIVERY_FAILED review {tid} -> {st['reviewer']}: {e}")
-        sys.exit(5)
     t["review_round"] = k
     st["reviewer_busy"] = tid
     move(st, tid, "reviewing")
     t["wait"] = {"agent": st["reviewer"], "sentinel": str(sentinel), "report": str(rd / f"review-{k}.md"),
-                 "since": now(), "kind": "reviewer", "prompt": rtext, "nudges": 0}
+                 "result": str(rd / f"review-{k}.json"), "since": now(), "started": now(), "kind": "reviewer",
+                 "prompt": rtext, "nudges": 0, "delivering": True}
+    save(st)
+    try:
+        deliver(st, st["reviewer"], rtext)
+    except DeliveryError as e:
+        _review_undelivered(st, tid)
+        save(st)
+        print(f"DELIVERY_FAILED review {tid} -> {st['reviewer']}: {e}")
+        sys.exit(5)
+    _delivered(st, st["reviewer"])
+    fault("after-deliver")
+    t["wait"]["delivering"] = False
     save(st)
     print(f"SENT review {tid} -> {st['reviewer']} (round {k})")
+
+
+def _review_undelivered(st, tid):
+    """The review prompt never reached the reviewer: the same round waits for review again; bench the reviewer."""
+    t = st["tasks"][tid]
+    record_attempt(t, "not delivered")
+    t["review_round"] = max(0, t["review_round"] - 1)
+    t["wait"] = None
+    if st.get("reviewer_busy") == tid:
+        st["reviewer_busy"] = None
+    move(st, tid, "awaiting-review")
+    ri = st.get("reviewer_info")
+    if ri is not None:
+        ri["delivery_fails"] = ri.get("delivery_fails", 0) + 1
+        ri["cooldown_until"], ri["cooldown_reason"] = now() + SEND_RETRY_S, "unreachable"
+
+
+def cmd_resend(args):
+    """orch resend Mn -> a prompt was recorded but never confirmed (crash, or herdr unsure): send it again to the
+    SAME agent with the same attempt and done file. Not a nudge."""
+    need(args, 1, "resend <Mn>")
+    tid = args[0]
+    st = load()
+    t = task(st, tid)
+    w = t.get("wait") or die(f"{tid} is not waiting on anyone")
+    try:
+        deliver(st, w["agent"], w["prompt"])
+    except DeliveryError as e:
+        if w.get("kind") == "reviewer":
+            _review_undelivered(st, tid)
+            save(st)
+            print(f"DELIVERY_FAILED review {tid} -> {w['agent']}: {e}")
+            sys.exit(5)
+        fname = w.get("file") or "task.md"
+        _delivery_failed(st, tid, fname, task_dir(t, tid) / TASK_DIR / tid / fname, str(e))
+    _delivered(st, w["agent"])
+    w["delivering"], w["since"] = False, now()
+    save(st)
+    print(f"RESENT {tid} -> {w['agent']}")
 
 
 def cmd_requeue_review(args):
@@ -1176,11 +1582,12 @@ def orphaned(st, tid):
 
 def cmd_poll(args):
     secs = int(args[0]) if args else 100
-    end = time.time() + secs
+    start = time.time()
+    end = start + secs
     while True:
         with state_lock():
             st = load()
-            events = []
+            events, changed = [], False
             for tid in st["order"]:
                 t = st["tasks"][tid]
                 w = t.get("wait")
@@ -1192,16 +1599,32 @@ def cmd_poll(args):
                 agent, sentinel = w["agent"], Path(w["sentinel"])
                 age = now() - w["since"]
                 if sentinel.exists():
+                    record_attempt(t, "done", read_usage(w.get("result")))
                     if w["kind"] == "coder":
                         move(st, tid, "verifying")
                         t["last_report"] = w["report"]
-                        t["commit_msg"] = report_commit_line(w["report"]) or t.get("commit_msg")
+                        res, _ = read_result(w.get("result"))
+                        t["last_result"] = w.get("result")
+                        t["commit_msg"] = ((res or {}).get("commit") or "").strip()[:120] or \
+                            report_commit_line(w["report"]) or t.get("commit_msg")
                         events.append(f"DONE {tid} worker={agent} dir={t['dir']} report={w['report']}")
                     else:
                         move(st, tid, "reviewed")
                         st["reviewer_busy"] = None
                         events.append(f"REVIEWED {tid} review={w['report']}")
                     t["wait"] = None
+                    continue
+                if w.get("delivering"):        # recorded but never confirmed (a crash between save and send)
+                    if age < CONFIRM_S:
+                        continue
+                    s = herdr_state(agent) if watched(st, agent) else ""
+                    if s is None:
+                        events.append(f"GONE {tid} agent={agent}")
+                    elif word(s, "working", "blocked"):
+                        w["delivering"] = False
+                        changed = True
+                    else:
+                        events.append(f"UNCONFIRMED {tid} agent={agent} (prompt recorded, not confirmed)")
                     continue
                 budget = (CODER_BUDGET_MIN if w["kind"] == "coder" else REVIEW_BUDGET_MIN) * 60
                 if not watched(st, agent):     # herdr can't watch it: only the done file and the time budget count
@@ -1217,8 +1640,10 @@ def cmd_poll(args):
                     events.append(f"IDLE {tid} agent={agent} (no sentinel after {age}s)")
                 elif age > budget:
                     events.append(f"TIMEOUT {tid} agent={agent} after {age // 60} min")
-            if events:
+            if events or changed:
                 save(st)
+            if not any(t.get("wait") for t in st["tasks"].values()):
+                end = min(end, start + 5)      # nobody is working: don't sit out the whole wait (benches end sooner)
         if events:
             print("\n".join(events))
             return
@@ -1264,6 +1689,10 @@ def cmd_commit(args):
     d = task_dir(t, tid)
     if st["isolation"] == "shared":
         git("add", "-A", cwd=d)
+        risks = [] if t.get("approved") else risk_flags(st, tid, ["--cached", "HEAD"], d)
+        if risks:
+            git("reset", "-q", cwd=d)                # unstage; the work stays in the tree until approved
+            _hold(st, tid, risks)
         r = git("commit", "-q", "-m", commit_message(st, tid), cwd=d, check=False)
         if r.returncode != 0 and "nothing to commit" not in (r.stdout + r.stderr):
             die(r.stdout + r.stderr)
@@ -1281,6 +1710,8 @@ def _finish(st, tid):
     t = st["tasks"][tid]
     move(st, tid, "merged", "")
     t["wait"] = None
+    if (st.get("merging") or {}).get("tid") == tid:
+        st["merging"] = None
     if t.get("worker") and st["workers"].get(t["worker"], {}).get("task") == tid:
         st["workers"][t["worker"]]["task"] = None
     save(st)
@@ -1298,12 +1729,26 @@ def cmd_merge(args):
     if git("rev-parse", "--abbrev-ref", "HEAD", cwd=ROOT).stdout.strip() != st["branch"] or is_dirty(ROOT):
         die(f"main tree must be clean and on {st['branch']}")
     src = work_ref(st, tid) or die(f"{tid} has no saved work ({task_ref(st, tid)}) — run `orch commit {tid}` first")
+    src_sha = git("rev-parse", src, cwd=ROOT).stdout.strip()
+    if not t.get("approved"):
+        mb = git("merge-base", st["branch"], src_sha, cwd=ROOT).stdout.strip()
+        risks = risk_flags(st, tid, [mb, src_sha], ROOT)
+        if risks:
+            _hold(st, tid, risks)
+    head = git("rev-parse", "HEAD", cwd=ROOT).stdout.strip()
+    st["merging"] = {"tid": tid, "head_before": head, "src": src_sha}   # journal: a crash from here is recoverable
+    save(st)
     r = git("merge", "--squash", src, cwd=ROOT, check=False)
+    fault("after-squash")
     if r.returncode != 0:
         files = git("diff", "--name-only", "--diff-filter=U", cwd=ROOT, check=False).stdout.split()
         git("reset", "--hard", "-q", "HEAD", cwd=ROOT)
+        st["merging"] = None
         move(st, tid, "conflict", "merge conflict in " + (", ".join(files) or "(see git status)"))
         t["conflicts"] = t.get("conflicts", 0) + 1
+        if t.get("review") and t.get("review_ok"):
+            # an approved milestone changes again while its conflict is resolved: the reviewer sees the resolution
+            t["review_ok"], t["pre_conflict"] = False, src_sha
         t["job"] = {"file": f"conflict-{t['conflicts']}.md", "body":
                     f"# Merge conflict for {tid}: {t['title']}\n\n"
                     f"Other milestones landed on `{st['branch']}` while you worked, and they conflict with "
@@ -1317,15 +1762,108 @@ def cmd_merge(args):
     if git("diff", "--cached", "--quiet", cwd=ROOT, check=False).returncode == 0:
         print(f"NOTE {tid} had no changes to merge")
     else:
+        # check BEFORE committing: nothing red ever lands on the feature branch
+        ok, tail = ensure_root_setup(st)
+        if ok:
+            ok, tail, secs = run_check(st, ROOT)
+            t.setdefault("checks", []).append({"where": "branch", "ok": ok, "secs": secs, "ts": now()})
+        fault("after-check")
+        if not ok:
+            git("reset", "--hard", "-q", "HEAD", cwd=ROOT)
+            st["merging"] = None
+            _integration_failed(st, tid, tail)
         git("commit", "-q", "-m", commit_message(st, tid), cwd=ROOT)
+        fault("after-merge-commit")
     git("update-ref", "-d", task_ref(st, tid), cwd=ROOT, check=False)
     _finish(st, tid)
     print(f"MERGED {tid} into {st['branch']}")
 
 
+def _hold(st, tid, risks):
+    """Stop a milestone before it lands until the developer runs `orch approve Mn` (exit 7)."""
+    t = st["tasks"][tid]
+    t["risks"] = risks
+    if st["isolation"] == "worktree" and holds(st, tid):      # its work is saved in the hidden ref: free the coder
+        st["workers"][t["worker"]]["task"] = None
+        t["last_worker"], t["worker"] = t["worker"], None
+    move(st, tid, "held", "waiting for `orch approve " + tid + "`: " + "; ".join(risks[:3])
+         + (f" (+{len(risks) - 3} more)" if len(risks) > 3 else ""))
+    save(st)
+    print(f"HELD {tid} for approval — " + "; ".join(risks))
+    print(f"Look at it, then run `orch approve {tid}` (or `orch set {tid} paused` to stop it)")
+    sys.exit(7)
+
+
+def _integration_failed(st, tid, tail):
+    """The squash merged cleanly but the check fails on the feature branch: queue a fix job, commit nothing."""
+    t = st["tasks"][tid]
+    t["fix"] = t.get("fix", 0) + 1
+    if t["fix"] > MAX_FIX:
+        _park(st, tid, "failed", f"passes alone but fails the check on {st['branch']} after {MAX_FIX} fix rounds")
+        print(f"CAP {tid}: still fails the check on {st['branch']} after {MAX_FIX} fix rounds\n{tail}")
+        sys.exit(3)
+    n = t["fix"]
+    t["job"] = {"file": f"integration-fix-{n}.md", "body":
+                f"# {tid} fails the check once merged onto `{st['branch']}` (round {n})\n\n"
+                f"Your milestone passes `{st['check']}` on its own, but fails once it is merged with what landed on "
+                f"`{st['branch']}` since you started. In this folder run `git merge --no-commit {st['branch']}`, find "
+                f"the cause and fix it (you decide how, and keep both sides working), then run `{st['check']}`. "
+                f"Don't commit, and don't weaken or skip tests.\n\n```\n{tail}\n```\n"}
+    move(st, tid, "needs-fix", f"fails the check on {st['branch']} once merged (round {n})")
+    t["wait"] = None
+    save(st)
+    who = t["worker"] if holds(st, tid) else "any free coder"
+    print(f"CHECK_FAILED {tid} on {st['branch']} -> fix job queued for {who} (`orch send-job {tid}`); "
+          f"nothing was committed\n{tail}")
+    sys.exit(6)
+
+
+def recover_merge(st):
+    """Finish or undo a merge that a crash interrupted (see the `merging` journal in cmd_merge)."""
+    m = st.get("merging")
+    if not m:
+        return
+    tid = m["tid"]
+    t = st["tasks"].get(tid)
+    head = git("rev-parse", "HEAD", cwd=ROOT).stdout.strip()
+    if head != m["head_before"]:
+        body = git("log", "-1", "--format=%B", cwd=ROOT).stdout
+        if t and t["status"] == "committed" and re.search(rf"(?m)^Milestone: {re.escape(tid)}$", body):
+            git("update-ref", "-d", task_ref(st, tid), cwd=ROOT, check=False)
+            _finish(st, tid)
+            print(f"RECOVERED {tid}: its commit had landed before the crash")
+            return
+        st["merging"] = None                     # HEAD moved for another reason: leave it alone
+        save(st)
+        return
+    if is_dirty(ROOT):
+        if not ref_ok(m["src"]):
+            die(f"an interrupted merge of {tid} left changes in the main folder, and its saved work {m['src']} is "
+                f"gone — look at `git status` before doing anything else")
+        git("reset", "--hard", "-q", m["head_before"], cwd=ROOT)
+        print(f"RECOVERED {tid}: undid the half-done merge; it will be merged again from its saved work")
+    st["merging"] = None
+    save(st)
+
+
+def cmd_approve(args):
+    """orch approve Mn -> let a held milestone land (risky changes were looked at by the developer)."""
+    need(args, 1, "approve <Mn>")
+    tid = args[0]
+    st = load()
+    t = task(st, tid)
+    if t["status"] != "held":
+        die(f"{tid} is {t['status']}, not held")
+    t["approved"] = True
+    move(st, tid, "committed", "approved by the developer")
+    save(st)
+    print(f"APPROVED {tid}: it lands on the next autopilot step (or `orch merge {tid}`)")
+
+
 def _park(st, tid, status, reason, force=False):
     """Free the task's coder (and the reviewer) and keep its work in its hidden ref."""
     t = st["tasks"][tid]
+    record_attempt(t, f"parked as {status}: {reason}" if reason else f"parked as {status}")
     d, w = t.get("dir"), t.get("worker")
     if w and holds(st, tid):
         if st["isolation"] == "worktree" and d and Path(d).exists():
@@ -1346,13 +1884,18 @@ def _park(st, tid, status, reason, force=False):
 
 
 def cmd_park(args):
-    """orch park Mn paused|failed|pending [reason...] — free the worker, keep work in the milestone's hidden ref."""
-    need(args, 2, "park <Mn> paused|failed|pending [reason]")
+    """orch park Mn paused|failed|pending [--lost] [reason...] — free the worker, keep work in the milestone's hidden
+    ref. --lost counts a lost attempt (agent gone, rate-limited, stopped); at ORCH_MAX_LOST the task fails."""
+    lost = "--lost" in args
+    args = [a for a in args if a != "--lost"]
+    need(args, 2, "park <Mn> paused|failed|pending [--lost] [reason]")
     tid, status, reason = args[0], args[1], " ".join(args[2:])
     if status not in ("paused", "failed", "pending"):
         die("status must be paused, failed or pending")
     st = load()
     task(st, tid)
+    if lost:
+        status, reason = _lost(st, tid, status, reason)
     _park(st, tid, status, reason)
     print(f"PARKED {tid} as {status}: {reason}")
 
@@ -1402,6 +1945,8 @@ def cmd_set(args):
 
 def cmd_status(args):
     st = load()
+    if driver_alive():
+        print(f"driven by {driver_line(driver_info())}")
     print(f"branch={st['branch']} base={st.get('base')} isolation={st['isolation']} "
           f"max_parallel={st['max_parallel']} reviewer={st['reviewer']} (busy: {st.get('reviewer_busy')})")
     if st.get("integration_broken"):
@@ -1541,9 +2086,11 @@ WORKER_RULES = """## Rules for you (the coder)
 - Follow the repo's existing patterns (AGENTS.md / CLAUDE.md) and any Interfaces listed above exactly; other milestones rely on them.
 - Change only what this task needs. No unrelated refactors.
 - Do NOT commit, push, or switch branches. orch commits your work for you.
-- End your report with one line `COMMIT: <commit message>` that says what changed, in the repo's commit style (for example `feat(api): add categories endpoint`). It becomes the commit message, so describe the change, not the milestone.
-- If anything is ambiguous, do not guess: put a line starting `QUESTION:` in your report, finish the report and the done file, and stop.
-- Before finishing, run the check command below and put its result (pass/fail + the failing lines) in your report.
+- Stay inside the files listed under Likely files (`files_allowed` in task.json) unless the task can't be done otherwise; say why in your report if you leave them. orch compares your diff with that list.
+- Finish with a result file (the prompt names it) in the `result_format` shape from task.json: `status` done / question / blocked, `commit`, `files_changed`, the `check` you ran, one entry per acceptance criterion (`id`, `met`, `evidence`), and `usage` if your tool shows tokens or cost. orch reads it, so keep it valid JSON.
+- The commit message (`commit` in the result, and the last report line `COMMIT: <commit message>`) says what changed, in the repo's commit style (for example `feat(api): add categories endpoint`). It becomes the commit message, so describe the change, not the milestone.
+- If anything is ambiguous, do not guess: set status `question`, put the question in `questions` and on a report line starting `QUESTION:`, finish the files and the done file, and stop.
+- Before finishing, run the check command below and record the result (pass/fail + the failing lines).
 """
 
 
@@ -1571,11 +2118,46 @@ def cmd_write_task(args):
                     "\n".join(lines[:25]), ""]
     if ctx:
         parts += ["## Context: what the tasks you depend on built", *ctx]
+    contract = task_contract(st, tid)
+    if contract["acceptance_criteria"]:
+        parts += ["## Acceptance criteria ids (for your result file)",
+                  *[f"- {c['id']}: {c['text']}" for c in contract["acceptance_criteria"]], ""]
+    if contract["previous_work"]:
+        parts += ["## Earlier work", f"An earlier attempt ({contract['previous_work']['by'] or 'another coder'}) left "
+                  "work in this folder. Look at it first and continue from it unless it is wrong.", ""]
     parts += [f"## Check command\n`{st['check']}`", "", WORKER_RULES]
     out = d / TASK_DIR / tid / "task.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(parts))
+    (out.parent / "task.json").write_text(json.dumps(contract, indent=2))
     print(f"WROTE {out}")
+    print(f"WROTE {out.parent / 'task.json'}")
+
+
+def task_contract(st, tid):
+    """task.json: the milestone as data, generated from plan.md (plan.md stays the human-edited source)."""
+    t = st["tasks"][tid]
+    _, ptasks = parse_plan((ORCH / "plan.md").read_text())
+    pt = next((x for x in ptasks if x["id"] == tid), {"fields": {}})
+
+    def items(key):
+        vals = [v.lstrip("- ").strip() for v in pt["fields"].get(key, [])]
+        return [v for v in vals if v and v.lower() != "none"]
+    deps = []
+    for dep in t["deps"]:
+        sha = git("log", "-1", "--format=%H", f"--grep=^Milestone: {dep}$", st["branch"], cwd=ROOT,
+                  check=False).stdout.strip()
+        deps.append({"task": dep, "title": st["tasks"][dep]["title"], "commit": sha or None})
+    return {
+        "schema": 1, "task_id": tid, "title": t["title"], "kind": "task",
+        "goal": field(pt, "goal"), "why": field(pt, "why"),
+        "acceptance_criteria": [{"id": f"AC{i}", "text": c} for i, c in enumerate(items("acceptance criteria"), 1)],
+        "files_allowed": t.get("files") or [], "scope": st.get("scope", "warn"),
+        "interfaces": items("interfaces"), "constraints": items("constraints"), "out_of_scope": items("out of scope"),
+        "depends_on": deps, "check": st["check"], "attempt": t.get("attempt", 0) + 1, "lost_attempts": t.get("lost", 0),
+        "previous_work": {"by": t.get("last_worker")} if work_ref(st, tid) else None,
+        "result_format": RESULT_FORMAT,
+    }
 
 
 def cmd_nudge(args):
@@ -1592,6 +2174,7 @@ def cmd_nudge(args):
         deliver(st, w["agent"], "You stopped before finishing. " + w["prompt"])
     except DeliveryError as e:
         die(f"could not nudge {w['agent']}: {e}")
+    _delivered(st, w["agent"])
     w["nudges"] = w.get("nudges", 0) + 1
     w["since"] = now()
     save(st)
@@ -1603,10 +2186,11 @@ RATE_RE = re.compile(r"usage limit|rate.?limit|quota|too many requests|\b429\b|l
 
 
 def cmd_autopilot(args):
-    """Run the whole plan with no AI lead in the loop. Stops (exit 3) only when a human is needed."""
+    """Run the whole plan with no AI lead in the loop. Stops (exit 3) only when a human is needed.
+    It is the only driver of a run: it holds the driver lease, and other processes can't change the run meanwhile."""
     me = [sys.executable, os.path.abspath(__file__)]
-    check_timeout = int(os.environ.get("ORCH_CHECK_TIMEOUT_MIN", "30")) * 60
     log = ORCH / "autopilot.log"
+    take_lease()
 
     def say(msg, important=False):
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
@@ -1629,16 +2213,20 @@ def cmd_autopilot(args):
             fn(s_)
             save(s_)
 
-    def check(cwd):
-        try:
-            r = subprocess.run(st["check"], shell=True, cwd=cwd, text=True, capture_output=True, timeout=check_timeout)
-            return r.returncode == 0, "\n".join((r.stdout + r.stderr).splitlines()[-60:])
-        except subprocess.TimeoutExpired:
-            return False, f"check command timed out after {check_timeout // 60} min"
+    def check(cwd, tid=None, where="worktree"):
+        ok, tail, secs = run_check(st, cwd)
+        if tid:
+            patch_state(lambda s_: s_["tasks"][tid].setdefault("checks", []).append(
+                {"where": where, "ok": ok, "secs": secs, "ts": now()}))
+        return ok, tail
 
-    def park(tid, status, reason, important=True):
-        run("park", tid, status, reason)
-        say(f"{tid} {status}: {reason}", important)
+    def park(tid, status, reason, important=True, lost=False):
+        run("park", tid, status, *(["--lost"] if lost else []), reason)
+        t_ = load()["tasks"][tid]
+        if t_["status"] == "failed" and status != "failed":
+            say(f"{tid} failed: {t_.get('reason')}", True)
+        else:
+            say(f"{tid} {status}: {reason}", important)
 
     def guarded(tid, fn):
         """One task's orch error never stops the run: that task is paused with the error, the rest carry on."""
@@ -1655,7 +2243,12 @@ def cmd_autopilot(args):
 
     def sent(code, out, tid, who):
         if code == 5:
-            say(f"{tid}: could not reach {who} — it is benched for {SEND_RETRY_S}s and the work is queued again\n{out}")
+            t_ = load()["tasks"][tid]
+            if t_["status"] == "failed":
+                say(f"{tid} failed: {t_.get('reason')}\n{out}", True)
+            else:
+                say(f"{tid}: could not reach {who} — it is benched and the work is queued again\n{out}",
+                    "BENCHED" in out)
             return False
         return True
 
@@ -1665,43 +2258,109 @@ def cmd_autopilot(args):
         code, out = run("send", tid, fname, ok=(0, 5))
         sent(code, out, tid, "the coder")
 
+    def fix_round(tid, fname_prefix, body, cap_reason):
+        """Count a fix round (capped by MAX_FIX), then send the coder a problem-only job."""
+        code, _ = run("bump", tid, "fix", ok=(0, 3))
+        if code == 3:
+            park(tid, "failed", cap_reason)
+            return
+        n = load()["tasks"][tid]["fix"]
+        write_and_send(tid, f"{fname_prefix}-{n}.md", body(n))
+
+    def held(tid, out):
+        say(f"{tid} is HELD for your approval: {out.splitlines()[0].split('—', 1)[-1].strip()}. "
+            f"Look at it, then run `orch approve {tid}`; autopilot keeps going with the rest", True)
+
     def land(tid):
         st_ = load()
-        _, out = run("commit", tid)
+        code, out = run("commit", tid, ok=(0, 7))
+        if code == 7:
+            held(tid, out)
+            return False
         if st_["isolation"] == "shared":
             say(f"{tid} landed on {st_['branch']}")
             return True
-        code, out = run("merge", tid, ok=(0, 4))
-        if code == 4:
+        code, out = run("merge", tid, ok=(0, 3, 4, 6, 7))
+        if code == 7:
+            held(tid, out)
+            return False
+        if code == 3:
+            say(f"{tid} failed: {out.splitlines()[0]}", True)
+            return False
+        if code in (4, 6):
             s_ = load()
-            if s_["tasks"][tid].get("conflicts", 0) > MAX_CONFLICT:
+            if code == 4 and s_["tasks"][tid].get("conflicts", 0) > MAX_CONFLICT:
                 park(tid, "failed", f"merge conflict still unresolved after {MAX_CONFLICT} attempts")
                 return False
+            what = "merge conflict" if code == 4 else f"passes alone but fails the check on {s_['branch']} (not committed)"
             if holds(s_, tid):
-                say(f"{tid} merge conflict -> back to {s_['tasks'][tid]['worker']}")
+                say(f"{tid} {what} -> back to {s_['tasks'][tid]['worker']}")
                 code, out = run("send-job", tid, ok=(0, 5))
                 sent(code, out, tid, s_["tasks"][tid]["worker"])
             else:
-                say(f"{tid} merge conflict -> queued for the next free coder")
+                say(f"{tid} {what} -> queued for the next free coder")
             return False
-        say(f"{tid} merged into {st_['branch']}")
-        ok, tail = check(ROOT)
-        if not ok:
-            patch_state(lambda s_: s_.update(integration_broken=tid))
-            say(f"Integration branch check FAILED after merging {tid}. Stopping; fix {st_['branch']} and run "
-                f"autopilot again (it re-checks first).\n{tail}", True)
-            raise SystemExit(3)
+        say(f"{tid} checked and merged into {st_['branch']}")
         return True
 
     def handle(tid, t):
         if t["status"] == "verifying":
+            res, err = read_result(t.get("last_result"))
+            if err and err != "missing":
+                if t.get("result_fixes", 0) >= 1:
+                    park(tid, "paused", f"result file still not usable ({err}): {t.get('last_result')}")
+                    return
+                patch_state(lambda s_: s_["tasks"][tid].update(result_fixes=s_["tasks"][tid].get("result_fixes", 0) + 1))
+                say(f"{tid}: result file not usable ({err}) -> asked the coder once to rewrite it")
+                write_and_send(tid, "result-fix-1.md",
+                               f"# Your result file for {tid} can't be used\n\n`{t.get('last_result')}`: {err}.\n\n"
+                               "Don't change any code for this. Write the result file the prompt names, in the "
+                               "`result_format` shape from task.json (valid JSON), plus the report, then the done "
+                               "file.\n")
+                return
             rp = t.get("last_report")
             rtext = Path(rp).read_text() if rp and Path(rp).exists() else ""
-            q = [l for l in rtext.splitlines() if l.strip().upper().startswith("QUESTION:")]
-            if q:
-                park(tid, "paused", q[0].strip()[9:].strip() or "worker asked a question")
+            if res:
+                if res["status"] in ("question", "blocked"):
+                    qs = [str(q) for q in res.get("questions", []) if q] or ["the coder is " + res["status"]]
+                    park(tid, "paused", "; ".join(qs)[:400])
+                    return
+            else:
+                q = [l for l in rtext.splitlines() if l.strip().upper().startswith("QUESTION:")]
+                if q:
+                    park(tid, "paused", q[0].strip()[9:].strip() or "worker asked a question")
+                    return
+            # scope: the real diff against the milestone's Likely files
+            s_ = load()
+            allowed = s_["tasks"][tid].get("files") or []
+            if allowed:
+                out_ = [f for f in changed_files(s_, s_["tasks"][tid]) if not path_allowed(f, allowed)]
+                new = sorted(set(out_) - set(s_["tasks"][tid].get("out_of_scope") or []))
+                if out_:
+                    patch_state(lambda s2: s2["tasks"][tid].update(out_of_scope=out_))
+                if new and s_.get("scope") == "strict":
+                    say(f"{tid} changed files outside its Likely files: {', '.join(new)} -> fix round")
+                    fix_round(tid, "scope-fix", lambda n: (
+                        f"# {tid} changed files outside its scope (round {n})\n\n"
+                        f"This milestone may change only: {', '.join(allowed)}. It also changed: "
+                        f"{', '.join(new)}.\nUndo those changes, or, if the task truly can't be done without them, "
+                        f"leave them and explain why in your report. Then run `{st['check']}`.\n"),
+                        f"still outside its scope after {MAX_FIX} fix rounds: {', '.join(new)}")
+                    return
+                if new:
+                    hot = [f for f in new if HOTSPOT_RE.search(f)]
+                    say(f"{tid} changed files outside its Likely files: {', '.join(new)}" +
+                        (f" (shared hotspot files: {', '.join(hot)})" if hot else ""), bool(hot))
+            unmet = [c for c in (res or {}).get("criteria", []) if c.get("met") is False]
+            if unmet:
+                say(f"{tid}: the coder reports {', '.join(str(c['id']) for c in unmet)} not met -> fix round")
+                fix_round(tid, "criteria-fix", lambda n: (
+                    f"# {tid}: acceptance criteria not met yet (round {n})\n\nYour result says these are not met:\n"
+                    + "\n".join(f"- {c['id']}: {c.get('evidence', '')}" for c in unmet)
+                    + f"\n\nFinish them (you decide how), run `{st['check']}`, and write a new result.\n"),
+                    f"acceptance criteria still not met after {MAX_FIX} fix rounds")
                 return
-            ok, tail = check(t["dir"])
+            ok, tail = check(t["dir"], tid)
             if ok:
                 if t["review"] and not t.get("review_ok"):
                     _, hout = run("handoff", tid)
@@ -1730,17 +2389,16 @@ def cmd_autopilot(args):
             elif code == 5:
                 say(f"{tid}: could not reach the reviewer — retrying after {SEND_RETRY_S}s\n{out}")
         elif t["status"] == "reviewed":
-            rp = str(ORCH / "review" / tid / f"review-{t['review_round']}.md")
-            rtext = Path(rp).read_text() if Path(rp).exists() else ""
-            lines = [l.strip() for l in rtext.splitlines() if l.strip()]
-            blockers = [l for l in lines if l.upper().startswith("BLOCKER")]
-            known = blockers or any(l.upper().startswith(("SUGGESTION", "NO FINDINGS")) for l in lines)
+            k = t["review_round"]
+            blockers, _, known = review_findings(tid, k)
+            where = f".orchestrate/review/{tid}/review-{k}.json"
             if not known:
-                park(tid, "paused", f"review output not in BLOCKER/SUGGESTION/NO FINDINGS format: {rp}")
+                park(tid, "paused", f"review output not usable (no valid {where}, no BLOCKER/SUGGESTION/NO FINDINGS "
+                                    f"lines in review-{k}.md)")
             elif blockers:
                 code, _ = run("bump", tid, "review", ok=(0, 3))
                 if code == 3:
-                    park(tid, "failed", f"reviewer still has blockers after {MAX_REVIEW} rounds: {rp}")
+                    park(tid, "failed", f"reviewer still has blockers after {MAX_REVIEW} rounds: {where}")
                 else:
                     run("needs-fix", tid)
                     s_ = load()
@@ -1761,7 +2419,7 @@ def cmd_autopilot(args):
         _, prep = run("prepare", tid, worker)
         if "SETUP_NEEDED" in prep:
             d = load()["tasks"][tid]["dir"]
-            say(f"installing dependencies in {d}")
+            say(f"installing dependencies in {d}" + (" (dependency files changed)" if "changed" in prep else ""))
             r = subprocess.run(st["setup"], shell=True, cwd=d, text=True, capture_output=True)
             if r.returncode != 0:
                 park(tid, "pending", f"setup command failed in {d}")
@@ -1788,12 +2446,17 @@ def cmd_autopilot(args):
             say(f"{tid} done by {agent} -> running checks")
         elif kind == "REVIEWED":
             say(f"{tid} reviewed")
+        elif kind == "UNCONFIRMED":
+            code, out = run("resend", tid, ok=(0, 5))
+            say(f"{tid}: the prompt to {agent} was recorded but not confirmed (interrupted run?) -> sent again to "
+                f"the same agent" if code == 0 else f"{tid}: could not re-send to {agent}\n{out}")
         elif kind == "ORPHAN":
             if t.get("status") == "reviewing":
                 run("requeue-review", tid)
                 say(f"{tid}: the review prompt never went out -> queued for review again")
             elif t.get("status") == "coding":
-                park(tid, "pending", "its prompt never went out (interrupted run) — will be sent again", important=False)
+                park(tid, "pending", "its prompt never went out (interrupted run) — will be sent again",
+                     important=False, lost=True)
             else:
                 park(tid, "paused", f"{t.get('status')} with no job and no agent working on it — check it and "
                                     f"`orch set {tid} pending`")
@@ -1805,7 +2468,7 @@ def cmd_autopilot(args):
                     f"Answer it there; autopilot keeps going.", True)
             time.sleep(20)
         elif kind == "IDLE":
-            if w.get("report") and Path(w["report"]).exists():
+            if (w.get("report") and Path(w["report"]).exists()) or (w.get("result") and Path(w["result"]).exists()):
                 Path(w["sentinel"]).touch()
                 say(f"{tid}: {agent} wrote its report but no done file — accepting it")
                 return
@@ -1816,13 +2479,13 @@ def cmd_autopilot(args):
             except (OSError, subprocess.TimeoutExpired):
                 pane = ""
             if RATE_RE.search(pane) and not reviewer:
-                park(tid, "pending", f"{agent} hit a usage/rate limit", important=False)
+                park(tid, "pending", f"{agent} hit a usage/rate limit", important=False, lost=True)
                 run("cooldown", agent, os.environ.get("ORCH_COOLDOWN_MIN", "60"), "rate-limit")
                 say(f"{agent} benched; {tid} will move to another coder with its work so far", True)
             else:
                 code, _ = run("nudge", tid, ok=(0, 3))
                 if code == 3:
-                    park(tid, "paused", f"{agent} stopped twice without finishing")
+                    park(tid, "paused", f"{agent} stopped twice without finishing", lost=True)
                 else:
                     say(f"{tid}: {agent} went idle early -> nudged once")
         elif kind == "TIMEOUT":
@@ -1833,12 +2496,15 @@ def cmd_autopilot(args):
                 run("cooldown", agent, GONE_COOLDOWN_MIN, "gone")
                 say(f"reviewer {agent} is gone — restart it; {tid} waits for review (the coder's work is kept)", True)
             else:
-                park(tid, "pending", f"{agent} disappeared from herdr", important=False)
+                park(tid, "pending", f"{agent} disappeared from herdr", important=False, lost=True)
                 run("cooldown", agent, GONE_COOLDOWN_MIN, "gone")
                 say(f"{agent} is gone — restart it in its folder; {tid} goes to the next free coder", True)
 
     run("sync")
     _, start_out = run("start")
+    for line in start_out.splitlines():
+        if line.startswith(("RECOVERED", "WARN agent")):
+            say(line)
     stale = [l for l in start_out.splitlines() if "STALE pane" in l]
     if stale:
         say("A pane id in plan.md is stale. Stopping.\n" + "\n".join(stale), True)
@@ -1851,21 +2517,34 @@ def cmd_autopilot(args):
         ok, tail = check(ROOT)
         (ORCH / "baseline.txt").write_text(tail)
         if not ok:
-            say("Baseline check fails on the integration branch before any work. Fix it (or use the AI lead "
-                "with orch-run, which can judge 'no new failures'). Stopping.", True)
+            (ORCH / "baseline.txt").unlink()
+            say("Baseline check fails on the feature branch before any work. Autopilot needs a green check: fix "
+                "the failures, or narrow the plan's `Check command` to what should pass (ask the lead: "
+                "`orch lead run` helps with this), then run autopilot again. Stopping.\n" + tail, True)
             sys.exit(3)
     if st.get("integration_broken"):
         ok, tail = check(ROOT)
         if not ok:
-            say(f"{st['branch']} still fails its check (broken since {st['integration_broken']} merged). "
+            say(f"{st['branch']} still fails its check (broken since {st['integration_broken']}). "
                 f"Fix it, then run autopilot again. Stopping.\n{tail}", True)
             sys.exit(3)
         patch_state(lambda s_: s_.update(integration_broken=None))
         say(f"{st['branch']} passes its check again — carrying on")
-    say(f"autopilot started: {st['isolation']} mode, max {st['max_parallel']} parallel, workers {list(st['workers'])}")
+    patch_state(lambda s_: s_["run"].setdefault("started", now()))
+    say(f"autopilot started: {st['isolation']} mode, max {st['max_parallel']} parallel, workers {list(st['workers'])}"
+        + (f", budget {st['budget_s'] // 60} min" if st.get("budget_s") else ""))
+    last_tick = time.time()
 
     while True:
         st = load()
+        # 0. budget: driving time adds up across restarts
+        el, last_tick = time.time() - last_tick, time.time()
+        patch_state(lambda s_: s_["run"].update(driven_s=round(s_["run"].get("driven_s", 0) + el, 1)))
+        st = load()
+        if st.get("budget_s") and st["run"].get("driven_s", 0) > st["budget_s"]:
+            say(f"STOPPED — the run's budget ({st['budget_s'] // 60} min of autopilot time) is used up. Raise "
+                f"`Budget:` in plan.md (or remove it) and run autopilot again; work in progress is kept.", True)
+            sys.exit(3)
 
         # 1. act on tasks waiting for us
         for tid in st["order"]:
@@ -1893,33 +2572,42 @@ def cmd_autopilot(args):
         tasks = st["tasks"]
         if all(t["status"] in ("merged", "skipped") for t in tasks.values()):
             ok, tail = check(ROOT)
+            if not ok:
+                patch_state(lambda s_: s_.update(integration_broken="the final check"))
+            patch_state(lambda s_: s_["run"].update(ended=now()))
             base = st.get("base") or "main"
             log_ = git("log", "--oneline", f"{base}..HEAD", cwd=ROOT, check=False).stdout
             stat = git("diff", "--stat", f"{base}..HEAD", cwd=ROOT, check=False).stdout
-            sugg = []
-            for p in sorted((ORCH / "review").glob("*/review-*.md")) if (ORCH / "review").exists() else []:
-                sugg += [f"- {p.parent.name}: {l.strip()}" for l in p.read_text().splitlines()
-                         if l.strip().upper().startswith("SUGGESTION")]
+            sugg, scope = [], []
+            for k, v in tasks.items():
+                for rnd in range(1, v.get("review_round", 0) + 1):
+                    sugg += [f"- {k}: {s}" for s in review_findings(k, rnd)[1]]
+                if v.get("out_of_scope"):
+                    scope.append(f"- {k}: {', '.join(v['out_of_scope'])}")
+            _, report = run("report", ok=(0, 1, 2))
             (ORCH / "summary.md").write_text(
                 f"# Summary: {st.get('title') or st['branch']}\n\nBranch `{st['branch']}` into `{base}`. "
                 f"Final check on the branch: {'PASS' if ok else 'FAIL'}\n\n"
                 "## Tasks\n" + "\n".join(f"- {k}: {v['title']} ({v['status']}, last coder {v.get('worker') or v.get('last_worker') or '-'})"
                                          for k, v in tasks.items()) +
                 f"\n\n## Commits\n```\n{log_}```\n\n## Files changed\n```\n{stat}```\n\n"
+                "## Changed outside Likely files\n" + ("\n".join(scope) or "none") + "\n\n"
                 "## Reviewer suggestions not applied\n" + ("\n".join(sugg) or "none") + "\n\n"
+                f"## Run report\n```\n{report}\n```\n\n"
                 "## Still to write (ask the lead: 'use the orch-run skill' to finish the summary)\n"
                 "- Design decisions & study notes\n- Manual verification checklist\n")
             say(f"ALL_DONE on {st['branch']} — final check {'PASS' if ok else 'FAIL'}. See .orchestrate/summary.md, "
                 f"then run `orch finish` to push {st['branch']} and open a PR into {base}", True)
             sys.exit(0 if ok else 3)
-        active = [k for k, v in tasks.items() if v["status"] in ACTIVE]
+        active = [k for k, v in tasks.items() if v["status"] in ACTIVE and v["status"] != "held"]
         ready = [k for k, v in tasks.items() if v["status"] == "pending" and deps_met(st, v)]
         if not active and not ready:
             waiting = [f"  {k} {v['status']}: {v.get('reason') or ''}" for k, v in tasks.items()
-                       if v["status"] in ("paused", "failed", "needs-answer", "pending")]
+                       if v["status"] in ("paused", "failed", "needs-answer", "pending", "held")]
             say("STOPPED — needs you:\n" + "\n".join(waiting) +
                 "\nAnswer in plan.md 'Notes from user' (set Open questions: - none), run `orch set <Mn> pending` "
-                "for paused/failed tasks, then run `orch autopilot` again (or let the lead handle it).", True)
+                "for paused/failed tasks, `orch approve <Mn>` for held ones, then run `orch autopilot` again "
+                "(or ask the lead: `orch lead run`).", True)
             sys.exit(3)
 
         # 4. wait for the next event
@@ -1932,6 +2620,80 @@ def cmd_autopilot(args):
                 guarded(evtid, lambda: on_event(ev))
 
 
+def _fmt_secs(s):
+    s = int(s or 0)
+    return f"{s // 3600}h{s % 3600 // 60:02d}m" if s >= 3600 else f"{s // 60}m{s % 60:02d}s"
+
+
+def run_report(st):
+    """Numbers for one run, from what orch recorded (attempts, checks, rounds). No guesses: unknown stays unknown."""
+    rows, tot = [], {"tasks": 0, "merged": 0, "failed": 0, "first_pass": 0, "reviewed": 0, "re_reviewed": 0,
+                     "conflicts": 0, "lost": 0, "fix_rounds": 0, "agent_s": 0, "wasted_s": 0, "check_s": 0,
+                     "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "usage_known": 0}
+    for tid in st["order"]:
+        t = st["tasks"][tid]
+        if t["status"] == "skipped":
+            continue
+        at = t.get("attempts") or []
+        coder = [a for a in at if a.get("kind") == "coder"]
+        agent_s = sum(a.get("secs", 0) for a in at)
+        wasted = sum(a.get("secs", 0) for a in at if a.get("outcome") != "done")
+        check_s = sum(c.get("secs", 0) for c in t.get("checks") or [])
+        first = (t["status"] == "merged" and t.get("fix", 0) == 0 and t.get("review_round", 0) <= 1
+                 and not t.get("conflicts") and len([a for a in coder if a.get("outcome") == "done"]) <= 1)
+        for a in at:
+            u = a.get("usage") or {}
+            if u:
+                tot["usage_known"] += 1
+            for k in ("input_tokens", "output_tokens", "cost_usd"):
+                if isinstance(u.get(k), (int, float)):
+                    tot[k] += u[k]
+        rows.append({"task": tid, "status": t["status"], "attempts": len(coder), "fix_rounds": t.get("fix", 0),
+                     "review_rounds": t.get("review_round", 0), "conflicts": t.get("conflicts", 0),
+                     "lost": t.get("lost", 0), "agent_s": agent_s, "wasted_s": wasted, "check_s": check_s,
+                     "first_pass": first})
+        tot["tasks"] += 1
+        tot["merged"] += t["status"] == "merged"
+        tot["failed"] += t["status"] == "failed"
+        tot["first_pass"] += first
+        tot["reviewed"] += t.get("review_round", 0) >= 1
+        tot["re_reviewed"] += t.get("review_round", 0) >= 2
+        for k in ("conflicts", "lost"):
+            tot[k] += t.get(k, 0)
+        tot["fix_rounds"] += t.get("fix", 0)
+        tot["agent_s"] += agent_s
+        tot["wasted_s"] += wasted
+        tot["check_s"] += check_s
+    tot["driven_s"] = (st.get("run") or {}).get("driven_s", 0)
+    return {"branch": st["branch"], "tasks": rows, "totals": tot}
+
+
+def cmd_report(args):
+    """orch report [--json] -> time, rounds, first-pass rate and wasted work for this run."""
+    rep_ = run_report(load())
+    if "--json" in args:
+        print(json.dumps(rep_, indent=2))
+        return
+    tot = rep_["totals"]
+    print(f"{'task':<5} {'status':<15} {'tries':>5} {'fix':>4} {'review':>6} {'confl':>5} {'lost':>4} "
+          f"{'agent time':>10} {'wasted':>8} {'checks':>8}  first pass")
+    for r in rep_["tasks"]:
+        print(f"{r['task']:<5} {r['status']:<15} {r['attempts']:>5} {r['fix_rounds']:>4} {r['review_rounds']:>6} "
+              f"{r['conflicts']:>5} {r['lost']:>4} {_fmt_secs(r['agent_s']):>10} {_fmt_secs(r['wasted_s']):>8} "
+              f"{_fmt_secs(r['check_s']):>8}  {'yes' if r['first_pass'] else 'no'}")
+    n = tot["tasks"] or 1
+    print(f"\nmerged {tot['merged']}/{tot['tasks']}, failed {tot['failed']}; first pass {tot['first_pass']}/"
+          f"{tot['tasks']} ({100 * tot['first_pass'] // n}%); needed a 2nd review round {tot['re_reviewed']}/"
+          f"{tot['reviewed']}; conflicts {tot['conflicts']}; lost attempts {tot['lost']}; fix rounds {tot['fix_rounds']}")
+    print(f"agent time {_fmt_secs(tot['agent_s'])}, of which wasted {_fmt_secs(tot['wasted_s'])} (attempts that "
+          f"didn't finish); checks {_fmt_secs(tot['check_s'])}; autopilot time {_fmt_secs(tot['driven_s'])}")
+    if tot["usage_known"]:
+        print(f"usage reported by agents on {tot['usage_known']} attempt(s): {tot['input_tokens']} input tokens, "
+              f"{tot['output_tokens']} output tokens, ${tot['cost_usd']:.2f}")
+    else:
+        print("tokens/cost: unknown (no agent reported `usage` in its result file)")
+
+
 COMMANDS = {
     "sync": cmd_sync, "start": cmd_start, "ready": cmd_ready, "pick": cmd_pick, "prepare": cmd_prepare,
     "setup-done": cmd_setup_done, "send": cmd_send, "review": cmd_review, "poll": cmd_poll, "bump": cmd_bump,
@@ -1939,7 +2701,8 @@ COMMANDS = {
     "status": cmd_status, "cleanup": cmd_cleanup,
     "write-task": cmd_write_task, "nudge": cmd_nudge, "autopilot": cmd_autopilot,
     "send-job": cmd_send_job, "handoff": cmd_handoff, "needs-fix": cmd_needs_fix, "review-ok": cmd_review_ok,
-    "requeue-review": cmd_requeue_review, "finish": cmd_finish,
+    "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
+    "report": cmd_report,
 }
 UNLOCKED = {"autopilot", "poll"}   # long-running: they lock per step instead of for the whole command
 
@@ -1952,9 +2715,11 @@ USAGE = """usage: orch <command> [args]
   agents launch <kind>     print the command that starts <kind> in a pane (auto-approve edits)
   agents sync [kind...]    install the orch-plan / orch-run skills for every installed agent (run it after adding a new agent)
   agents check             check the orch-plan / orch-run skills are installed for every installed agent
+  doctor [kind...]         check installed agents against the real tool: version, launch flags, skills, herdr
   sync                     parse .orchestrate/plan.md -> state.json (validates deps, cycles, overlaps)
   start                    create/switch to the feature branch (plan `Branch:`); create worker worktrees (worktree mode)
   status                   table of workers + tasks; prints ALL_DONE or STUCK when relevant
+  report [--json]          time, rounds, first-pass rate, wasted work (and tokens/cost when agents report them)
   ready                    free coder slots, FIX jobs (do these first), then READY milestones
   pick <Mn>                first available worker for the task (respects Prefer), or NONE (exit 3)
   prepare <Mn> <worker>    reserve worker, put its worktree on the milestone's saved work (detached), print TASKDIR
@@ -1964,10 +2729,11 @@ USAGE = """usage: orch <command> [args]
   bump <Mn> fix|review     count a fix/review round; exit 3 with CAP when the limit is hit
   review <Mn>              snapshot the diff and send it to the reviewer (BUSY exit 3 if reviewer occupied)
   commit <Mn>              save the task's work (shared mode: commit it on the feature branch, which lands it)
-  merge <Mn>               squash the milestone into ONE change commit on the feature branch (CONFLICT exit 4)
-  park <Mn> paused|failed|pending [reason]   free the worker, keep its work in a hidden ref (refs/orch/...)
+  merge <Mn>               squash the milestone, run the check on the result, commit it ONLY if green (CONFLICT 4, CHECK_FAILED 6, HELD 7)
+  park <Mn> paused|failed|pending [--lost] [reason]   free the worker, keep its work in a hidden ref (refs/orch/...)
   cooldown <agent> <min> [reason]  bench a worker or the reviewer (reason `gone`: ends once herdr sees it again)
-  set <Mn> <status> [reason]  manual override (pending/paused/failed also free the coder, like park)
+  set <Mn> <status> [reason] [--force]  manual override: pending/paused/failed/skipped (others need --force)
+  approve <Mn>             let a milestone held for risky changes land (works while autopilot runs)
   cleanup                  remove clean worker worktrees
   finish [--no-push]       final check, drop hidden refs + worktrees, push the feature branch, open a PR into base
   write-task <Mn>          generate TASKDIR/task.md from plan.md (+ reports of merged dependencies)
@@ -1978,8 +2744,12 @@ USAGE = """usage: orch <command> [args]
   send-job <Mn>            send a queued fix/conflict job to the task's coder (after pick + prepare)
   review-ok <Mn>           record that the reviewer approved Mn
   requeue-review <Mn>      the reviewer vanished mid-review: queue the same round again
+  resend <Mn>              re-send a recorded but unconfirmed prompt to the same agent (after a crash)
 
-Exit codes: 2 error · 3 needs you / busy / cap · 4 merge conflict · 5 prompt not delivered (retried later) · 10 poll wait
+Exit codes: 2 error · 3 needs you / busy / cap · 4 merge conflict · 5 prompt not delivered (retried later) ·
+            6 check fails on the feature branch (nothing committed) · 7 held for approval · 10 poll wait
+While `orch autopilot` runs it holds the driver lease: other commands that change the run are refused
+(status, ready, pick, report and approve still work).
 """
 
 # Env vars a Herdr pane carries. Agents whose tools run in a separate background process (Hermes runs
@@ -2205,6 +2975,78 @@ def cmd_agents(args):
     print(f"\nOverride or add kinds in {user_agents_file()}")
 
 
+def _probe(cmd, timeout=15):
+    try:
+        r = subprocess.run(cmd if isinstance(cmd, list) else shlex.split(cmd), text=True, capture_output=True,
+                           timeout=timeout, stdin=subprocess.DEVNULL)
+        return r.returncode, r.stdout + r.stderr
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        return None, str(e)
+
+
+def doctor_kind(kind, v, full=True):
+    """[(ok, message)] for one installed agent kind, or None if its binary isn't on PATH. Read-only."""
+    binary = v.get("binary", kind)
+    if not shutil.which(binary):
+        return None
+    out = []
+    if full:
+        vcmd = v.get("version_cmd") or f"{binary} --version"
+        code, text = _probe(vcmd)
+        first = next((l.strip() for l in text.splitlines() if l.strip()), "")
+        out.append((True, f"version: {first}" if code == 0 and first else f"version: unknown (`{vcmd}` failed)"))
+    hcmd = v.get("help_cmd") or f"{binary} --help"
+    code, help_ = _probe(hcmd)
+    try:
+        launch = shlex.split(v.get("launch") or binary)
+    except ValueError:
+        launch = [binary]
+    flags = [tok.split("=")[0] for tok in launch[1:] if tok.startswith("-")]
+    for fl in flags:
+        if code is None:
+            out.append((False, f"launch flag {fl}: `{hcmd}` did not run ({help_.strip()[:80]})"))
+        elif re.search(rf"(?<![\w-]){re.escape(fl)}(?![\w-])", help_):
+            out.append((True, f"launch flag {fl} is listed in `{hcmd}`"))
+        else:
+            out.append((False, f"launch flag {fl} is NOT in `{hcmd}` — the launch command in the registry may be out "
+                               f"of date (override it in {short(user_agents_file())})"))
+    if full:
+        for p, ok in agent_assets(v):
+            out.append((ok, f"skill {short(p)}" + ("" if ok else " missing — run `orch agents sync`")))
+        if v.get("herdr_detect", True):
+            code, txt = _probe([HERDR, "agent"])
+            if code == 0:
+                ok = bool(re.search(rf"(?<![\w-]){re.escape(kind)}(?![\w-])", txt))
+                out.append((ok, "herdr knows this kind" if ok else
+                            "herdr does not list this kind (`herdr agent`): set herdr_detect = false for it"))
+            else:
+                out.append((True, "herdr not reachable here: detection not checked"))
+    return out
+
+
+def cmd_doctor(args):
+    """orch doctor [kind...] -> check each installed agent against the real tool (version, launch flags, skills,
+    herdr detection). Read-only. Exit 1 if anything is broken."""
+    reg = registry()
+    kinds = [k.lower() for k in args] or list(reg)
+    broken = 0
+    for k in kinds:
+        if k not in reg:
+            print(f"BROKEN  {k}: not in the agent registry (add it in {short(user_agents_file())})")
+            broken += 1
+            continue
+        res = doctor_kind(k, reg[k])
+        if res is None:
+            print(f"skip    {k}: `{reg[k].get('binary', k)}` is not installed")
+            continue
+        bad = [m for ok, m in res if not ok]
+        broken += bool(bad)
+        print(f"{'BROKEN' if bad else 'ok':<7} {k}" + ("" if reg[k].get("verified") else "  (registry entry unverified)"))
+        for ok, m in res:
+            print(f"    {'ok ' if ok else 'BAD'} {m}")
+    sys.exit(1 if broken else 0)
+
+
 def installed_version():
     for p in (Path(__file__).resolve().parent.parent / "VERSION",
               Path.home() / ".local/share/herdr-orchestra/current/VERSION"):
@@ -2217,7 +3059,7 @@ if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] in ("version", "--version", "-v"):
         print(f"herdr-orchestra {installed_version()}")
         sys.exit(0)
-    NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents}
+    NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents, "doctor": cmd_doctor}
     if len(sys.argv) >= 2 and sys.argv[1] in NO_REPO_COMMANDS:   # work outside a git repo
         NO_REPO_COMMANDS[sys.argv[1]](sys.argv[2:])
         sys.exit(0)
@@ -2228,6 +3070,8 @@ if __name__ == "__main__":
     ORCH = ROOT / ".orchestrate"
     ORCH.mkdir(exist_ok=True)
     STATE = ORCH / "state.json"
+    if sys.argv[1] not in LEASE_FREE:
+        require_driver()
     if sys.argv[1] in UNLOCKED:
         COMMANDS[sys.argv[1]](sys.argv[2:])
     else:
