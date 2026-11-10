@@ -1,0 +1,34 @@
+---
+// One run end to end. Same layout as the plan doc's diagram; colours follow the roles.
+const box = (cx: number, cy: number, w: number) => ({ x: cx - w / 2, y: cy - 28, width: w, height: 56, rx: 8 });
+---
+<svg class="dg" viewBox="0 0 760 452" role="img" aria-label="One run: you request a feature, the lead plans, you edit the plan, orch autopilot loops coders, checks and the reviewer, each approved milestone is committed on the feature branch, and you review one pull request.">
+  <defs>
+    <marker id="rf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z" /></marker>
+  </defs>
+  <g data-step="4">
+    <rect class="zone" x="24" y="156" width="712" height="174" rx="10" />
+    <text x="720" y="182" text-anchor="end" font-size="13" font-weight="600">4. orch autopilot runs the loop, with no AI</text>
+  </g>
+  <g class="edge" marker-end="url(#rf-arrow)">
+    <path data-step="1" d="M244 100H270" />
+    <path data-step="2" d="M490 100H516" />
+    <path data-step="3" d="M626 128V142H146V212" />
+    <path data-step="4" d="M252 240H274" />
+    <path data-step="4" d="M486 240H508" />
+    <path data-step="4" d="M578 268V292H146V268" />
+    <path data-step="5" d="M650 268V372" />
+    <path data-step="5" d="M508 400H252" />
+  </g>
+  <g data-step="1"><rect class="box you" {...box(134, 100, 220)} /><text x="134" y="96" text-anchor="middle" font-size="13" font-weight="600">1. You request a feature</text><text class="quiet" x="134" y="112" text-anchor="middle" font-size="11.5">Feature, why, must, done when</text></g>
+  <g data-step="2"><rect class="box lead" {...box(380, 100, 220)} /><text x="380" y="96" text-anchor="middle" font-size="13" font-weight="600">2. Lead plans</text><text class="quiet" x="380" y="112" text-anchor="middle" font-size="11.5">1 to 4 milestones, as issues</text></g>
+  <g data-step="3"><rect class="box you" {...box(626, 100, 220)} /><text x="626" y="96" text-anchor="middle" font-size="13" font-weight="600">3. You edit plan.md</text><text class="quiet" x="626" y="112" text-anchor="middle" font-size="11.5">Deps, coder, review, answers</text></g>
+  <g data-step="4"><rect class="box coder" {...box(146, 240, 212)} /><text x="146" y="236" text-anchor="middle" font-size="13" font-weight="600">Coder builds</text><text class="quiet" x="146" y="252" text-anchor="middle" font-size="11.5">Free coder, own worktree</text></g>
+  <g data-step="4"><rect class="box" {...box(380, 240, 212)} /><text x="380" y="236" text-anchor="middle" font-size="13" font-weight="600">Checks run</text><text class="quiet" x="380" y="252" text-anchor="middle" font-size="11.5">Fail: back to coder, 3 rounds</text></g>
+  <g data-step="4"><rect class="box reviewer" {...box(614, 240, 212)} /><text x="614" y="236" text-anchor="middle" font-size="13" font-weight="600">Reviewer reads the diff</text><text class="quiet" x="614" y="252" text-anchor="middle" font-size="11.5">Reports BLOCKER file:line</text></g>
+  <text data-step="4" class="quiet" x="380" y="314" text-anchor="middle" font-size="11.5">a failed check or a blocker becomes a fix job for the next free coder</text>
+  <text data-step="5" class="quiet" x="660" y="352" font-size="11.5">approved</text>
+  <g data-step="5"><rect class="box" {...box(614, 400, 212)} /><text x="614" y="396" text-anchor="middle" font-size="13" font-weight="600">Commit on feature/&lt;name&gt;</text><text class="quiet" x="614" y="412" text-anchor="middle" font-size="11.5">Next ready milestones start</text></g>
+  <text data-step="5" class="quiet" x="380" y="390" text-anchor="middle" font-size="11.5">when every milestone is in</text>
+  <g data-step="5"><rect class="accent" {...box(146, 400, 212)} /><text x="146" y="396" text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text><text x="146" y="412" text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text></g>
+</svg>

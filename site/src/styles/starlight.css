@@ -1,0 +1,16 @@
+/* Starlight docs: match the landing page palette. */
+:root {
+  --sl-font: var(--font-sans);
+  --sl-font-mono: var(--font-mono);
+  --sl-color-accent-low: #3a2a05;
+  --sl-color-accent: #f5a524;
+  --sl-color-accent-high: #fde3a7;
+  --sl-color-black: #0b0d10;
+  --sl-color-gray-6: #12151a;
+  --sl-color-gray-5: #262b33;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #fdf0d2;
+  --sl-color-accent: #a86400;
+  --sl-color-accent-high: #4a2c00;
+}

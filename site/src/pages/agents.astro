@@ -1,0 +1,40 @@
+---
+import Base from '../layouts/Base.astro';
+import { agents } from '../lib/repo';
+const list = agents();
+---
+<Base title="Agents · herdr-orchestra" description="Every agent herdr-orchestra knows, its launch command, and how to start it as the lead.">
+  <section class="first">
+    <div class="wrap">
+      <p class="eyebrow">Agents</p>
+      <h1>Bring the agents you already use.</h1>
+      <p class="lede">These kinds ship in <code>agents.default.toml</code>. Every one can be lead, coder or reviewer. Run <code>orch agents</code> to see which are installed on your machine, and <code>orch agents sync</code> after installing a new one.</p>
+    </div>
+  </section>
+  <section>
+    <div class="wrap">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Agent</th><th>Launch command</th><th>Start it as lead</th><th>Herdr can watch it</th></tr></thead>
+          <tbody>
+            {list.map((a) => (
+              <tr id={a.kind}>
+                <td><strong>{a.name}</strong><br /><code>{a.kind}</code></td>
+                <td><code>{a.launch}</code></td>
+                <td><code>{a.invoke}</code></td>
+                <td>{a.herdr_detect ? 'Yes' : 'No, uses the done file'}</td>
+              </tr>
+            ))}
+            <tr>
+              <td><strong>Any other agent</strong></td>
+              <td>Add it to <code>~/.config/herdr-orchestra/agents.toml</code></td>
+              <td><code>Run `orch lead plan` and follow it. Feature: &lt;feature&gt;</code></td>
+              <td>Set <code>herdr_detect</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="diagram-note">The lead is whichever agent you start the plan playbook in. It never codes or reviews in its own run. <a href="/docs/agents">Agent setup and adding your own →</a></p>
+    </div>
+  </section>
+</Base>

@@ -1,0 +1,102 @@
+---
+import Base from '../layouts/Base.astro';
+import RunFlow from '../components/RunFlow.astro';
+import BranchFlow from '../components/BranchFlow.astro';
+import AutopilotLog from '../components/AutopilotLog.astro';
+import Modes from '../components/Modes.astro';
+---
+<Base title="How it works · herdr-orchestra" description="One herdr-orchestra run, step by step: plan, edit, autopilot, review the pull request.">
+  <section class="first">
+    <div class="wrap">
+      <p class="eyebrow">How it works</p>
+      <h1>One run, from request to pull request.</h1>
+      <p class="lede">A run builds one feature. It has 1 to 4 milestones, runs on one feature branch, and ends in a pull request. Here is every step, using a CSV import feature as the example.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="diagram reveal"><RunFlow /></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap grid cols-2" style="gap:48px;align-items:start">
+      <div>
+        <p class="eyebrow">Steps 1 to 3</p>
+        <h2>You set the goal. The lead writes the plan.</h2>
+        <ol class="steps" style="margin-top:28px">
+          <li><div><h3>Start the team in Herdr</h3><p>One pane each: a lead, one or more coders, and an optional reviewer. <code>orch agents launch &lt;kind&gt;</code> prints each agent's command.</p></div></li>
+          <li><div><h3>Ask the lead for a feature</h3><p>Run <code>/orch-plan &lt;feature&gt;</code> in the lead's pane. A good request has Feature, Why, Must, Must not, Already decided, Done when.</p></div></li>
+          <li><div><h3>The lead researches and plans</h3><p>It reads the codebase, finds the files and patterns involved, and writes milestones as issues. Anything it can't decide goes under Open questions, with options.</p></div></li>
+          <li><div><h3>You edit the plan</h3><p><code>.orchestrate/plan.md</code> is a normal Markdown file. Change dependencies, the preferred coder, review yes or no, and answer open questions.</p></div></li>
+        </ol>
+      </div>
+      <div class="term">
+        <div class="bar"><i></i><i></i><i></i><span>.orchestrate/plan.md</span></div>
+        <pre><span class="t-lead"># Plan: CSV import for transactions</span>
+Branch: feature/csv-import
+Check command: npm test
+Isolation: worktree
+Workers: claude-1 (claude), codex-1 (codex)
+Reviewer: reviewer (agy)
+
+<span class="t-lead">## [x] M2: Import endpoint</span>
+<span class="t-dim">Depends on:</span> M1 (shared ImportRow type)
+<span class="t-dim">Prefer:</span> any
+<span class="t-dim">Review:</span> yes
+<span class="t-dim">Goal:</span> users upload a bank CSV and get rows back
+<span class="t-dim">Acceptance criteria:</span>
+- POST /imports returns 400 when the
+  amount column is missing
+<span class="t-dim">Interfaces:</span>
+- ImportRow {'{'} date, amount, payee {'}'}
+<span class="t-dim">Open questions:</span>
+- none
+<span class="t-dim">Notes from user:</span>
+<span class="t-coder">  Use the existing upload limit (10 MB).</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap grid cols-2" style="gap:48px;align-items:start">
+      <div>
+        <p class="eyebrow">Step 4</p>
+        <h2>Autopilot runs the loop. No AI in it.</h2>
+        <ol class="steps" style="margin-top:28px">
+          <li><div><h3>Dispatch</h3><p>Each ready milestone goes to a free coder, preferring the kind you asked for. In worktree mode, independent milestones run at once.</p></div></li>
+          <li><div><h3>Check</h3><p>When a coder finishes, autopilot runs your check command. A failure sends the last 60 lines back, up to 3 rounds.</p></div></li>
+          <li><div><h3>Review</h3><p>The reviewer reads the diff and reports blockers. Each blocker round becomes a fix job for the next free coder, up to 2 rounds.</p></div></li>
+          <li><div><h3>Land</h3><p>An approved milestone is committed on the feature branch, and the milestones that depended on it unlock.</p></div></li>
+        </ol>
+      </div>
+      <AutopilotLog />
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Step 5</p>
+      <h2>One branch, one pull request.</h2>
+      <p class="lede" style="margin-bottom:36px">The run never adds bookkeeping branches or commits to your repo. You get a <code>feature/&lt;name&gt;</code> branch with a real commit per milestone, a summary in <code>.orchestrate/summary.md</code>, and a pull request to review and merge.</p>
+      <div class="diagram reveal"><BranchFlow /></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">When it stops</p>
+      <h2>You answer, it resumes.</h2>
+      <p class="lede">If a coder asks a question or a limit is hit, autopilot sends a desktop notification and explains in the log. Answer under "Notes from user" in the plan, run <code>orch set Mn pending</code>, then <code>orch autopilot</code> again. Or ask the lead to handle it with you.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Modes</p>
+      <h2 style="margin-bottom:32px">Pick per run.</h2>
+      <Modes />
+    </div>
+  </section>
+</Base>

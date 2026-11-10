@@ -1,0 +1,32 @@
+---
+// Intended git flow: one feature/<name> branch per run, a commit per milestone, one PR.
+const box = (cx: number, cy: number, w: number) => ({ x: cx - w / 2, y: cy - 28, width: w, height: 56, rx: 8 });
+---
+<svg class="dg" viewBox="0 0 760 370" role="img" aria-label="Parallel milestones land on one feature branch, then one pull request into main.">
+  <defs>
+    <marker id="bf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z" /></marker>
+    <marker id="bf-arrow-lead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--lead)" /></marker>
+  </defs>
+  <line class="main" x1="70" y1="40" x2="736" y2="40" />
+  <text x="24" y="45" font-size="13" font-weight="600">main</text>
+  <path class="branch" d="M110 40V280H690V196" marker-end="url(#bf-arrow-lead)" />
+  <text class="quiet" x="102" y="160" text-anchor="end" font-size="11.5">run starts</text>
+  <g data-step="1"><circle class="dot" cx="200" cy="280" r="6" /><text class="quiet" x="200" y="302" text-anchor="middle" font-size="11.5">M1</text></g>
+  <g data-step="3"><circle class="dot" cx="350" cy="280" r="6" /><text class="quiet" x="350" y="302" text-anchor="middle" font-size="11.5">M2</text></g>
+  <g data-step="2"><circle class="dot" cx="390" cy="280" r="6" /><text class="quiet" x="390" y="302" text-anchor="middle" font-size="11.5">M3</text></g>
+  <g data-step="4"><circle class="dot" cx="545" cy="280" r="6" /><text class="quiet" x="545" y="302" text-anchor="middle" font-size="11.5">M4</text></g>
+  <text x="150" y="330" font-size="13" font-weight="600">feature/&lt;name&gt;: one branch per run, a real commit per milestone</text>
+  <g class="edge" marker-end="url(#bf-arrow)">
+    <path data-step="2" d="M270 158H279V128H288" />
+    <path data-step="2" d="M270 158H279V200H288" />
+    <path data-step="4" d="M452 128H464V158H475" />
+    <path data-step="4" d="M452 200H464V158H475" />
+    <path data-step="5" d="M690 144V46" />
+  </g>
+  <text data-step="5" class="quiet" x="700" y="100" font-size="11.5">merge</text>
+  <g data-step="1"><rect class="box" {...box(200, 158, 140)} /><text x="200" y="154" text-anchor="middle" font-size="13" font-weight="600">M1 contract</text><text class="quiet" x="200" y="170" text-anchor="middle" font-size="11.5">Shared types</text></g>
+  <g data-step="2"><rect class="box coder" {...box(370, 128, 164)} /><text x="370" y="124" text-anchor="middle" font-size="13" font-weight="600">M2 backend</text><text class="quiet" x="370" y="140" text-anchor="middle" font-size="11.5">claude-1, own worktree</text></g>
+  <g data-step="2"><rect class="box coder" {...box(370, 200, 164)} /><text x="370" y="196" text-anchor="middle" font-size="13" font-weight="600">M3 frontend</text><text class="quiet" x="370" y="212" text-anchor="middle" font-size="11.5">codex-1, own worktree</text></g>
+  <g data-step="4"><rect class="box" {...box(545, 158, 140)} /><text x="545" y="154" text-anchor="middle" font-size="13" font-weight="600">M4 integration</text><text class="quiet" x="545" y="170" text-anchor="middle" font-size="11.5">Wires both sides</text></g>
+  <g data-step="5"><rect class="accent" {...box(684, 170, 104)} /><text x="684" y="166" text-anchor="middle" font-size="13" font-weight="600">Open PR</text><text x="684" y="182" text-anchor="middle" font-size="11.5">you merge</text></g>
+</svg>

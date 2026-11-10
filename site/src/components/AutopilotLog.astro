@@ -1,0 +1,31 @@
+---
+// A replay of .orchestrate/autopilot.log for one run. Message formats come from `orch autopilot`.
+const lines: [string, string, string?][] = [
+  ['14:02:11', "autopilot started: worktree mode, max 2 parallel, workers ['claude-1', 'codex-1']", 't-dim'],
+  ['14:02:12', 'M1 -> claude-1', 't-coder'],
+  ['14:08:40', 'M1 done by claude-1 -> running checks'],
+  ['14:09:05', 'M1 committed for review; claude-1 is free for other work'],
+  ['14:11:30', 'M1 review passed', 't-ok'],
+  ['14:11:31', 'M1 merged into feature/csv-import', 't-lead'],
+  ['14:11:32', 'M2 -> claude-1', 't-coder'],
+  ['14:11:32', 'M3 -> codex-1', 't-coder'],
+  ['14:24:48', 'M3 done by codex-1 -> running checks'],
+  ['14:25:20', 'M3 checks failed -> fix round 1', 't-bad'],
+  ['14:29:02', 'M2 done by claude-1 -> running checks'],
+  ['14:29:40', 'M2 committed for review; claude-1 is free for other work'],
+  ['14:33:15', 'M2 review: 1 blocker(s) -> fix job queued (first free coder)', 't-bad'],
+  ['14:33:16', 'M2 fix job -> claude-1', 't-coder'],
+  ['14:36:51', 'M3 review passed', 't-ok'],
+  ['14:36:52', 'M3 merged into feature/csv-import', 't-lead'],
+  ['14:41:10', 'M2 review passed', 't-ok'],
+  ['14:41:11', 'M2 merged into feature/csv-import', 't-lead'],
+  ['14:41:12', 'M4 -> codex-1', 't-coder'],
+  ['14:52:30', 'M4 merged into feature/csv-import', 't-lead'],
+  ['14:53:04', 'ALL_DONE on feature/csv-import — final check PASS. See .orchestrate/summary.md', 't-ok'],
+];
+---
+<div class="term">
+  <div class="bar"><i></i><i></i><i></i><span>~/app · orch autopilot</span></div>
+  <pre><span class="t-dim">$</span> orch autopilot
+{lines.map(([t, m, c]) => <><span class="t-dim">[{t}]</span> <span class={c}>{m}</span>{'\n'}</>)}</pre>
+</div>
