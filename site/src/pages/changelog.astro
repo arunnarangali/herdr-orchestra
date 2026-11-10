@@ -1,0 +1,18 @@
+---
+import Base from '../layouts/Base.astro';
+import { marked } from 'marked';
+import { changelog } from '../lib/repo';
+// Drop the file's own title and intro line; the page has its own header.
+const body = changelog().replace(/^# Changelog[\s\S]*?(?=^## )/m, '');
+const html = await marked.parse(body);
+---
+<Base title="Changelog · herdr-orchestra" description="Every herdr-orchestra release.">
+  <section class="first">
+    <div class="wrap narrow">
+      <p class="eyebrow">Changelog</p>
+      <h1>Releases</h1>
+      <p class="lede">Semantic versioning: major for breaking changes to the plan format or commands, minor for features, patch for fixes. Built from <code>CHANGELOG.md</code>.</p>
+      <div class="prose" style="margin-top:48px" set:html={html} />
+    </div>
+  </section>
+</Base>

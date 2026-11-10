@@ -1,0 +1,10 @@
+---
+import { INSTALL_CMD } from '../lib/repo';
+interface Props { cmd?: string }
+const { cmd = INSTALL_CMD } = Astro.props;
+---
+<div class="install">
+  <span class="prompt" aria-hidden="true">$</span>
+  <code>{cmd}</code>
+  <button class="copy" type="button" data-copy={cmd} aria-label="Copy install command">Copy</button>
+</div>

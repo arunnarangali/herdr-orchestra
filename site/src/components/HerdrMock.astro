@@ -1,0 +1,74 @@
+---
+// A Herdr window with the four panes of a team, replaying one run on a loop.
+// Lines are real orch messages or close paraphrases of what each agent does.
+type L = [seq: number, text: string, cls?: string];
+const panes: { name: string; kind: string; state: string; stateLabel: string; lines: L[] }[] = [
+  {
+    name: 'lead', kind: 'claude', state: 'plan', stateLabel: 'planning',
+    lines: [
+      [1, '› /orch-plan CSV import for transactions', 't-lead'],
+      [2, 'Researching server/routes, web/src/pages', 't-dim'],
+      [3, 'Wrote .orchestrate/plan.md: 4 milestones'],
+      [4, 'M1 contract → M2 api ∥ M3 web → M4', 't-dim'],
+      [5, 'orch sync: OK 4 tasks, isolation=worktree', 't-ok'],
+    ],
+  },
+  {
+    name: 'claude-1', kind: 'claude', state: 'working', stateLabel: 'working',
+    lines: [
+      [6, 'M2 backend: POST /imports', 't-coder'],
+      [7, 'Reading server/routes/upload.ts', 't-dim'],
+      [9, 'Editing server/imports/parse.ts'],
+      [11, 'npm test … 48 passed', 't-ok'],
+      [13, 'Report written, done file ✓', 't-dim'],
+    ],
+  },
+  {
+    name: 'codex-1', kind: 'codex', state: 'working', stateLabel: 'working',
+    lines: [
+      [6, 'M3 frontend: import page', 't-coder'],
+      [8, 'Editing web/src/pages/Import.tsx'],
+      [10, 'checks failed → fix round 1', 't-bad'],
+      [12, 'Empty file now shows an error'],
+      [14, 'npm test … 51 passed', 't-ok'],
+    ],
+  },
+  {
+    name: 'reviewer', kind: 'agy', state: 'review', stateLabel: 'reviewing',
+    lines: [
+      [14, 'Reviewing M2 diff from merge-base', 't-rev'],
+      [15, 'BLOCKER: parse.ts:41 — missing amount', 't-bad'],
+      [15, '  column returns 500 — must be 400', 't-dim'],
+      [16, 'fix job queued (first free coder)', 't-dim'],
+      [18, 'M2 round 2: no blockers ✓', 't-ok'],
+    ],
+  },
+];
+---
+<div class="term" role="img" aria-label="A Herdr window with four panes: the lead plans four milestones, two coders build the backend and frontend in parallel, and the reviewer reports a blocker that comes back as a fix job.">
+  <div class="bar"><i></i><i></i><i></i><span>herdr · csv-import</span></div>
+  <div class="herdr" data-herdr>
+    {panes.map((p) => (
+      <div class="pane">
+        <div class="title"><b>{p.name} <span class="t-dim">({p.kind})</span></b><span class={`state ${p.state}`}>{p.stateLabel}</span></div>
+        {p.lines.map(([seq, text, cls]) => <div class={`line ${cls ?? ''}`} data-seq={seq}>{text}</div>)}
+      </div>
+    ))}
+  </div>
+</div>
+<script>
+  const root = document.querySelector<HTMLElement>('[data-herdr]');
+  if (root && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const lines = [...root.querySelectorAll<HTMLElement>('.line')];
+    const max = Math.max(...lines.map((l) => Number(l.dataset.seq)));
+    let step = 0;
+    const tick = () => {
+      step = step > max + 4 ? 0 : step + 1;
+      lines.forEach((l) => l.classList.toggle('shown', Number(l.dataset.seq) <= step));
+    };
+    tick();
+    setInterval(tick, 750);
+  } else if (root) {
+    root.querySelectorAll('.line').forEach((l) => l.classList.add('shown'));
+  }
+</script>

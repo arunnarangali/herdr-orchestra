@@ -1,0 +1,22 @@
+<div class="grid cols-2">
+  <div class="card mode">
+    <h3>Worktree <code>Isolation: worktree</code></h3>
+    <p>Each coder works in its own git worktree. Independent milestones run at the same time, and each one lands when it passes checks and review.</p>
+    <pre>~/code/app            <span style="color:var(--faint)"># your folder, on feature/csv-import</span>
+~/code/app-wt/claude-1  <span style="color:var(--faint)"># M2 backend</span>
+~/code/app-wt/codex-1   <span style="color:var(--faint)"># M3 frontend</span></pre>
+    <ul>
+      <li>Pick it when milestones can be built independently.</li>
+      <li>Review is pipelined: coders move on while the reviewer reads.</li>
+    </ul>
+  </div>
+  <div class="card mode">
+    <h3>Shared <code>Isolation: shared</code></h3>
+    <p>Everyone works in your folder, one milestone at a time. Two agents in one folder would overwrite each other, so this mode is strictly sequential.</p>
+    <pre>~/code/app            <span style="color:var(--faint)"># M1, then M2, then M3</span></pre>
+    <ul>
+      <li>Pick it when every milestone depends on the one before.</li>
+      <li>The lead uses it automatically when you have one coder.</li>
+    </ul>
+  </div>
+</div>

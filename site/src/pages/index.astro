@@ -1,0 +1,171 @@
+---
+import Base from '../layouts/Base.astro';
+import Install from '../components/Install.astro';
+import HerdrMock from '../components/HerdrMock.astro';
+import RunFlow from '../components/RunFlow.astro';
+import BranchFlow from '../components/BranchFlow.astro';
+import AgentStrip from '../components/AgentStrip.astro';
+import Modes from '../components/Modes.astro';
+import { REPO_URL, version } from '../lib/repo';
+
+const roles = [
+  {
+    c: 'var(--lead)', tag: 'lead · any agent', name: 'Lead',
+    does: 'Researches the codebase and writes 1 to 4 milestones as issues: goal, why, acceptance criteria, interfaces, dependencies with reasons.',
+    never: 'Writes code or tells coders how to build it.',
+  },
+  {
+    c: 'var(--coder)', tag: 'coders · a pool', name: 'Coders',
+    does: 'Own the how: design, code, tests, fixing failed checks and review findings, resolving conflicts. Whichever is free takes the next ready milestone.',
+    never: 'Change scope or skip acceptance criteria.',
+  },
+  {
+    c: 'var(--reviewer)', tag: 'reviewer · optional', name: 'Reviewer',
+    does: 'Reads every diff and reports problems as BLOCKER: file:line — what — why.',
+    never: 'Edits code or prescribes the fix.',
+  },
+  {
+    c: 'var(--auto)', tag: 'orch autopilot · a script', name: 'Autopilot',
+    does: 'Moves work around, runs your checks, routes reviews and fix jobs, merges finished milestones.',
+    never: 'Thinks. That is why it costs nothing to run.',
+  },
+];
+
+const handles = [
+  { trigger: 'checks fail', title: 'Sends the failure back', body: 'The last 60 lines of output go to the coder who built it.', limit: 'up to 3 rounds' },
+  { trigger: 'BLOCKER', title: 'Queues a fix job', body: 'The problem, not the solution, goes to the next free coder, preferring the author.', limit: 'up to 2 rounds' },
+  { trigger: 'merge conflict', title: 'Hands back the merge', body: 'A coder merges the branch in its worktree and resolves both sides.', limit: 'up to 2 rounds' },
+  { trigger: 'usage limit', title: 'Benches the agent', body: 'Another coder continues with the work so far.', limit: '60 min cooldown' },
+  { trigger: 'permission prompt', title: 'Alerts you', body: 'A desktop notification; every other task keeps running.', limit: 'no waiting' },
+  { trigger: 'agent stops early', title: 'Nudges it once', body: 'If it stays idle, the task is parked for you.', limit: '1 nudge' },
+  { trigger: 'QUESTION:', title: 'Waits only where needed', body: 'That task and its dependents pause. Everything else continues.', limit: 'answer in plan.md' },
+  { trigger: 'coder freed', title: 'Pipelines review', body: 'Once checks pass, the coder takes the next milestone while the reviewer reads.', limit: 'worktree mode' },
+];
+---
+<Base>
+  <section class="first">
+    <div class="wrap hero">
+      <div>
+        <a class="version-pill" href="/changelog"><b>{version()}</b> Any agent can be lead, coder or reviewer</a>
+        <h1>Your AI agents, <span>working as a team.</span></h1>
+        <p class="lede">A lead plans. Coders build in parallel. A reviewer checks every diff. A plain script runs the loop, so you only pay for AI when real judgment is needed.</p>
+        <Install />
+        <div class="actions">
+          <a class="btn primary" href="/docs/quick-start">Quick start</a>
+          <a class="btn" href="/how-it-works">See how a run works</a>
+          <a class="btn" href={REPO_URL}>Star on GitHub</a>
+        </div>
+      </div>
+      <HerdrMock />
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Works with your agents</p>
+        <h2>Any installed agent can play any role.</h2>
+        <p class="lede">Mix them freely: a Claude lead, a Codex and a Claude coder, an Antigravity reviewer. Anything that can run shell commands can join.</p>
+      </div>
+      <AgentStrip />
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Who does what</p>
+        <h2>Clear roles, and clear limits.</h2>
+        <p class="lede">Each role has one job and a line it never crosses. The lead decides what and why; the coders decide how.</p>
+      </div>
+      <div class="grid cols-4">
+        {roles.map((r) => (
+          <div class="card role" style={`--c:${r.c}`}>
+            <span class="tag">{r.tag}</span>
+            <h3>{r.name}</h3>
+            <dl>
+              <dt>Does</dt><dd>{r.does}</dd>
+              <dt>Never</dt><dd class="never">{r.never}</dd>
+            </dl>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">How a run works</p>
+        <h2>You touch it three times.</h2>
+        <p class="lede">You describe the feature, edit the plan, and review the pull request. Everything in the shaded box is a script.</p>
+      </div>
+      <div class="diagram reveal"><RunFlow /></div>
+      <p class="diagram-note"><a href="/how-it-works">Walk through a full run, with the real autopilot log →</a></p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Parallel by design, clean history</p>
+        <h2>Independent work runs side by side, on one branch.</h2>
+        <p class="lede">For each pair of milestones the lead asks: could B be built and pass its checks if A never existed? If yes, two coders build them at the same time in separate git worktrees.</p>
+      </div>
+      <div class="diagram reveal"><BranchFlow /></div>
+      <div class="grid cols-3" style="margin-top:16px">
+        <div class="card"><h3>Contract first</h3><p>Parallel milestones that must fit together depend on a small milestone that defines the shared types or API.</p></div>
+        <div class="card"><h3>Scaffold first</h3><p>Routes, nav, <code>package.json</code> and other hotspot files change in one early milestone, so parallel work never collides.</p></div>
+        <div class="card"><h3>A normal branch and PR</h3><p>The run lives on one <code>feature/&lt;name&gt;</code> branch with real commits, and ends in a pull request you review like any other.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Autopilot handles it</p>
+        <h2>It stops only when it needs you.</h2>
+        <p class="lede">When something goes wrong, <code>orch autopilot</code> routes it to the right agent with a round limit. When it can't, you get a desktop notification and a line in <code>.orchestrate/autopilot.log</code>.</p>
+      </div>
+      <div class="grid cols-4">
+        {handles.map((h) => (
+          <div class="card tile">
+            <span class="trigger">{h.trigger}</span>
+            <h3>{h.title}</h3>
+            <p>{h.body}</p>
+            <span class="limit">{h.limit}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Two modes</p>
+        <h2>Parallel worktrees, or one folder in order.</h2>
+      </div>
+      <Modes />
+    </div>
+  </section>
+
+  <section class="cta">
+    <div class="wrap">
+      <p class="eyebrow">Install and go</p>
+      <h2>One line to install. Three steps to a first run.</h2>
+      <p class="lede">Needs Herdr, git, python3 (3.11+ for the agent registry) and curl. Every version stays installed side by side, so switching back is instant.</p>
+      <Install />
+      <div class="first-run">
+        <span><b>orch agents</b> &nbsp;# see which agents you have and how to launch them</span>
+        <span><b>/orch-plan &lt;feature&gt;</b> &nbsp;# in the lead's pane</span>
+        <span><b>orch autopilot</b> &nbsp;# in a spare terminal</span>
+      </div>
+      <div class="actions center" style="margin-top:28px">
+        <a class="btn primary" href="/docs/quick-start">Read the quick start</a>
+        <a class="btn" href={REPO_URL}>View on GitHub</a>
+      </div>
+    </div>
+  </section>
+</Base>
