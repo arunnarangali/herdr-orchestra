@@ -67,7 +67,7 @@ Small:           M1 the whole thing   (or M1 core → M2 polish)
 ```
 
 ## 6. Choose the isolation mode (ask if the user hasn't said)
-- **worktree**: needed whenever 2+ milestones are independent. Each coder gets its own folder `../<repo>-wt/<worker>` and branch, so they can't overwrite each other. A coder whose milestone is under review is freed to take other work. Needs a **Setup command** for fresh folders (`npm ci`, `pnpm install`, `flutter pub get`, `go mod download`…). Keep the check command free of fixed ports (no dev server); run e2e after merging.
+- **worktree**: needed whenever 2+ milestones are independent. Each coder gets its own folder `../<repo>-wt/<worker>` (on a detached HEAD, no extra branch), so they can't overwrite each other. A coder whose milestone is under review is freed to take other work. Needs a **Setup command** for fresh folders (`npm ci`, `pnpm install`, `flutter pub get`, `go mod download`…). Keep the check command free of fixed ports (no dev server); run e2e after merging.
 - **shared**: one folder, so one milestone at a time (two agents in one folder would overwrite each other's files and mix their changes). Fine when every milestone depends on the previous one.
 
 **Worktree setup:** after writing the plan, run `orch sync` and then `orch start`. Each coder's agent must run INSIDE its worktree: split a pane with `--cwd <worktree>`, launch the agent with `herdr pane run <pane> "$(orch agents launch <kind>)"`, and name it with `herdr agent rename`. If you can't do that through herdr, print the exact commands for the user. Run `orch start` again until every worker shows `herdr=found`.
@@ -81,7 +81,7 @@ Small:           M1 the whole thing   (or M1 core → M2 polish)
 
 ```
 # Plan: <feature title>
-Branch: orch/<short-slug>
+Branch: feature/<short-slug>
 Check command: <command>
 Setup command: <command | none>
 Isolation: worktree | shared
@@ -114,6 +114,8 @@ Open questions:
 - none
 Notes from user:
 ```
+
+Git: the run makes ONE branch, `Branch:` (use `feature/<slug>`, or `fix/<slug>` for a bug fix). It is created by `orch start`, not now: planning never creates a branch or a commit. orch keeps each milestone's work in progress in hidden refs (not branches), lands each milestone as one commit whose message describes the change (the coder writes it), and `orch finish` pushes the branch and opens a PR. Optional header lines: `Base: <branch>` (defaults to the branch you start from) and `Commits: single` (squash the whole run into one commit at finish; default `per-milestone`).
 
 Rules for every milestone:
 - **Acceptance criteria are observable**: "POST /upload returns 400 when the amount column is missing", not "handles errors well".
