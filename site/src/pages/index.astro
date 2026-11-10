@@ -144,20 +144,20 @@ const handles = [
   <section>
     <div class="wrap drive">
       <div class="section-head">
-        <p class="eyebrow">Your choice of driver</p>
-        <h2>Let the lead run it, or a script.</h2>
-        <p class="lede">The same loop can be driven two ways. Switch any time; the run picks up where it left off.</p>
+        <p class="eyebrow">A script drives, the lead helps</p>
+        <h2>No AI in the scheduling loop.</h2>
+        <p class="lede">A plain script runs the build. The lead steps in only when it stops, and the run picks up where it left off.</p>
       </div>
       <div class="grid cols-2">
         <div class="card">
-          <h3>The lead drives <code>/orch-run</code></h3>
-          <p>Your lead agent hands out milestones, runs checks and reviews, and reads panes when something looks off.</p>
-          <ul><li>Judgment on unclear failures</li><li>Works when the baseline check already fails</li></ul>
+          <h3>The lead handles exceptions <code>/orch-run</code></h3>
+          <p>When the script stops, your lead agent reads the status and the log, asks you what it needs and writes your answers into the plan.</p>
+          <ul><li>Judgment on unclear failures</li><li>Never edits code or prompts a coder</li></ul>
         </div>
         <div class="card">
           <h3>A script drives <code>orch autopilot</code></h3>
-          <p>The same steps as a plain program in a spare terminal. Agents only spend tokens on coding and review.</p>
-          <ul><li>No AI cost for scheduling</li><li>Good for long and overnight runs</li></ul>
+          <p>A plain program in a spare terminal hands out milestones, runs checks and reviews, and lands the results. Agents only spend tokens on coding and review.</p>
+          <ul><li>One driver per run, safe to kill and restart</li><li>Nothing red is committed; risky changes wait for you</li></ul>
         </div>
       </div>
     </div>
@@ -182,7 +182,7 @@ const handles = [
       <p class="reqs">Runs in <a href="https://herdr.dev">Herdr</a> with git, python3 and curl. <a href="/docs/installation/">Requirements</a></p>
       <div class="first-run">
         <span><b>/orch-plan &lt;feature&gt;</b> &nbsp;# the lead plans it</span>
-        <span><b>/orch-run</b> &nbsp;# the team builds it</span>
+        <span><b>orch autopilot</b> &nbsp;# the team builds it</span>
         <span><b>orch finish</b> &nbsp;# push the branch, open the PR</span>
       </div>
       <div class="actions center" style="margin-top:28px">

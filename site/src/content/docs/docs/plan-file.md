@@ -59,6 +59,11 @@ Notes from user:
 | `Lead:` | The lead's pane and kind. It can't also be a worker or the reviewer |
 | `Workers:` | Coders as `name (kind)`, or `name (kind @pane:<id>)` for a pane Herdr doesn't list as an agent |
 | `Reviewer:` | `name (kind)` or `none` |
+| `Scope:` | Optional. `warn` (default) notes files changed outside a milestone's Likely files; `strict` sends them back to the coder |
+| `Parallel:` | Optional. `allow` lets milestones with overlapping Likely files run at once |
+| `Risk hold:` | Optional. `off` stops risky changes being held for `orch approve` |
+| `Budget:` | Optional. A time limit for the whole run, e.g. `4h`; autopilot stops when it is used up |
+| `Setup inputs:` | Optional. Extra files that make the setup command run again when they change, besides lockfiles |
 
 ## Milestone sections
 
@@ -68,7 +73,7 @@ Notes from user:
 | `Depends on:` | `none`, or `M1 (what it needs from M1)`. The reason is required |
 | `Prefer:` | `any`, a worker kind (`codex`) or a worker name. A preference, not a lock |
 | `Review:` | `yes` or `no` |
-| `Likely files:` | Where the work probably lands; used to warn about overlaps |
+| `Likely files:` | Where the work probably lands; used for the scope check and to run overlapping milestones one after the other |
 | `Goal`, `Why` | The outcome and the reason |
 | `Acceptance criteria:` | Observable, testable statements |
 | `Constraints:` | Your decisions and rules that apply |

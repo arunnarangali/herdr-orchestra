@@ -1,28 +1,53 @@
 ---
 title: Driving a run
-description: Two ways to run the build loop, the lead or the orch autopilot script, and how to choose.
+description: orch autopilot drives every run; the lead helps when it stops.
 ---
 
-Once the plan is ready, something has to hand out milestones, run checks, send reviews and land the results. You choose who does that for each run. Both follow the same rules and use the same state, so you can switch between them mid-run.
+Once the plan is ready, something has to hand out milestones, run checks, send reviews and land the results. That is `orch autopilot`: a plain script you start in a spare terminal. No AI spends tokens on scheduling; agents only spend them on coding and review.
 
-| | Lead drives | Script drives |
-|---|---|---|
-| Start it | `/orch-run` in the lead's pane, or "use the orch-run skill", or ``Run `orch lead run` and follow it`` | `orch autopilot` in a spare terminal |
-| Judgment on failures | Yes: the lead reads panes and reports | No: it applies the round limits and stops for you |
-| Cost | AI tokens for every scheduling turn | None for scheduling; agents only spend tokens on coding and review |
-| Baseline check already failing | Works (judges "no new failures") | Refuses to start |
-| Best for | Short runs, unclear failures | Long runs, overnight runs |
+```bash
+orch autopilot
+```
 
-## The lead drives
+It exits 0 when every milestone has landed, or 3 when it needs you, and writes why to `.orchestrate/autopilot.log` with a desktop notification.
 
-The lead runs the loop itself: `orch ready`, `orch pick`, `orch prepare`, `orch write-task`, `orch send`, then waits with `orch poll` and handles each event (`DONE`, `REVIEWED`, `BLOCKED`, `IDLE`, `TIMEOUT`, `GONE`). It never edits code and never tells a coder how to fix something. To keep costs down it polls with long waits and suggests a fresh session after each landed milestone; everything needed to resume is on disk.
+## What it handles on its own
 
-## The script drives
+| Situation | What autopilot does |
+|---|---|
+| Milestones are ready | sends each to a free coder; milestones that touch the same files run one after the other |
+| A check fails | sends the last 60 lines back to the coder, up to 3 rounds |
+| A review finds blockers | queues a fix job for the next free coder, up to 2 rounds |
+| A merge conflicts | sends a conflict job, then has the resolution reviewed again |
+| Passes alone, fails once merged | nothing is committed; a coder gets a fix round |
+| A coder hits a usage limit | benches it for 60 minutes; another coder continues with the work so far |
+| An agent stops early | nudges it once, then parks the milestone |
+| Attempts keep getting lost | the milestone fails after 4 (`ORCH_MAX_LOST`) instead of looping |
+| Lockfiles changed | runs the setup command again in that folder |
+| A risky change | holds it until you run `orch approve Mn` |
 
-`orch autopilot` does the same loop as a plain program. It exits 0 when every milestone has landed, or 3 when it needs you, and writes why to `.orchestrate/autopilot.log` with a desktop notification.
+## One driver per run
 
-When it stops, you can answer and run it again, or ask the lead to act as the exception handler: it reads `orch status` and the log, asks you what it needs, writes your answers into the plan, and tells you to restart the script. See [When a run stops](/docs/when-it-stops/).
+While autopilot runs it holds the run's lease. A second autopilot is refused, and so is any `orch` command that would change the run from another terminal or agent. `orch status`, `orch report` and `orch approve` still work.
+
+If autopilot is killed, the lease is freed and the next run recovers: a prompt that was never confirmed is confirmed or sent again to the same agent, and a half-done merge is finished or undone.
+
+## Nothing red is committed
+
+Each milestone is squashed onto the feature branch, the check runs on that result, and only a green result is committed. The check must also pass before the run starts; autopilot refuses to start on a failing baseline.
+
+## Held for approval
+
+A milestone that deletes files, touches migrations, CI configuration or secrets files, changes dependency files it did not list, or is very large is held before it lands. Look at it, then run `orch approve Mn`. `Risk hold: off` in the plan header turns this off.
+
+## Where the lead fits
+
+The lead plans the feature and handles exceptions. It does not drive runs. When autopilot stops, ask the lead to help: `/orch-run`, "use the orch-run skill", or ``Run `orch lead run` and follow it``. It reads `orch status` and the log, asks you what it needs, writes your answers into the plan, and tells you to start autopilot again. See [When a run stops](/docs/when-it-stops/).
 
 ## Resuming
 
-Both pick up where the run left off: landed milestones are never redone, and parked milestones keep their work in hidden git refs.
+Run `orch autopilot` again. Landed milestones are never redone, and parked milestones keep their work in hidden git refs.
+
+## How the run went
+
+`orch report` prints time, rounds, first-pass rate and wasted work for the run (`--json` for a script). The same report is in `.orchestrate/summary.md` at the end.

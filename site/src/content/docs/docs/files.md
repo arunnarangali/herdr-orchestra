@@ -12,7 +12,9 @@ description: What herdr-orchestra keeps in your repo and on your machine.
 | `state.lock` | Lock so two `orch` commands can't lose updates |
 | `baseline.txt` | The check's output before any work |
 | `autopilot.log` | What the script did and why it stopped |
-| `review/Mn/review-N.md` | Each review round's findings |
+| `events.jsonl` | One line per state change, for `orch report` |
+| `driver.lock` | The lease that keeps a run to one driver |
+| `review/Mn/review-N.json` (or `.md`) | Each review round's findings |
 | `summary.md` | The run summary: commits, files, who did what, design notes, test checklist |
 
 Each coder's worktree also has a `.orch-task/` folder with its task file, fix files, report and done file. Both folders are kept out of your commits.
