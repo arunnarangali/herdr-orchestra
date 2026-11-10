@@ -36,12 +36,15 @@ The lead writes `.orchestrate/plan.md` and shows you the milestones, which ones 
 
 ## 4. Run it
 
-Pick one way to drive the run (see [Driving a run](/docs/driving/)):
+In a spare terminal:
 
-- Ask the lead: `/orch-run` (or "use the orch-run skill").
-- Or run `orch autopilot` in a spare terminal, which needs no AI to schedule.
+```bash
+orch autopilot
+```
 
-Either way, coders get their milestones, checks run, the reviewer reads each diff, and finished milestones land as commits on `feature/<name>`. If something needs you, you get a desktop notification. See [When a run stops](/docs/when-it-stops/).
+Coders get their milestones, checks run, the reviewer reads each diff, and finished milestones land as commits on `feature/<name>`. It needs no AI to schedule. See [Driving a run](/docs/driving/).
+
+If something needs you, you get a desktop notification. `/orch-run` in the lead's pane asks the lead to help with what it stopped on. See [When a run stops](/docs/when-it-stops/).
 
 ## 5. Finish
 

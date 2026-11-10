@@ -5,7 +5,7 @@ description: How a coder's work is checked and reviewed, and what happens when s
 
 ## Checks
 
-Your `Check command:` runs on every coder's result. Before the run starts it is saved as a baseline in `.orchestrate/baseline.txt`; the script needs it to pass, the lead can work with "no new failures".
+Your `Check command:` runs on every coder's result. Before the run starts it is saved as a baseline in `.orchestrate/baseline.txt`; it has to pass before the run starts. If it already fails, the lead helps you pick a narrower check that passes today.
 
 A failing check goes back to the coder with the last 60 lines of output: "These checks fail. Diagnose and fix; you decide how. Don't weaken or skip tests." Up to 3 rounds, then the milestone is parked as failed and the work is kept.
 

@@ -75,7 +75,7 @@ Small:           M1 the whole thing   (or M1 core → M2 polish)
 ## 7. Check and setup commands; baseline
 - **Check command**: one command for lint + typecheck + unit tests, taken from the repo's scripts (package.json, Makefile, pubspec.yaml, Cargo.toml, pyproject.toml…). No dev servers, no fixed ports.
 - **Setup command**: what a fresh worktree needs, or `none`.
-- Run the check yourself and save the output tail to `.orchestrate/baseline.txt`. If it already fails, list what fails. Autopilot needs a green baseline; the AI-driven run can judge "no new failures".
+- Run the check yourself. It must pass before any work: autopilot checks it at the start (and records `.orchestrate/baseline.txt` itself), and runs it on every merge before committing. If it already fails, list what fails and propose to the developer a narrower check command that passes today and still covers the feature. Never plan on "no new failures" being judged by eye.
 
 ## 8. Write `.orchestrate/plan.md` in EXACTLY this format (`orch sync` parses it)
 
@@ -86,6 +86,8 @@ Check command: <command>
 Setup command: <command | none>
 Isolation: worktree | shared
 Max parallel: <number of coders>
+Scope: warn | strict
+Budget: <e.g. 3h — optional>
 Lead: lead (<your kind>)
 Workers: claude-1 (claude), codex-1 (codex)
 Reviewer: reviewer (agy) | none
@@ -97,7 +99,8 @@ Reviewer: reviewer (agy) | none
 Depends on: none
 Prefer: any | <worker kind> | <worker name>
 Review: yes | no
-Likely files: src/a.ts, src/b.ts
+Likely files: src/a.ts, src/b.ts, src/feature/
+Parallel: <leave this line out | allow>
 Goal: <the outcome, one or two sentences>
 Why: <the user/business reason>
 Acceptance criteria:
@@ -117,8 +120,11 @@ Notes from user:
 
 Git: the run makes ONE branch, `Branch:` (use `feature/<slug>`, or `fix/<slug>` for a bug fix). It is created by `orch start`, not now: planning never creates a branch or a commit. orch keeps each milestone's work in progress in hidden refs (not branches), lands each milestone as one commit whose message describes the change (the coder writes it), and `orch finish` pushes the branch and opens a PR. Optional header lines: `Base: <branch>` (defaults to the branch you start from) and `Commits: single` (squash the whole run into one commit at finish; default `per-milestone`).
 
+Optional header lines: `Scope: strict` sends a milestone back when its coder changes files outside `Likely files` (default `warn`: listed in the summary); `Budget: 3h` stops autopilot when its running time is used up; `Risk hold: off` lets risky changes (deleted files, migrations, CI config, secrets files, unlisted dependency changes, very large diffs) land without `orch approve`; `Setup inputs: <globs>` names the files that mean "run the setup command again" (default: lockfiles and manifests).
+
 Rules for every milestone:
-- **Acceptance criteria are observable**: "POST /upload returns 400 when the amount column is missing", not "handles errors well".
+- **Acceptance criteria are observable**: "POST /upload returns 400 when the amount column is missing", not "handles errors well". One per line: orch numbers them AC1, AC2… in the milestone's `task.json`, the coder says for each whether it is met, and the reviewer checks each one. A milestone without any gets a warning.
+- **Likely files is the scope**: list every file or folder (`src/feature/`, globs work) the milestone should change, including dependency files (`package.json`, lockfiles) when it adds packages. orch compares the coder's real diff with it, runs milestones that share a listed file one after the other, and holds an unlisted dependency change for approval. `Parallel: allow` lets a milestone run next to one it shares files with (expect a merge conflict).
 - **No how**: no code blocks, no function names to create, no numbered implementation steps. `orch sync` warns if it sees them.
 - **Prefer**: a worker kind or name from `Workers:` (e.g. `claude` for UI and multi-file refactors, `codex` for focused backend and tests), otherwise `any`. A preference, not a lock.
 - **Review**: `yes` for UI, API contracts, auth, payments and schema; `no` for mechanical milestones.
@@ -128,5 +134,5 @@ Rules for every milestone:
 ## 9. Validate and hand back
 - Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, more than 4 milestones, independent milestones in shared mode, coders left idle by a fully sequential plan.
 - Run `orch status`. Show the developer: the milestones, the parallel shape (which run together), the research facts that shaped the plan, and all open questions.
-- Then say: "Plan written to .orchestrate/plan.md. Edit it: untick `[x]` to skip a milestone, change `Depends on`/`Prefer`, answer open questions under 'Notes from user' and set 'Open questions: - none'. Then run `orch autopilot` in a terminal (cheapest), or ask me to drive: `/orch-run`, "use the orch-run skill", or "Run `orch lead run` and follow it"."
+- Then say: "Plan written to .orchestrate/plan.md. Edit it: untick `[x]` to skip a milestone, change `Depends on`/`Prefer`, answer open questions under 'Notes from user' and set 'Open questions: - none'. Then run `orch autopilot` in a terminal: it drives the whole run. When it stops for you, ask me to help: `/orch-run`, "use the orch-run skill", or "Run `orch lead run` and follow it"."
 - STOP.

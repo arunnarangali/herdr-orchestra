@@ -21,6 +21,8 @@ Most settings for a run live in the plan header: branch, base, commit style, che
 | `ORCH_IDLE_GRACE_S` | 120 | How long an agent may sit idle before it counts as stopped |
 | `ORCH_POLL_STEP_S` | 10 | How often `poll` looks for events |
 | `ORCH_MAX_TASKS` | 4 | Milestone limit per run |
+| `ORCH_MAX_LOST` | 4 | Attempts a milestone may lose to unreachable or rate-limited agents before it fails |
+| `ORCH_RISK_MAX_LINES` | 1500 | Diff size above which a milestone is held for approval |
 | `ORCH_AGENTS_FILE` | `~/.config/herdr-orchestra/agents.toml` | Your agent registry overrides |
 | `ORCH_VERSION` | | Version the installer picks |
 | `HERDR` | `herdr` | Path to the Herdr binary |
