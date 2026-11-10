@@ -1,16 +1,59 @@
-/* Starlight docs: match the landing page palette. */
+/* Starlight docs: the same palette, fonts and header height as the landing pages. */
 :root {
   --sl-font: var(--font-sans);
   --sl-font-mono: var(--font-mono);
+  --sl-nav-height: 4rem;
   --sl-color-accent-low: #3a2a05;
   --sl-color-accent: #f5a524;
-  --sl-color-accent-high: #fde3a7;
-  --sl-color-black: #0b0d10;
-  --sl-color-gray-6: #12151a;
+  --sl-color-accent-high: #fcd58a;
+  --sl-color-white: #ecebe7;
+  --sl-color-gray-1: #e2e0db;
+  --sl-color-gray-2: #c4c6ca;
+  --sl-color-gray-3: #9ba1a9;
+  --sl-color-gray-4: #6b7280;
   --sl-color-gray-5: #262b33;
+  --sl-color-gray-6: #12151a;
+  --sl-color-black: #0b0d10;
+  --sl-color-bg-nav: color-mix(in srgb, #0b0d10 86%, transparent);
+  --sl-color-bg-sidebar: #0b0d10;
+  --sl-color-hairline: #262b33;
+  --sl-color-hairline-shade: #262b33;
+  --sl-color-blue-low: #0f2a27;
+  --sl-color-blue: #2dd4bf;
+  --sl-color-blue-high: #b5f5ea;
 }
 :root[data-theme='light'] {
   --sl-color-accent-low: #fdf0d2;
   --sl-color-accent: #a86400;
   --sl-color-accent-high: #4a2c00;
+  --sl-color-white: #16181c;
+  --sl-color-gray-1: #24272c;
+  --sl-color-gray-2: #3a3f46;
+  --sl-color-gray-3: #555b63;
+  --sl-color-gray-4: #8a9099;
+  --sl-color-gray-5: #e4e2dc;
+  --sl-color-gray-6: #f3f2ee;
+  --sl-color-gray-7: #f7f6f2;
+  --sl-color-black: #fbfaf7;
+  --sl-color-bg-nav: color-mix(in srgb, #fbfaf7 86%, transparent);
+  --sl-color-bg-sidebar: #fbfaf7;
+  --sl-color-hairline: #e4e2dc;
+  --sl-color-hairline-shade: #e4e2dc;
+  --sl-color-blue-low: #dff7f3;
+  --sl-color-blue: #0d9488;
+  --sl-color-blue-high: #0b4f49;
+}
+header.header { backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+.sl-markdown-content h1, .sl-markdown-content h2, .sl-markdown-content h3, h1#_top { letter-spacing: -0.02em; }
+.sl-markdown-content :not(pre) > code {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 0.1em 0.38em;
+}
+.sl-markdown-content table { font-size: 0.95em; }
+.sl-markdown-content th { background: var(--surface); color: var(--faint); font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em; }
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover {
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--lead);
+  font-weight: 600;
 }

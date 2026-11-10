@@ -9,13 +9,13 @@ interface Props {
 }
 const {
   title = 'herdr-orchestra: your AI agents, working as a team',
-  description = 'A lead plans, coders build in parallel, a reviewer checks every diff, and a plain script runs the loop. Works with Claude Code, Codex, Amp, OpenCode, Hermes and Antigravity inside Herdr.',
+  description = 'A lead plans, coders build in parallel, a reviewer checks every diff, and you get one clean pull request. Works with Claude Code, Codex, Amp, OpenCode, Hermes and Antigravity.',
 } = Astro.props;
 const path = Astro.url.pathname.replace(/\/$/, '') || '/';
 const links = [
   { href: '/how-it-works', label: 'How it works', small: true },
   { href: '/agents', label: 'Agents', small: true },
-  { href: '/docs/quick-start', label: 'Docs' },
+  { href: '/docs/introduction', label: 'Docs' },
   { href: '/changelog', label: 'Changelog', small: true },
 ];
 const v = version();
@@ -69,7 +69,7 @@ const ogImage = new URL('/og.png', Astro.site ?? Astro.url).href;
       <div class="wrap">
         <span>herdr-orchestra {v} · MIT license</span>
         <span class="spacer"></span>
-        <a href="/docs/quick-start">Docs</a>
+        <a href="/docs/introduction">Docs</a>
         <a href="/changelog">Changelog</a>
         <a href={REPO_URL}>GitHub</a>
         <a href="https://herdr.dev">Herdr</a>

@@ -1,17 +1,17 @@
 ---
-// Agents as text tiles (names, not vendor logos), read from agents.default.toml.
+// Agent tiles with each agent's mark, read from agents.default.toml.
 import { agents } from '../lib/repo';
-const MONO: Record<string, string> = { claude: 'CC', codex: 'Cx', amp: 'Am', opencode: 'OC', hermes: 'He', agy: 'AG' };
+import AgentIcon from './AgentIcon.astro';
 ---
 <div class="agents">
   {agents().map((a) => (
     <a class="agent" href={`/agents#${a.kind}`}>
-      <span class="mono" aria-hidden="true">{MONO[a.kind] ?? a.kind.slice(0, 2)}</span>
+      <span class="logo"><AgentIcon kind={a.kind} /></span>
       <span><span class="name">{a.name}</span><span class="bin">{a.binary}</span></span>
     </a>
   ))}
   <a class="agent yours" href="/docs/agents#add-your-own-agent">
-    <span class="mono" aria-hidden="true">+</span>
+    <span class="logo" aria-hidden="true">+</span>
     <span><span class="name">Your agent</span><span class="bin">agents.toml</span></span>
   </a>
 </div>

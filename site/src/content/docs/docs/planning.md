@@ -1,5 +1,5 @@
 ---
-title: Planning
+title: Planning and milestones
 description: How the lead splits a feature into milestones and decides what runs in parallel.
 ---
 
@@ -37,3 +37,14 @@ It warns about dependencies without a reason, hotspot files in parallel mileston
 ## Open questions
 
 Missing business rules, undefined data shapes and security trade-offs go under **Open questions** with 2 to 3 options. `orch sync` marks such milestones `needs-answer`, and their dependents wait.
+
+## What goes in a milestone, and what doesn't
+
+Research findings go in as **facts**, not instructions:
+
+- Good: "Uploads are handled in `server/routes/upload.ts`; categories live in the `categories` table."
+- Not allowed: "Add a `matchCategory()` function to upload.ts that loops over rows."
+
+Acceptance criteria are observable ("`POST /upload` returns 400 when the amount column is missing"), not vague ("handles errors well"). Use `Review: yes` for UI, API contracts, auth, payments and schema; `no` for mechanical milestones.
+
+The exact format is in [The plan file](/docs/plan-file/).

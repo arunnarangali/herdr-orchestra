@@ -1,64 +1,54 @@
 ---
 title: Quick start
-description: Install herdr-orchestra, start a team in Herdr, plan a feature and run it.
+description: Build your first feature with a lead, two coders and a reviewer.
 ---
 
-herdr-orchestra runs a small team of AI coding agents inside [Herdr](https://herdr.dev). An AI **lead** plans the work, a **pool of coders** builds it, an optional **reviewer** checks every diff, and a plain script, `orch autopilot`, drives the run.
+This walks through one feature from request to pull request. It assumes herdr-orchestra is [installed](/docs/installation/) and your repo has a clean working tree.
 
-## Install
+## 1. Open your team
 
-```bash
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash
-```
-
-You need [Herdr](https://herdr.dev), git, python3 (3.11+ for the agent registry) and curl. Node/npx is optional; it installs the official herdr skill.
-
-It installs:
-
-| What | Where |
-|---|---|
-| `orch` CLI (scheduler and autopilot) | `~/.local/bin/orch` |
-| `orch-plan`, `orch-run` skills | `~/.agents/skills/` and each installed agent's skills folder |
-| `/orch-plan`, `/orch-run` slash commands | Claude Code and OpenCode command folders |
-| every installed version, side by side | `~/.local/share/herdr-orchestra/` |
-
-Installed a new agent later? Run `orch agents sync` instead of the installer.
-
-## 1. Start the team
-
-Open one Herdr pane per agent. `orch agents launch <kind>` prints each agent's command.
+In Herdr, open one pane per agent in your repo. `orch agents launch <kind>` prints the right command for each kind, with edits auto-approved.
 
 | Pane | Example command | Name |
 |---|---|---|
-| Lead | any agent, e.g. `claude` or `opencode` | `lead` (the playbook does it) |
+| Lead | any agent, e.g. `claude` or `opencode` | `lead` (the lead names itself) |
 | Coder | `claude --permission-mode acceptEdits` | `claude-1` |
 | Coder | `codex --approve-for-me` | `codex-1` |
-| Reviewer (optional) | `agy --mode accept-edits` or a spare agent | `reviewer` |
+| Reviewer (optional) | `agy --mode accept-edits` or any spare agent | `reviewer` |
 
-## 2. Plan
+One coder is fine too. The lead then plans milestones one after another.
 
-Start the plan playbook in the lead's pane, for example `/orch-plan CSV import for transactions` in Claude Code or OpenCode. Any agent can lead with:
+## 2. Ask the lead for a feature
+
+In the lead's pane, start the plan playbook. In Claude Code or OpenCode:
 
 ```text
-Run `orch lead plan` and follow it. Feature: <feature>
+/orch-plan CSV import for transactions. Why: users copy rows by hand.
+Must: POST /imports, an import page. Must not: new packages.
+Done when: a bank CSV shows up as transactions.
 ```
 
-A good feature request has: Feature · Why · Must · Must not · Already decided · Done when · Mode (`shared` or `worktree`).
+Every agent also understands: ``Run `orch lead plan` and follow it. Feature: <feature>``. See [Writing a feature request](/docs/feature-request/).
 
-Then edit `.orchestrate/plan.md`: dependencies, preferred coder, review yes or no, and your answers to open questions.
+## 3. Review the plan
 
-## 3. Run
+The lead writes `.orchestrate/plan.md` and shows you the milestones, which ones run in parallel, and any open questions. Edit the file to change dependencies, the preferred coder, review yes or no, and to answer questions under "Notes from user". See [The plan file](/docs/plan-file/).
+
+## 4. Run it
+
+Pick one way to drive the run (see [Driving a run](/docs/driving/)):
+
+- Ask the lead: `/orch-run` (or "use the orch-run skill").
+- Or run `orch autopilot` in a spare terminal, which needs no AI to schedule.
+
+Either way, coders get their milestones, checks run, the reviewer reads each diff, and finished milestones land as commits on `feature/<name>`. If something needs you, you get a desktop notification. See [When a run stops](/docs/when-it-stops/).
+
+## 5. Finish
+
+Read `.orchestrate/summary.md` and test the feature. Then:
 
 ```bash
-orch autopilot
+orch finish
 ```
 
-Run it in a spare terminal. Or ask the lead to drive with `/orch-run`.
-
-## 4. When it stops
-
-You get a desktop notification and a line in `.orchestrate/autopilot.log`. Answer under "Notes from user" in the plan, run `orch set Mn pending`, then `orch autopilot` again.
-
-## 5. When it's done
-
-Read `.orchestrate/summary.md`, test the feature, and review the pull request for the run's feature branch. See [Modes and branches](/docs/modes/).
+It re-runs the check, removes the worktrees, pushes the feature branch and opens a pull request (with `gh`, or prints the compare link). Review and merge it like any other PR.

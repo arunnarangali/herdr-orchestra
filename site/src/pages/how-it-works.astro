@@ -5,7 +5,7 @@ import BranchFlow from '../components/BranchFlow.astro';
 import AutopilotLog from '../components/AutopilotLog.astro';
 import Modes from '../components/Modes.astro';
 ---
-<Base title="How it works · herdr-orchestra" description="One herdr-orchestra run, step by step: plan, edit, autopilot, review the pull request.">
+<Base title="How it works · herdr-orchestra" description="One herdr-orchestra run, step by step: plan, edit, build, review the pull request.">
   <section class="first">
     <div class="wrap">
       <p class="eyebrow">How it works</p>
@@ -26,7 +26,7 @@ import Modes from '../components/Modes.astro';
         <p class="eyebrow">Steps 1 to 3</p>
         <h2>You set the goal. The lead writes the plan.</h2>
         <ol class="steps" style="margin-top:28px">
-          <li><div><h3>Start the team in Herdr</h3><p>One pane each: a lead, one or more coders, and an optional reviewer. <code>orch agents launch &lt;kind&gt;</code> prints each agent's command.</p></div></li>
+          <li><div><h3>Open your team</h3><p>One pane each: a lead, one or more coders, and an optional reviewer. <code>orch agents launch &lt;kind&gt;</code> prints each agent's command.</p></div></li>
           <li><div><h3>Ask the lead for a feature</h3><p>Run <code>/orch-plan &lt;feature&gt;</code> in the lead's pane. A good request has Feature, Why, Must, Must not, Already decided, Done when.</p></div></li>
           <li><div><h3>The lead researches and plans</h3><p>It reads the codebase, finds the files and patterns involved, and writes milestones as issues. Anything it can't decide goes under Open questions, with options.</p></div></li>
           <li><div><h3>You edit the plan</h3><p><code>.orchestrate/plan.md</code> is a normal Markdown file. Change dependencies, the preferred coder, review yes or no, and answer open questions.</p></div></li>
@@ -63,13 +63,14 @@ Reviewer: reviewer (agy)
     <div class="wrap grid cols-2" style="gap:48px;align-items:start">
       <div>
         <p class="eyebrow">Step 4</p>
-        <h2>Autopilot runs the loop. No AI in it.</h2>
+        <h2>The team builds, checks and reviews.</h2>
         <ol class="steps" style="margin-top:28px">
           <li><div><h3>Dispatch</h3><p>Each ready milestone goes to a free coder, preferring the kind you asked for. In worktree mode, independent milestones run at once.</p></div></li>
-          <li><div><h3>Check</h3><p>When a coder finishes, autopilot runs your check command. A failure sends the last 60 lines back, up to 3 rounds.</p></div></li>
+          <li><div><h3>Check</h3><p>When a coder finishes, your check command runs on its work. A failure sends the last 60 lines back, up to 3 rounds.</p></div></li>
           <li><div><h3>Review</h3><p>The reviewer reads the diff and reports blockers. Each blocker round becomes a fix job for the next free coder, up to 2 rounds.</p></div></li>
-          <li><div><h3>Land</h3><p>An approved milestone is committed on the feature branch, and the milestones that depended on it unlock.</p></div></li>
+          <li><div><h3>Land</h3><p>An approved milestone becomes one commit on the feature branch, and the milestones that depended on it unlock.</p></div></li>
         </ol>
+        <p class="diagram-note">The lead can drive this loop (<code>/orch-run</code>), or a script can (<code>orch autopilot</code>). <a href="/docs/driving/">Which to pick →</a></p>
       </div>
       <AutopilotLog />
     </div>
@@ -79,7 +80,7 @@ Reviewer: reviewer (agy)
     <div class="wrap">
       <p class="eyebrow">Step 5</p>
       <h2>One branch, one pull request.</h2>
-      <p class="lede" style="margin-bottom:36px">The run never adds bookkeeping branches or commits to your repo. You get a <code>feature/&lt;name&gt;</code> branch with a real commit per milestone, a summary in <code>.orchestrate/summary.md</code>, and a pull request to review and merge.</p>
+      <p class="lede" style="margin-bottom:36px">The run never adds bookkeeping branches or commits to your repo. You get a <code>feature/&lt;name&gt;</code> branch with a real commit per milestone and a summary in <code>.orchestrate/summary.md</code>. Run <code>orch finish</code> and it re-checks the branch, pushes it and opens the pull request.</p>
       <div class="diagram reveal"><BranchFlow /></div>
     </div>
   </section>
@@ -88,7 +89,7 @@ Reviewer: reviewer (agy)
     <div class="wrap">
       <p class="eyebrow">When it stops</p>
       <h2>You answer, it resumes.</h2>
-      <p class="lede">If a coder asks a question or a limit is hit, autopilot sends a desktop notification and explains in the log. Answer under "Notes from user" in the plan, run <code>orch set Mn pending</code>, then <code>orch autopilot</code> again. Or ask the lead to handle it with you.</p>
+      <p class="lede">If a coder asks a question or a round limit is hit, you get a desktop notification that says why. Answer under "Notes from user" in the plan and run <code>orch set Mn pending</code>, or ask the lead to handle it with you. The run picks up where it stopped.</p>
     </div>
   </section>
 

@@ -67,7 +67,7 @@ code, kbd, pre { font-family: var(--font-mono); font-size: 0.88em; }
 .btn.primary:hover { opacity: 0.9; }
 
 /* Sections */
-section { padding: 96px 0; border-top: 1px solid var(--line); }
+section { padding: 88px 0; border-top: 1px solid var(--line); }
 section.first { border-top: 0; padding-top: 72px; }
 .eyebrow {
   font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.06em;
@@ -135,10 +135,14 @@ h3 { font-size: 19px; font-weight: 640; }
   display: flex; align-items: center; gap: 10px; padding: 10px 16px 10px 10px;
   border: 1px solid var(--line); border-radius: 12px; background: var(--surface); text-decoration: none;
 }
-.agent .mono {
-  width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center;
-  font: 700 13px var(--font-mono); background: var(--surface-2); border: 1px solid var(--line-strong);
+.agent .logo, .agent-icon.mono {
+  width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; flex: none;
+  font: 700 15px var(--font-mono); background: var(--surface-2); border: 1px solid var(--line-strong); color: var(--text);
 }
+.agent-icon { display: inline-grid; place-items: center; line-height: 0; color: var(--text); }
+.agent-icon.mono { width: 28px; height: 28px; font-size: 12px; text-transform: uppercase; line-height: 1; }
+.agent-cell { display: flex; align-items: center; gap: 12px; }
+.agent-cell .logo { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; background: var(--surface-2); border: 1px solid var(--line-strong); flex: none; }
 .agent .name { font-weight: 600; font-size: 15px; }
 .agent .bin { font-family: var(--font-mono); font-size: 12.5px; color: var(--faint); display: block; line-height: 1.2; }
 .agent.yours { border-style: dashed; }
@@ -267,3 +271,9 @@ td code { white-space: normal; overflow-wrap: anywhere; }
   .herdr { grid-template-columns: 1fr; }
   .pane { min-height: 0; }
 }
+
+/* Two ways to drive a run */
+.drive .card h3 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.drive .card h3 code { font-size: 13.5px; }
+.drive .card ul { margin: 14px 0 0; padding-left: 18px; color: var(--muted); font-size: 15.5px; }
+.reqs { color: var(--faint); font-size: 14px; margin-top: 18px; }
