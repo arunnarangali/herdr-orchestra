@@ -1,5 +1,9 @@
 # herdr-orchestra
 
+[![Website](https://img.shields.io/badge/website-herdr--orchestra.vercel.app-f5a524)](https://herdr-orchestra.vercel.app/)
+
+**Website and docs: [herdr-orchestra.vercel.app](https://herdr-orchestra.vercel.app/)**
+
 Run a small team of AI coding agents inside [Herdr](https://herdr.dev). An AI **lead** plans the work. A **pool of coders** (whichever is free) builds it, in parallel git worktrees when tasks are independent. An optional **reviewer** checks every diff. **Any installed agent can play any role**: Claude Code, Codex, Amp, OpenCode, Hermes, Antigravity (`agy`), or anything else that can run shell commands. A plain script, **`orch autopilot`**, drives the run, so you only pay for AI when real judgment is needed.
 
 ```
