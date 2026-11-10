@@ -15,4 +15,4 @@ The site reads `../VERSION`, `../CHANGELOG.md` and `../agents.default.toml` at b
 - Docs: `src/content/docs/docs/*.md`, served under `/docs/`
 - Diagrams: `src/components/RunFlow.astro`, `src/components/BranchFlow.astro`
 
-Deploying on Vercel: import the repo, set the root directory to `site`; the Astro preset needs no other settings.
+Live at https://herdr-orchestra.vercel.app/. Vercel deploys from `main` with the root directory set to `site`; the Astro preset needs no other settings.
