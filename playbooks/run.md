@@ -29,7 +29,7 @@ Extra user input = whatever the user wrote alongside asking you to run this play
 1. If the user gave answers: write them under that task's "Notes from user" in `.orchestrate/plan.md` and set its "Open questions:" to `- none`. For a paused task, also run `orch set Mn pending`.
 2. Run `orch sync`. Stop on ERROR; report any WARN.
 3. Run `orch start`. If any worker shows `herdr=NOT FOUND` or `STALE pane`, tell the user which agent to start (and in which folder; `orch agents launch <kind>` gives the command) and stop. Workers shown as `detect:off` are fine: herdr can't watch them, so only their done file and time budget count (you never get BLOCKED, IDLE or GONE for them; read their pane yourself on TIMEOUT).
-4. Run `orch status`. Resuming is automatic: merged tasks are never redone, and parked tasks keep their work as wip commits.
+4. Run `orch status`. Resuming is automatic: merged tasks are never redone, and parked tasks keep their work in hidden refs (`refs/orch/…`, never branches).
 
 ## 1. Scheduler loop (repeat until `orch status` prints ALL_DONE or STUCK)
 
@@ -49,21 +49,23 @@ Extra user input = whatever the user wrote alongside asking you to run this play
 | `DONE Mn dir=… report=…` | Read the report. If it contains a question: `orch park Mn paused "<question>"`. Otherwise go to **D. Verify**. |
 | `REVIEWED Mn review=…` | `BLOCKER:` lines: `orch bump Mn review` (CAP: park as failed), then `orch needs-fix Mn`. It queues the blockers as a problem-only fix job; the next free coder takes it in A (in shared mode the coder still holds Mn, so run `orch send-job Mn` straight away). `NO FINDINGS` or only SUGGESTIONs: `orch review-ok Mn`, then go to **E. Land**, and keep the suggestions for the summary. |
 | `BLOCKED Mn agent=X` | Run `herdr agent read X --source recent-unwrapped --lines 60`. Tell the developer exactly what X is asking, then `orch park Mn paused "X blocked: <what>"`. |
-| `IDLE Mn agent=X` | Read X's pane. If it finished but forgot the done file, and the report exists, treat it as DONE. If it shows a **usage or rate limit**: `orch park Mn pending "X rate-limited"`, `orch cooldown X 60` (the other coder then picks the task up, wip included). If it stopped early, re-send the same file ONCE. If that happens again, park it as paused. |
+| `IDLE Mn agent=X` | Read X's pane. If it finished but forgot the done file, and the report exists, treat it as DONE. If it shows a **usage or rate limit**: `orch park Mn pending "X rate-limited"`, `orch cooldown X 60 rate-limit` (the other coder then picks the task up, with the work so far). If it stopped early, re-send the same file ONCE. If that happens again, park it as paused. |
 | `TIMEOUT Mn agent=X` | Read the pane. If X is still making progress, keep waiting one more budget. Otherwise park it as paused and report. |
-| `GONE Mn agent=X` | `orch park Mn pending "X disappeared"`, `orch cooldown X 600`, and tell the developer to restart X. |
+| `GONE Mn agent=X` | Coder: `orch park Mn pending "X disappeared"`, `orch cooldown X 10 gone` (the bench ends as soon as herdr sees X again). Reviewer: `orch requeue-review Mn` and `orch cooldown X 10 gone`; the coder's work is kept and only the review waits. Tell the developer to restart X. |
+| `ORPHAN Mn status=…` | The prompt never went out (an interrupted run). `coding`: `orch park Mn pending "prompt never sent"`. `reviewing`: `orch requeue-review Mn`. Anything else: park it as paused and look. |
 
 **D. Verify** (you run it, in the task's DIR, in your own shell)
 - Run the check command and compare against `.orchestrate/baseline.txt`. Pass = exit 0, or no failures beyond the baseline.
 - **Fail**: `orch bump Mn fix`. On OK, write `fix-N.md` with the last ~40 lines of output and one line: "These checks fail. Diagnose and fix; you decide how. Don't weaken or skip tests." Then `orch send Mn fix-N.md`. On CAP, `orch park Mn failed "<summary>"`.
-- **Pass**: if the task has `Review: yes` and hasn't passed review yet, run `orch handoff Mn` and then `orch review Mn` (BUSY means it's queued). In worktree mode, handoff commits the milestone to its branch and frees the coder, so the next dispatch round gives it other work while the reviewer reviews. Otherwise go to **E. Land**.
+- **Pass**: if the task has `Review: yes` and hasn't passed review yet, run `orch handoff Mn` and then `orch review Mn` (BUSY means it's queued). In worktree mode, handoff saves the milestone to its hidden ref and frees the coder, so the next dispatch round gives it other work while the reviewer reviews. Otherwise go to **E. Land**.
 
 **E. Land**
-- Run `orch commit Mn`. In shared mode this already lands the task.
+- Run `orch commit Mn`. In shared mode this already lands the task as one commit on the feature branch.
+- If `orch send`, `send-job` or `review` exits 5 (DELIVERY_FAILED), the prompt didn't reach the agent: orch has put the task back (job kept) and benched that agent for 2 minutes. Carry on; it is dispatched again.
 - Worktree mode: run `orch merge Mn`.
-  - `MERGED`: dependents may now be READY.
+  - `MERGED`: one commit on the feature branch, titled with the coder's `COMMIT:` line. Dependents may now be READY.
   - `CONFLICT` (exit 4): orch has queued a conflict job (the coder resolves it and owns the resolution). If Mn still holds its coder, run `orch send-job Mn`; otherwise it appears as a FIX line in the next dispatch. When DONE comes back, verify (D) again, then commit and merge again. More than 2 conflicts: park as failed.
-- After every merge in worktree mode, run the check command in the main folder (the integration branch). If merging broke something, treat it like a failed check on that task.
+- After every merge in worktree mode, run the check command in the main folder (the feature branch). If merging broke something, treat it like a failed check on that task.
 - Append to `.orchestrate/summary.md`: task, worker, files changed, decisions, reviewer suggestions.
 
 **F. Loop** back to A straight away. Independent tasks keep flowing while others wait.
@@ -71,7 +73,6 @@ Extra user input = whatever the user wrote alongside asking you to run this play
 ## 2. When the loop stops
 - **STUCK**: list every paused, needs-answer and failed task with its reason and the exact question or options. Tell the developer to answer and then ask you to run `orch lead run` (or orch-run) again. STOP.
 - **ALL_DONE**:
-  1. Run the check command on the integration branch.
+  1. Run the check command on the feature branch.
   2. Finish `.orchestrate/summary.md` with these sections: Feature summary; Commits (`git log --oneline <base>..HEAD`); Files changed (`git diff --stat <base>..HEAD`); Which agent did what; Design decisions & study notes for the developer; Reviewer suggestions not applied; a Manual verification checklist (`- [ ]` per user-facing behaviour).
-  3. Worktree mode: run `orch cleanup` to remove the clean worktrees. Task branches are kept.
-  4. Tell the developer: "All tasks merged on <branch>. Review .orchestrate/summary.md, test the checklist, then merge <branch> into <base> or ask for changes."
+  3. Tell the developer: "All tasks landed on <branch>. Review .orchestrate/summary.md and test the checklist. Then run `orch finish`: it re-runs the check, removes the worktrees and hidden refs, pushes <branch> and opens a PR into <base> (`orch finish --no-push` to only clean up)." Run `orch finish` yourself only when the developer says so: it pushes.

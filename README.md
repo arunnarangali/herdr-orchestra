@@ -8,11 +8,11 @@ Run a small team of AI coding agents inside [Herdr](https://herdr.dev). An AI **
                          orch autopilot  (no AI in the loop)   ▼
         ┌─────────── dispatch ready task to a free coder (any agent kind)
         │                     │
-        │          code ──► checks ──► review ──► squash-merge into orch/<feature>
+        │          code ──► checks ──► review ──► one commit on feature/<name>
         │            ▲   fail ┘   blocker ┘   conflict ┘
         └── next tasks unlock ◄───────────────────────┘
                                                                ▼
-                                     ALL_DONE ──► you review and merge into main
+                         ALL_DONE ──► orch finish: push feature/<name>, open a PR into main
 ```
 
 ## Who does what
@@ -91,7 +91,10 @@ Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `.
    Then edit `.orchestrate/plan.md`: dependencies, preferred coder, review yes/no, and your answers to open questions.
 3. **Run:** `orch autopilot` in a spare terminal (or ask the lead to drive: `/orch-run`, "use the orch-run skill", or "Run `orch lead run` and follow it").
 4. **When it stops** (desktop notification + `.orchestrate/autopilot.log`): answer under "Notes from user" in the plan, run `orch set Mn pending`, then run `orch autopilot` again. Or ask the lead to handle it with you.
-5. **When it's done:** read `.orchestrate/summary.md`, test it, then merge `orch/<feature>` into `main`.
+5. **When it's done:** read `.orchestrate/summary.md`, test it, then run `orch finish`. It re-runs the check, removes the worktrees, pushes `feature/<name>` and opens a PR into `main` (with `gh`, or prints the compare link).
+
+### Git: one branch per run, real commits, one PR
+Planning touches no git at all. `orch start` creates the plan's `Branch:` (`feature/<slug>`) and that is the only branch a run makes: coders work on detached worktrees, and a milestone's work in progress (under review, parked, waiting for a fix) lives in hidden refs under `refs/orch/`, which `git branch` doesn't list and `git push` doesn't send. Each milestone lands as **one commit whose message says what changed** (the coder's `COMMIT:` line, e.g. `feat(api): add categories endpoint`, with a `Milestone: M2` trailer). `Commits: single` in the plan header squashes the run into one commit at finish.
 
 A good feature request: Feature · Why · Must · Must not · Already decided · Done when · Mode (`shared` or `worktree`).
 
@@ -146,7 +149,7 @@ Full stack: M1 contract (API + types) → M2 backend ∥ M3 UI → M4 integratio
 `orch sync` warns about dependencies without a reason, hotspot files in parallel milestones, "how" written into a milestone, and independent milestones left in shared mode.
 
 ### Review pipelining (worktree mode)
-When a milestone passes its checks it's committed to its branch and the coder is **freed immediately**, so it takes the next ready milestone while the reviewer works. Blockers come back as a **fix job** for the next free coder (preferring the one who built it); fix jobs go before new milestones.
+When a milestone passes its checks it's saved to its hidden ref and the coder is **freed immediately**, so it takes the next ready milestone while the reviewer works. Blockers come back as a **fix job** for the next free coder (preferring the one who built it); fix jobs go before new milestones.
 
 ### Modes
 - **worktree**: each coder works in `../<repo>-wt/<name>`, independent tasks run in parallel, and each task is squash-merged when it passes checks and review. Start each coder inside its own worktree.
@@ -157,16 +160,20 @@ When a milestone passes its checks it's committed to its branch and the coder is
 |---|---|
 | Checks fail | sends the last 60 lines back to the coder, up to 3 rounds |
 | Reviewer blockers | queued as a problem-only fix job for the next free coder, up to 2 rounds |
-| Merge conflict | the same coder merges the integration branch and resolves it, up to 2 rounds |
-| A coder hits a usage limit | benches it for 60 min; the other coder continues, with the work so far |
+| Merge conflict | the same coder merges the feature branch and resolves it, up to 2 rounds |
+| A coder hits a usage limit | benches it for 60 min; the other coder continues, with the work so far (also in shared mode) |
+| An agent disappears | coder: its task moves on with the work so far; reviewer: only the review waits. Either is used again as soon as it's back |
+| A prompt can't be delivered | the task goes back in the queue (its job kept) and that agent is retried after 2 min |
+| An orch step fails for one task | that task is paused with the error; the others keep running |
+| The check fails on the branch after a merge | stops; the next run re-checks and carries on once it passes |
 | Permission prompt | desktop alert, other tasks keep running |
 | Agent stops early | nudged once, then parked |
 | Worker writes `QUESTION:` | that task and its dependents wait; everything else continues |
 
 ### Commands
-`orch status` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind>|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch version` · `orch` (full help)
+`orch status` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind>|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch` (full help)
 
-Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (4)
+Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (4) · `ORCH_GONE_COOLDOWN_MIN` (10) · `ORCH_SEND_RETRY_S` (120) · `ORCH_HERDR_TIMEOUT_S` (30)
 
 ## Develop and release
 
