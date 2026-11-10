@@ -12,7 +12,7 @@ Task status flow
   pending -> coding -> verifying -> [awaiting-review -> reviewing -> reviewed] -> committed -> merged
   side states: needs-answer, paused, failed, conflict, skipped
 """
-import contextlib, fcntl, json, os, re, shutil, subprocess, sys, time
+import contextlib, fcntl, hashlib, json, os, re, shutil, signal, socket, subprocess, sys, time
 from pathlib import Path
 
 HERDR = os.environ.get("HERDR", "herdr")
@@ -34,7 +34,8 @@ HOTSPOT_RE = re.compile(
     r"go\.(mod|sum)|pom\.xml|build\.gradle(\.kts)?|settings\.gradle|Cargo\.(toml|lock)|requirements\.txt|"
     r"pyproject\.toml|poetry\.lock|uv\.lock|docker-compose\.ya?ml|compose\.ya?ml|Makefile|\.env\.example|"
     r"App\.(tsx|jsx|vue|svelte)|main\.(ts|tsx|js|dart|go)|routes?\.\w+|router\.\w+)$", re.I)          # inside each work dir, git-excluded
-ACTIVE = {"coding", "verifying", "awaiting-review", "reviewing", "reviewed", "committed", "conflict", "needs-fix"}
+ACTIVE = {"coding", "verifying", "awaiting-review", "reviewing", "reviewed", "committed", "conflict", "needs-fix",
+          "held"}
 TERMINAL_OK = {"merged"}
 
 
@@ -70,7 +71,28 @@ STATE = None
 def load():
     if not STATE.exists():
         die("no .orchestrate/state.json — run `orch sync` after writing plan.md")
-    return json.loads(STATE.read_text())
+    return migrate(json.loads(STATE.read_text()))
+
+
+STATE_SCHEMA = 1
+
+
+def migrate(st):
+    """Bring a state file from an older orch up to STATE_SCHEMA (a missing `schema` key means 4.5 or older)."""
+    if st.get("schema", 0) > STATE_SCHEMA:
+        die(f"state.json was written by a newer orch (schema {st['schema']}) — upgrade herdr-orchestra")
+    st["schema"] = STATE_SCHEMA
+    st.setdefault("notified", [])
+    st.setdefault("merging", None)
+    st.setdefault("root_setup_hash", None)
+    st.setdefault("run", {})
+    for t in st.get("tasks", {}).values():
+        t.setdefault("history", [])
+        t.setdefault("lost", 0)
+        t.setdefault("attempts", [])
+    for w in st.get("workers", {}).values():
+        w.setdefault("delivery_fails", 0)
+    return st
 
 
 _LOCK_DEPTH = 0
@@ -108,10 +130,72 @@ def need(args, n, usage):
         die(f"usage: orch {usage}")
 
 
+_EVENTS = []   # transitions made by this process, appended to events.jsonl once the state that holds them is saved
+
+
 def save(st):
     tmp = STATE.with_suffix(".tmp")
     tmp.write_text(json.dumps(st, indent=2))
     tmp.replace(STATE)
+    if _EVENTS:
+        with (ORCH / "events.jsonl").open("a") as f:
+            for ev in _EVENTS:
+                f.write(json.dumps(ev) + "\n")
+        _EVENTS.clear()
+
+
+def fault(point):
+    """Test hook: ORCH_FAULT=<point> kills orch (and the autopilot driving it) right here, like a crash."""
+    if os.environ.get("ORCH_FAULT") != point:
+        return
+    drv = os.environ.get("ORCH_DRIVER_PID")
+    if drv and drv.isdigit():
+        with contextlib.suppress(OSError):
+            os.kill(int(drv), signal.SIGKILL)
+    os._exit(99)
+
+
+# Every status change goes through move(). Statuses not listed as a key are terminal.
+_PARK = {"pending", "paused", "failed"}
+TRANSITIONS = {
+    "pending": {"coding", "needs-answer", "skipped"} | _PARK,
+    "needs-answer": {"pending", "skipped"},
+    "skipped": {"pending"},
+    "coding": {"verifying", "needs-fix", "conflict"} | _PARK,
+    "verifying": {"coding", "awaiting-review", "reviewing", "committed", "merged", "needs-fix"} | _PARK,
+    "awaiting-review": {"reviewing"} | _PARK,
+    "reviewing": {"reviewed", "awaiting-review"} | _PARK,
+    "reviewed": {"needs-fix", "committed", "merged"} | _PARK,
+    "needs-fix": {"coding"} | _PARK,
+    "committed": {"merged", "conflict", "needs-fix", "held"} | _PARK,
+    "held": {"committed"} | _PARK,
+    "conflict": {"coding"} | _PARK,
+    "paused": {"coding", "skipped"} | _PARK,
+    "failed": {"skipped"} | _PARK,
+    "merged": set(),
+}
+SET_OK = {"pending", "paused", "failed", "skipped"}   # what `orch set` allows without --force
+
+
+def move(st, tid, to, why=None, force=False):
+    """The only way a task's status changes: checks the transition, keeps a short history, logs an event."""
+    t = st["tasks"][tid]
+    frm = t.get("status")
+    if to != frm and not force and to not in TRANSITIONS.get(frm, set()):
+        die(f"{tid}: {frm} -> {to} is not an allowed transition"
+            + ("" if frm != "merged" else " (merged is final)"))
+    t["status"] = to
+    if why is not None:
+        t["reason"] = why
+    if to != frm or why:
+        ev = {"ts": now(), "task": tid, "from": frm, "to": to, "why": why or "",
+              "agent": t.get("worker") or t.get("last_worker"), "attempt": t.get("attempt", 0)}
+        if force:
+            ev["forced"] = True
+        hist = t.setdefault("history", [])
+        hist.append({k: ev[k] for k in ("ts", "from", "to", "why")})
+        del hist[:-50]
+        _EVENTS.append(ev)
 
 
 def now():
@@ -501,6 +585,11 @@ def cmd_sync(args):
         "title": title_m.group(1) if title_m else branch,
         "commits": commits,
         "integration_broken": old.get("integration_broken"),
+        "schema": STATE_SCHEMA,
+        "notified": old.get("notified", []),
+        "merging": old.get("merging"),
+        "root_setup_hash": old.get("root_setup_hash"),
+        "run": old.get("run", {}),
         "isolation": isolation,
         "max_parallel": max_par,
         "check": get("check command"),
@@ -522,6 +611,7 @@ def cmd_sync(args):
         st["workers"][name] = {"kind": kind, "task": ow.get("task"), "cooldown_until": ow.get("cooldown_until", 0),
                                "cooldown_reason": ow.get("cooldown_reason", ""),
                                "dir": ow.get("dir"), "setup_done": ow.get("setup_done", False),
+                               "setup_hash": ow.get("setup_hash"), "delivery_fails": ow.get("delivery_fails", 0),
                                "pane": pane, "detect": detect(kind, pane, "Workers")}
     for t in tasks:
         tid = t["id"]
@@ -541,16 +631,18 @@ def cmd_sync(args):
             "title": t["title"], "deps": deps[tid],
             "prefer": field(t, "prefer", "any").split()[0].lower() if field(t, "prefer", "any") else "any",
             "review": field(t, "review", "no").lower().startswith("y") and reviewer is not None,
-            "status": status, "reason": o.get("reason", ""),
+            "status": o.get("status", "pending"), "reason": o.get("reason", ""),
             "worker": o.get("worker"), "dir": o.get("dir"), "attempt": o.get("attempt", 0),
             "fix": o.get("fix", 0), "review_round": o.get("review_round", 0),
             "wait": o.get("wait"),
         }
+        if status != st["tasks"][tid]["status"]:
+            move(st, tid, status, {"skipped": "unticked in plan.md", "needs-answer": "open questions in plan.md"}
+                 .get(status, ""), force=True)
     for tid, t in st["tasks"].items():
         skipped = [d for d in t["deps"] if st["tasks"][d]["status"] == "skipped"]
         if skipped and t["status"] in ("pending", "needs-answer"):
-            t["status"] = "needs-answer"
-            t["reason"] = f"depends on skipped {', '.join(skipped)} — ask the developer"
+            move(st, tid, "needs-answer", f"depends on skipped {', '.join(skipped)} — ask the developer", force=True)
             warns.append(f"{tid} depends on skipped {skipped}")
     # a coder (or the reviewer) can't stay tied to a milestone that left the plan or is no longer in progress
     for name, w in st["workers"].items():
@@ -561,6 +653,7 @@ def cmd_sync(args):
     rb = st["tasks"].get(st["reviewer_busy"]) if st.get("reviewer_busy") else None
     if st.get("reviewer_busy") and (rb is None or rb["status"] != "reviewing"):
         st["reviewer_busy"] = None
+    migrate(st)
     save(st)
     for w in warns:
         print("WARN:", w)
@@ -852,7 +945,8 @@ def cmd_prepare(args):
             die("main tree has uncommitted changes that no milestone owns — commit, stash or discard them first")
     (d / TASK_DIR / tid).mkdir(parents=True, exist_ok=True)
     t.update(worker=worker, last_worker=worker, dir=str(d),
-             status="conflict" if t["status"] == "conflict" else "coding")
+             )
+    move(st, tid, "conflict" if t["status"] == "conflict" else "coding")
     w["task"] = tid
     save(st)
     print(f"DIR {d}")
@@ -916,7 +1010,7 @@ def cmd_send(args):
     t["attempt"] = k
     if (t.get("job") or {}).get("file") == fname:
         t["job"] = None                          # delivered: the job is now the coder's
-    t["status"] = "coding"
+    move(st, tid, "coding")
     t["wait"] = {"agent": t["worker"], "sentinel": str(sentinel), "report": str(d / rel / f"report-{k}.md"),
                  "since": now(), "kind": "coder", "prompt": text, "nudges": 0}
     save(st)
@@ -977,7 +1071,8 @@ def cmd_needs_fix(args):
                 f"solve it. Keep every acceptance criterion in {TASK_DIR}/{tid}/task.md, then run `{st['check']}`.\n"
                 "If you think a finding is wrong, explain why in your report instead of changing code for it.\n\n"
                 + "\n".join(blockers) + "\n"}
-    t["status"], t["review_ok"], t["wait"] = "needs-fix", False, None
+    move(st, tid, "needs-fix")
+    t["review_ok"], t["wait"] = False, None
     save(st)
     print(f"QUEUED fix job for {tid} ({len(blockers)} blocker(s))" + ("" if holds(st, tid) else " — any free coder"))
 
@@ -1002,7 +1097,7 @@ def cmd_review(args):
     ri = st.get("reviewer_info") or {}
     busy = st.get("reviewer_busy") and st["reviewer_busy"] != tid
     if busy or cooling(st["reviewer"], ri):
-        t["status"] = "awaiting-review"
+        move(st, tid, "awaiting-review")
         save(st)
         why = f"is on {st['reviewer_busy']}" if busy else "is benched (cooldown)"
         print(f"BUSY reviewer {why}; {tid} queued as awaiting-review")
@@ -1038,7 +1133,7 @@ def cmd_review(args):
     try:
         deliver(st, st["reviewer"], rtext)
     except DeliveryError as e:
-        t["status"] = "awaiting-review"
+        move(st, tid, "awaiting-review")
         if st.get("reviewer_info") is not None:
             st["reviewer_info"]["cooldown_until"] = now() + SEND_RETRY_S
             st["reviewer_info"]["cooldown_reason"] = "unreachable"
@@ -1047,7 +1142,7 @@ def cmd_review(args):
         sys.exit(5)
     t["review_round"] = k
     st["reviewer_busy"] = tid
-    t["status"] = "reviewing"
+    move(st, tid, "reviewing")
     t["wait"] = {"agent": st["reviewer"], "sentinel": str(sentinel), "report": str(rd / f"review-{k}.md"),
                  "since": now(), "kind": "reviewer", "prompt": rtext, "nudges": 0}
     save(st)
@@ -1063,7 +1158,8 @@ def cmd_requeue_review(args):
     if t["status"] != "reviewing":
         die(f"{tid} is {t['status']}, expected reviewing")
     t["review_round"] = max(0, t["review_round"] - 1)
-    t["status"], t["wait"] = "awaiting-review", None
+    move(st, tid, "awaiting-review")
+    t["wait"] = None
     if st.get("reviewer_busy") == tid:
         st["reviewer_busy"] = None
     save(st)
@@ -1097,12 +1193,12 @@ def cmd_poll(args):
                 age = now() - w["since"]
                 if sentinel.exists():
                     if w["kind"] == "coder":
-                        t["status"] = "verifying"
+                        move(st, tid, "verifying")
                         t["last_report"] = w["report"]
                         t["commit_msg"] = report_commit_line(w["report"]) or t.get("commit_msg")
                         events.append(f"DONE {tid} worker={agent} dir={t['dir']} report={w['report']}")
                     else:
-                        t["status"] = "reviewed"
+                        move(st, tid, "reviewed")
                         st["reviewer_busy"] = None
                         events.append(f"REVIEWED {tid} review={w['report']}")
                     t["wait"] = None
@@ -1161,7 +1257,7 @@ def cmd_commit(args):
     if st["isolation"] == "worktree" and not holds(st, tid):
         if not work_ref(st, tid):
             die(f"{tid} has no saved work ({task_ref(st, tid)})")
-        t["status"] = "committed"
+        move(st, tid, "committed")
         save(st)
         print(f"COMMITTED {tid} (saved in {task_ref(st, tid)} since handoff)")
         return
@@ -1176,14 +1272,15 @@ def cmd_commit(args):
         return
     wip_commit(d, f"orch wip {tid}: ready to land")
     git("update-ref", task_ref(st, tid), "HEAD", cwd=d)
-    t["status"] = "committed"
+    move(st, tid, "committed")
     save(st)
     print(f"COMMITTED {tid} (saved in {task_ref(st, tid)})")
 
 
 def _finish(st, tid):
     t = st["tasks"][tid]
-    t["status"], t["reason"], t["wait"] = "merged", "", None
+    move(st, tid, "merged", "")
+    t["wait"] = None
     if t.get("worker") and st["workers"].get(t["worker"], {}).get("task") == tid:
         st["workers"][t["worker"]]["task"] = None
     save(st)
@@ -1205,8 +1302,7 @@ def cmd_merge(args):
     if r.returncode != 0:
         files = git("diff", "--name-only", "--diff-filter=U", cwd=ROOT, check=False).stdout.split()
         git("reset", "--hard", "-q", "HEAD", cwd=ROOT)
-        t["status"] = "conflict"
-        t["reason"] = "merge conflict in " + (", ".join(files) or "(see git status)")
+        move(st, tid, "conflict", "merge conflict in " + (", ".join(files) or "(see git status)"))
         t["conflicts"] = t.get("conflicts", 0) + 1
         t["job"] = {"file": f"conflict-{t['conflicts']}.md", "body":
                     f"# Merge conflict for {tid}: {t['title']}\n\n"
@@ -1227,7 +1323,7 @@ def cmd_merge(args):
     print(f"MERGED {tid} into {st['branch']}")
 
 
-def _park(st, tid, status, reason):
+def _park(st, tid, status, reason, force=False):
     """Free the task's coder (and the reviewer) and keep its work in its hidden ref."""
     t = st["tasks"][tid]
     d, w = t.get("dir"), t.get("worker")
@@ -1244,7 +1340,8 @@ def _park(st, tid, status, reason):
         t["last_worker"], t["worker"] = w, None
     if st.get("reviewer_busy") == tid:
         st["reviewer_busy"] = None
-    t["status"], t["reason"], t["wait"] = status, reason, None
+    move(st, tid, status, reason, force=force)
+    t["wait"] = None
     save(st)
 
 
@@ -1276,21 +1373,29 @@ def cmd_cooldown(args):
 
 
 STATUSES = {"pending", "coding", "verifying", "awaiting-review", "reviewing", "reviewed", "committed", "merged",
-            "needs-answer", "paused", "failed", "conflict", "skipped", "needs-fix"}
+            "needs-answer", "paused", "failed", "conflict", "skipped", "needs-fix", "held"}
 
 
 def cmd_set(args):
-    """orch set Mn <status> [reason] — manual override. pending/paused/failed also free the coder like `park`."""
-    need(args, 2, "set <Mn> <status> [reason]")
+    """orch set Mn <status> [reason] [--force] — manual override. pending/paused/failed also free the coder like
+    `park`. Only pending, paused, failed and skipped are allowed without --force; a forced change is logged."""
+    force = "--force" in args
+    args = [a for a in args if a != "--force"]
+    need(args, 2, "set <Mn> <status> [reason] [--force]")
     tid, status, reason = args[0], args[1], " ".join(args[2:])
     if status not in STATUSES:
         die(f"unknown status {status!r} — one of {', '.join(sorted(STATUSES))}")
+    if status not in SET_OK and not force:
+        die(f"`orch set` only moves a task to {', '.join(sorted(SET_OK))}; setting {status!r} by hand skips the "
+            f"steps that make it true — add --force if you really mean it")
     st = load()
-    t = task(st, tid)
+    task(st, tid)
+    if force:
+        reason = ("manual override: " + reason).strip()
     if status in ("pending", "paused", "failed"):
-        _park(st, tid, status, reason)
+        _park(st, tid, status, reason, force=force)
     else:
-        t["status"], t["reason"] = status, reason
+        move(st, tid, status, reason, force=force)
         save(st)
     print("OK")
 
@@ -1502,7 +1607,6 @@ def cmd_autopilot(args):
     me = [sys.executable, os.path.abspath(__file__)]
     check_timeout = int(os.environ.get("ORCH_CHECK_TIMEOUT_MIN", "30")) * 60
     log = ORCH / "autopilot.log"
-    notified = set()
 
     def say(msg, important=False):
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
@@ -1694,9 +1798,9 @@ def cmd_autopilot(args):
                 park(tid, "paused", f"{t.get('status')} with no job and no agent working on it — check it and "
                                     f"`orch set {tid} pending`")
         elif kind == "BLOCKED":
-            key = (tid, t.get("attempt"), w.get("kind"))
-            if key not in notified:
-                notified.add(key)
+            key = f"{tid}:{t.get('attempt')}:{w.get('kind')}"
+            if key not in s_.get("notified", []):          # kept in state: a restart doesn't alert twice
+                patch_state(lambda s2: s2["notified"].append(key))
                 say(f"{agent} is waiting for a PERMISSION/QUESTION in its pane (task {tid}). "
                     f"Answer it there; autopilot keeps going.", True)
             time.sleep(20)
