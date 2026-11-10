@@ -23,7 +23,7 @@ newrepo() {  # newrepo <name> ; sets APP and FH
 status_of(){ python3 -c "import json;print(json.load(open('$APP/.orchestrate/state.json'))['tasks']['$1']['status'])"; }
 
 PLAN5='# Plan: Categories
-Branch: orch/cat
+Branch: feature/cat
 Check command: test ! -f broken.txt
 Setup command: none
 Isolation: ISO
@@ -69,7 +69,11 @@ check "M4 paused with its question" '[ "$(status_of M4)" = paused ] && grep -q "
 check "M3 saw both dependencies" 'grep -q deps-ok c.txt'
 check "review blocker was fixed" 'grep -q validated b.txt'
 check "conflict resolved, both lines kept" 'grep -q "M1 line" shared.txt && grep -q "M2 line" shared.txt'
-check "one commit per merged task" '[ "$(git log --oneline | grep -c "orch(M")" -eq 3 ]'
+check "one commit per merged task" '[ "$(git log --format=%B | grep -c "^Milestone: M")" -eq 3 ]'
+check "commit subject is the coder's COMMIT line" 'git log --format=%s | grep -qx "feat(api): add the categories endpoint"'
+check "no milestone-named commits on the branch" '! git log --format=%s | grep -qE "^(orch|wip)[( ]"'
+check "the run made one branch, no milestone branches" '[ "$(git branch --format="%(refname:short)" | sort | tr "\n" " ")" = "feature/cat main " ]'
+check "parked M4 keeps its work in a hidden ref only" '! git branch -a | grep -q M4'
 
 echo "2. resume after the developer answers"
 python3 - "$APP/.orchestrate/plan.md" <<'PY'
@@ -81,7 +85,15 @@ PY
 timeout 120 "$ORCH" autopilot > "$WORK/wt2.log" 2>&1; code=$?
 check "ALL_DONE (exit 0)" '[ $code -eq 0 ]'
 check "M4 merged with the answer" '[ "$(status_of M4)" = merged ] && [ -f d.txt ]'
-check "summary written" 'grep -q "Final check on integration branch: PASS" .orchestrate/summary.md'
+check "summary written" 'grep -q "Final check on the branch: PASS" .orchestrate/summary.md'
+git init -q --bare "$WORK/remote.git"; git remote add origin "$WORK/remote.git"
+git update-ref refs/orch/feature-cat/M9 HEAD   # a leftover hidden ref
+"$ORCH" sync >/dev/null   # a second sync keeps the reviewer's state readable
+out=$("$ORCH" finish 2>&1); code=$?
+check "finish pushes the feature branch" '[ $code -eq 0 ] && git --git-dir="$WORK/remote.git" rev-parse -q --verify feature/cat >/dev/null'
+check "finish removes hidden refs and worktrees" '[ -z "$(git for-each-ref refs/orch)" ] && [ ! -d "$APP/../app-wt/claude-1" ]'
+check "finish says how to open the PR" 'grep -q "OPEN A PR from feature/cat into main" <<<"$out"'
+check "only the feature branch was pushed" '[ "$(git --git-dir="$WORK/remote.git" for-each-ref --format="%(refname)" | tr "\n" " ")" = "refs/heads/feature/cat " ]'
 
 echo "3. rate limit moves the task (and its partial work) to the other coder"
 newrepo rl
@@ -100,7 +112,7 @@ sed -i 's/## \[x\] M4: Totals/## [ ] M4: Totals/' .orchestrate/plan.md
 timeout 180 "$ORCH" autopilot > "$WORK/sh.log" 2>&1; code=$?
 check "finished (exit 0)" '[ $code -eq 0 ]'
 check "no worktrees created" '[ ! -d "$APP/../app-wt" ]'
-check "tasks landed in order" '[ "$(git log --format=%s | grep -c "orch(M")" -ge 2 ]'
+check "tasks landed in order" '[ "$(git log --format=%B | grep -c "^Milestone: M")" -ge 2 ]'
 
 echo "5. permission prompt alerts, early stop is nudged then parked"
 newrepo bl
@@ -115,7 +127,7 @@ newrepo pl; touch "$FH/slow-review"
 printf '# Plan: t\nBranch: orch/pl\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M2: Endpoint\nDepends on: none\nReview: yes\nOpen questions:\n- none\n\n## [x] M6: Other screen\nDepends on: none\nReview: no\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 150 "$ORCH" autopilot > "$WORK/pl.log" 2>&1; code=$?
 check "finished (exit 0)" '[ $code -eq 0 ]'
-check "coder freed at handoff" 'grep -q "M2 committed for review; codex-1 is free" "$WORK/pl.log"'
+check "coder freed at handoff" 'grep -q "M2 saved for review; codex-1 is free" "$WORK/pl.log"'
 check "M6 started while M2 was in review" '[ "$(grep -n "M6 -> codex-1" "$WORK/pl.log" | cut -d: -f1)" -lt "$(grep -n "M2 review: 1 blocker" "$WORK/pl.log" | cut -d: -f1)" ]'
 check "blocker fix ran as a queued job" 'grep -q "M2 fix job -> codex-1" "$WORK/pl.log"'
 check "fix kept on M2 and merged" '[ "$(status_of M2)$(status_of M6)" = mergedmerged ] && grep -q validated b.txt'
@@ -222,6 +234,92 @@ check "prompt went through pane send-text + enter" 'grep -q "pane w9:p2 (hermes-
 check "agent prompt was not used for it" '! grep -q "^hermes-1 <-" "$FH/prompts.log" 2>/dev/null'
 sed -i 's/@pane:w9:p2/@pane:w9:p7/' .orchestrate/plan.md; "$ORCH" sync >/dev/null
 check "stale pane id reported by start" '"$ORCH" start | grep -q "STALE pane w9:p7"'
+
+echo "12. recovery: an error in one task never crashes or hangs the run"
+newrepo srl; echo "$APP" > "$FH/claude-1.dir"; echo "$APP" > "$FH/codex-1.dir"
+printf '# Plan: t\nBranch: feature/srl\nCheck command: true\nIsolation: shared\nMax parallel: 1\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M1: Model\nDepends on: none\nPrefer: codex\nOpen questions:\n- none\n' > .orchestrate/plan.md
+touch "$FH/ratelimit-codex-1-M1"
+timeout 120 "$ORCH" autopilot > "$WORK/srl.log" 2>&1; code=$?
+check "shared mode: rate-limited task moves to the other coder" '[ $code -eq 0 ] && "$ORCH" status | grep -q "M1 .*merged .*claude-1"'
+check "shared mode: partial work came along" 'git show --stat HEAD | grep -q partial-M1.txt && ! grep -q Traceback "$WORK/srl.log"'
+
+newrepo rg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; touch "$FH/slow-review"
+printf '# Plan: t\nBranch: feature/rg\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: reviewer (agy)\n\n## [x] M5: E\nDepends on: none\nReview: yes\nOpen questions:\n- none\n' > .orchestrate/plan.md
+( for _ in $(seq 300); do grep -q review-task "$FH/prompts.log" 2>/dev/null && break; sleep 0.2; done
+  touch "$FH/reviewer.gone"; sleep 4; rm -f "$FH/reviewer.gone" ) &
+timeout 120 "$ORCH" autopilot > "$WORK/rg.log" 2>&1; code=$?; wait
+check "reviewer gone: no crash, review waits, then lands" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && ! grep -q Traceback "$WORK/rg.log"'
+check "reviewer gone: the coder did not rebuild it" '[ "$(grep -c "M5 -> claude-1" "$WORK/rg.log")" -eq 1 ] && grep -q "reviewer reviewer is gone" "$WORK/rg.log"'
+
+newrepo fl; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+printf '#!/usr/bin/env bash\nif [ "$1 $2" = "agent prompt" ] && [ ! -f "$FH/failed-once" ]; then touch "$FH/failed-once"; echo "socket timeout" >&2; exit 1; fi\nexec "%s" "$@"\n' "$ROOT/tests/sim/herdr" > "$WORK/flaky-herdr"; chmod +x "$WORK/flaky-herdr"
+printf '# Plan: t\nBranch: feature/fl\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M5: E\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+HERDR="$WORK/flaky-herdr" ORCH_SEND_RETRY_S=2 timeout 60 "$ORCH" autopilot > "$WORK/fl.log" 2>&1; code=$?
+check "a failed prompt is retried, not a crash or a hang" '[ $code -eq 0 ] && grep -q "could not reach claude-1" "$WORK/fl.log" && [ "$(status_of M5)" = merged ]'
+
+newrepo gn; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+printf '# Plan: t\nBranch: feature/gn\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M7: H\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 60 "$ORCH" autopilot > "$WORK/gn.log" 2>&1; code=$?
+check "a GONE coder gets work again as soon as it is back (not 10 h later)" '[ $code -eq 0 ] && grep -q "claude-1 is gone" "$WORK/gn.log" && [ "$(status_of M7)" = merged ]'
+
+newrepo orp; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+printf '# Plan: t\nBranch: feature/orp\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M5: E\nDepends on: none\nOpen questions:\n- none\n\n## [ ] M6: G\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null && "$ORCH" prepare M5 claude-1 >/dev/null
+out=$("$ORCH" poll 2 2>&1)
+check "poll reports a task whose prompt never went out" 'grep -q "^ORPHAN M5" <<<"$out"'
+"$ORCH" set M5 pending >/dev/null
+check "set pending frees the coder" '"$ORCH" status | grep -q "claude-1 .*task=- "'
+"$ORCH" prepare M5 claude-1 >/dev/null
+python3 - .orchestrate/plan.md <<'PY'
+import re, sys; p = sys.argv[1]; s = open(p).read()
+open(p, "w").write(re.sub(r"## \[x\] M5: E\n(.*\n)*?(?=## )", "", s))
+PY
+out=$("$ORCH" sync 2>&1)
+check "sync frees a coder whose milestone left the plan" 'grep -q "claude-1 was holding M5" <<<"$out" && "$ORCH" status | grep -q "claude-1 .*task=- "'
+out=$("$ORCH" send M99 task.md 2>&1); code=$?
+check "unknown task id is a clean error" '[ $code -eq 2 ] && grep -q "unknown task .M99" <<<"$out" && ! grep -q Traceback <<<"$out"'
+out=$("$ORCH" cooldown reviewer 5 2>&1); code=$?
+check "cooldown of an unknown agent is a clean error" '[ $code -eq 2 ] && ! grep -q Traceback <<<"$out"'
+
+newrepo js; echo "$APP/../app-wt/working-1" > "$FH/working-1.dir"
+printf '# Plan: t\nBranch: feature/js\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: working-1 (claude)\nReviewer: none\n\n## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 60 "$ORCH" autopilot > "$WORK/js.log" 2>&1; code=$?
+check "herdr status is read from its JSON field (agent named working-1 is free)" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ]'
+
+newrepo ib; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+printf '# Plan: t\nBranch: feature/ib\nCheck command: test "$(git rev-parse --abbrev-ref HEAD)" = HEAD || test ! -f boom.txt\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M10: Boom\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 60 "$ORCH" autopilot > "$WORK/ib.log" 2>&1; code=$?
+check "integration check failure stops the run" '[ $code -eq 3 ] && grep -q "Integration branch check FAILED" "$WORK/ib.log"'
+timeout 60 "$ORCH" autopilot > "$WORK/ib2.log" 2>&1; code=$?
+check "next run re-checks and stops while still broken" '[ $code -eq 3 ] && grep -q "still fails its check" "$WORK/ib2.log"'
+git rm -q boom.txt && git commit -qm "fix: remove boom"
+timeout 60 "$ORCH" autopilot > "$WORK/ib3.log" 2>&1; code=$?
+check "after the fix it carries on" '[ $code -eq 0 ] && grep -q "passes its check again" "$WORK/ib3.log"'
+
+echo "13. git flow: feature branch, plan header rules, legacy runs"
+newrepo sg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; echo "$APP/../app-wt/codex-1" > "$FH/codex-1.dir"
+printf '# Plan: Two things\nBranch: feature/sg\nCommits: single\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## Global instructions\nBranch: never-use-this\nKeep it small.\n\n## [x] M5: E\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "Key: value lines in Global instructions don't override the header" 'grep -q "^OK" <<<"$out" && "$ORCH" status | grep -q "^branch=feature/sg "'
+timeout 60 "$ORCH" autopilot > "$WORK/sg.log" 2>&1; code=$?
+out=$("$ORCH" finish --no-push 2>&1); fcode=$?
+check "Commits: single squashes the run into one commit" '[ $code -eq 0 ] && [ $fcode -eq 0 ] && [ "$(git rev-list --count main..feature/sg)" -eq 1 ] && git log -1 --format=%B | grep -q "Milestones: M5, M6"'
+check "finish --no-push does not push" 'grep -q "NOT PUSHED" <<<"$out"'
+
+newrepo lg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+git switch -qc orch/lg-M6 && echo legacy > legacy.txt && git add legacy.txt && git commit -qm "wip(M6): parked" && git switch -q main
+printf '# Plan: t\nBranch: orch/lg\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "orch/ branch prefix warns" 'grep -q "prefer .Branch: feature/<slug>." <<<"$out"'
+timeout 60 "$ORCH" autopilot > "$WORK/lg.log" 2>&1; code=$?
+check "a pre-4.5 task branch is picked up (in-flight runs keep their work)" '[ $code -eq 0 ] && [ -f legacy.txt ] && [ -f g.txt ]'
+"$ORCH" finish --no-push >/dev/null 2>&1
+check "finish deletes the old milestone branch" '! git rev-parse -q --verify orch/lg-M6 >/dev/null'
+
+newrepo ob; git switch -qc feature/ob
+printf '# Plan: t\nBranch: feature/ob\nCheck command: true\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null; "$ORCH" start >/dev/null 2>&1
+check "starting on the branch itself still records the real base" '"$ORCH" status | grep -q "base=main "'
 
 echo "11. installer puts the thin skills in every installed agent's folders"
 FAKEBIN="$WORK/fakebin"; IH="$WORK/home"; mkdir -p "$FAKEBIN" "$IH"
