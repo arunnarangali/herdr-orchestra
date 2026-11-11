@@ -36,7 +36,7 @@ orch finish
 4. Removes the worktrees and hidden refs.
 5. Pushes the branch and opens a PR into `Base:` with `gh`, or prints the compare link if `gh` isn't available.
 
-`orch finish --no-push` only cleans up. Neither the lead nor the script pushes on its own; finishing is always your call.
+`orch finish --no-push` only cleans up. Neither the lead nor the event manager pushes on its own; finishing is always your call.
 
 ## Upgrading from 4.4 and earlier
 

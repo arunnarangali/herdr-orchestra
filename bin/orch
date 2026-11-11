@@ -28,6 +28,10 @@ CONFIRM_S = int(os.environ.get("ORCH_CONFIRM_S", "30"))           # a prompt not
 MAX_LOST = int(os.environ.get("ORCH_MAX_LOST", "4"))               # lost attempts (unreachable, gone, rate limit)
 UNREACHABLE_AFTER = int(os.environ.get("ORCH_UNREACHABLE_AFTER", "3"))   # failed prompts in a row before a long bench
 UNREACHABLE_MIN = int(os.environ.get("ORCH_UNREACHABLE_MIN", "30"))
+LEAD_REWAKE_S = int(os.environ.get("ORCH_LEAD_REWAKE_S", "300"))     # wake the lead again if it never read its events
+LEAD_MAX_WAKES = int(os.environ.get("ORCH_LEAD_MAX_WAKES", "3"))     # ...this many times, then tell the developer
+LEAD_WAIT_S = int(os.environ.get("ORCH_LEAD_WAIT_MIN", "15")) * 60   # ready work the lead never dispatched starts by itself
+LEAD_IDLE_MAX_S = int(os.environ.get("ORCH_LEAD_IDLE_MAX_MIN", "720")) * 60   # give up waiting for answers after this
 MAX_FIX = 3
 MAX_REVIEW = 2
 MAX_CONFLICT = 2
@@ -106,6 +110,9 @@ def migrate(st):
     st.setdefault("merging", None)
     st.setdefault("root_setup_hash", None)
     st.setdefault("run", {})
+    st.setdefault("lead_mode", "off")
+    st.setdefault("lead_events", [])
+    st.setdefault("lead_seq", 0)
     for t in st.get("tasks", {}).values():
         t.setdefault("history", [])
         t.setdefault("lost", 0)
@@ -139,7 +146,8 @@ def state_lock():
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot"}   # usable while autopilot drives
+# usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
+LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer"}
 _LEASE = None
 
 
@@ -275,6 +283,51 @@ def move(st, tid, to, why=None, force=False):
         hist.append({k: ev[k] for k in ("ts", "from", "to", "why")})
         del hist[:-50]
         _EVENTS.append(ev)
+        if to != frm and to in LEAD_BLOCKING | {"merged"}:
+            lead_event(st, to, tid, why or t.get("reason") or "")
+
+
+# ---------------------------------------------------------------- the lead's event queue
+# Every event the lead should hear about is stored in state.json in the same write as the change that caused it,
+# so none is lost while the lead is paused or the event manager is down. `orch events` (the lead reading them)
+# is the acknowledgement. A blocking event stays open until its task leaves that status.
+LEAD_BLOCKING = {"paused", "failed", "held", "needs-answer"}
+
+
+def lead_on(st):
+    return st.get("lead_mode") == "events" and bool(st.get("lead"))
+
+
+def lead_event(st, kind, tid, text):
+    if not lead_on(st):
+        return
+    for e in st["lead_events"]:
+        if not e.get("read") and (e["kind"], e.get("task"), e.get("text")) == (kind, tid, text):
+            return                                   # the same thing, not yet read: one event is enough
+    st["lead_seq"] = st.get("lead_seq", 0) + 1
+    st["lead_events"].append({"id": st["lead_seq"], "ts": now(), "kind": kind, "task": tid, "text": text, "read": None})
+    del st["lead_events"][:-200]
+
+
+def event_open(st, e):
+    """A blocking event is open while its task still has that status; other events are open until read."""
+    if e["kind"] in LEAD_BLOCKING:
+        return st["tasks"].get(e.get("task"), {}).get("status") == e["kind"]
+    if e["kind"] == "ready":          # nothing left to dispatch: the news is stale
+        return not e.get("read") and any(k in undispatched(st) for k in re.findall(r"M\d+", e.get("text") or ""))
+    return not e.get("read")
+
+
+def unread_events(st):
+    return [e for e in st.get("lead_events", []) if not e.get("read") and event_open(st, e)]
+
+
+def undispatched(st):
+    """Ready milestones still waiting for the lead's `orch dispatch`."""
+    if not lead_on(st):
+        return []
+    return [tid for tid in st["order"] if st["tasks"][tid]["status"] == "pending" and not st["tasks"][tid].get("go")
+            and deps_met(st, st["tasks"][tid])]
 
 
 def now():
@@ -346,6 +399,8 @@ def agent_info(st, name):
         return st["workers"][name]
     if name and name == st.get("reviewer"):
         return st.get("reviewer_info") or {}
+    if name and name == (st.get("lead") or {}).get("name"):
+        return st["lead"]
     return {}
 
 
@@ -407,6 +462,128 @@ def registry(required=True):
 
 def expand(p):
     return Path(os.path.expanduser(p))
+
+
+# ---------------------------------------------------------------- model catalog: tiers, ratings, policy
+TIERS = ("small", "medium", "high")
+RATINGS = ("reasoning", "coding", "architecture", "instructions", "tools", "planning", "speed")
+NEEDS = ("reasoning", "coding", "architecture", "long-context", "tool-use", "planning", "speed")
+
+
+def user_models_file():
+    return Path(os.environ.get("ORCH_MODELS_FILE") or Path.home() / ".config/herdr-orchestra/models.toml")
+
+
+def models_catalog(required=False):
+    """models.default.toml merged with the user's models.toml (key by key per model; policy and tiers per key).
+    None when tomllib is missing and the catalog isn't required: plans then run without tiers, as before 4.7."""
+    try:
+        import tomllib
+    except ImportError:
+        if required:
+            die(f"the model catalog needs Python >= 3.11 (tomllib); this is Python {sys.version.split()[0]}")
+        return None
+    cat = {"policy": {}, "tiers": {}, "models": {}}
+    try:
+        for src in (asset("models.default.toml"), user_models_file()):
+            if not src or not src.exists():
+                continue
+            data = tomllib.loads(src.read_text())
+            for sec in ("policy", "tiers"):
+                cat[sec].update(data.get(sec) or {})
+            for mid, vals in (data.get("models") or {}).items():
+                if isinstance(vals, dict):
+                    cat["models"].setdefault(mid.lower(), {}).update(vals)
+    except tomllib.TOMLDecodeError as e:
+        die(f"model catalog: {e}")
+    return cat
+
+
+def model_denied(cat, mid):
+    """The policy pattern that forbids this model, or None."""
+    if not cat or not mid:
+        return None
+    return next((pat for pat in cat["policy"].get("deny") or [] if fnmatch.fnmatch(mid.lower(), str(pat).lower())),
+                None)
+
+
+def model_tier(cat, mid):
+    """The tier a model serves: its `tier`, capped by the reasoning floor of that tier. None = not in the catalog."""
+    m = (cat or {}).get("models", {}).get((mid or "").lower())
+    if not m:
+        return None
+    tier = str(m.get("tier", "")).lower()
+    if tier not in TIERS:
+        return None
+    r = m.get("reasoning")
+    while TIERS.index(tier) > 0 and isinstance(r, int) and r < int((cat["tiers"].get(tier) or {}).get("reasoning", 0)):
+        tier = TIERS[TIERS.index(tier) - 1]
+    return tier
+
+
+def rank(tier):
+    """0 for no tier (unrated, or a plan written before tiers), else 1..3."""
+    return TIERS.index(tier) + 1 if tier in TIERS else 0
+
+
+def need_rank(t):
+    """What a milestone asks of its coder: its plan `Tier:`, raised by an escalation or by the lead."""
+    return max(rank(t.get("tier")), rank(t.get("min_tier")))
+
+
+def eligible_workers(st, t):
+    """Workers allowed to take the task: its tier or higher (unrated workers count as any tier). When nobody on the
+    team reaches the tier, the strongest workers the team has, so a run never waits for a model nobody started."""
+    if t.get("assign") in st["workers"]:
+        return [t["assign"]]
+    need = need_rank(t)
+    ranks = {n: rank(w.get("tier")) for n, w in st["workers"].items()}
+    ok = [n for n, r in ranks.items() if not need or not r or r >= need]
+    if not ok:
+        top = max(ranks.values())
+        ok = [n for n, r in ranks.items() if r == top]
+    return ok
+
+
+def cmd_models(args):
+    """orch models [check <id> | show <id>] -> the model catalog: tiers, ratings, evidence, and what policy forbids."""
+    cat = models_catalog(required=True)
+    sub = args[0] if args else ""
+    if sub in ("check", "show"):
+        mid = (args[1] if len(args) > 1 else die(f"usage: orch models {sub} <model id>")).lower()
+        why = model_denied(cat, mid)
+        if why:
+            print(f"DENIED {mid}: matches policy pattern {why!r} — {cat['policy'].get('deny_why', 'not allowed in runs')}")
+            sys.exit(1)
+        m = cat["models"].get(mid)
+        if not m:
+            print(f"UNRATED {mid}: not in the catalog — allowed, but it has no tier; add it to {user_models_file()}")
+            sys.exit(0 if sub == "check" else 1)
+        print(f"OK {mid}: tier {model_tier(cat, mid)}")
+        if sub == "show":
+            for k in ("kinds", *RATINGS, "context_k", "open_weights", "evidence"):
+                if k in m:
+                    print(f"  {k:<13} {', '.join(m[k]) if isinstance(m[k], list) else m[k]}")
+        return
+    if sub:
+        die("usage: orch models [check <id> | show <id>]")
+    print(f"{'model':<18} {'tier':<7} {'kinds':<17} {'reas':>4} {'code':>4} {'arch':>4} {'inst':>4} {'tool':>4} "
+          f"{'plan':>4} {'speed':>5} {'ctx k':>6}  open")
+    for tier in reversed(TIERS):
+        for mid, m in cat["models"].items():
+            if model_tier(cat, mid) != tier or model_denied(cat, mid):
+                continue
+            print(f"{mid:<18} {tier:<7} {','.join(m.get('kinds', [])):<17} "
+                  + " ".join(f"{m.get(k, '-'):>4}" for k in RATINGS[:-1])
+                  + f" {m.get('speed', '-'):>5} {m.get('context_k') or '-':>6}  {'yes' if m.get('open_weights') else 'no'}")
+    print("\nTiers (a model needs this reasoning rating to serve the tier):")
+    for tier in TIERS:
+        tv = cat["tiers"].get(tier) or {}
+        print(f"  {tier:<7} reasoning >= {tv.get('reasoning', '-')}: {tv.get('use', '')}")
+    deny = cat["policy"].get("deny") or []
+    print(f"\nNot allowed in runs: {', '.join(deny) or 'nothing'}" + (f" — {cat['policy']['deny_why']}" if deny and cat["policy"].get("deny_why") else ""))
+    print(f"Ratings are starting points (`orch models show <id>` prints the evidence). Override or add models in "
+          f"{user_models_file()}")
 
 
 def ensure_excluded():
@@ -476,12 +653,17 @@ def has_open_questions(t):
     return bool(vals) and vals != ["none"]
 
 
-AGENT_RE = re.compile(r"([\w.-]+)\s*\(\s*([\w.-]+)(?:\s+@pane:([^\s)]+))?\s*\)")
+AGENT_RE = re.compile(r"([\w.-]+)\s*\(\s*([\w.-]+)(?:\s*:\s*([^\s@)]+))?(?:\s+@pane:([^\s)]+))?\s*\)")
 
 
 def parse_agents(s):
-    """`claude-1 (claude), hermes-1 (hermes @pane:w1:p3)` -> {name: (kind, pane or None)}"""
-    return {name: (kind.lower(), pane or None) for name, kind, pane in AGENT_RE.findall(s or "")}
+    """`claude-1 (claude: sonnet), hermes-1 (hermes @pane:w1:p3)` -> {name: (kind, pane or None)}"""
+    return {name: (kind.lower(), pane or None) for name, kind, _, pane in AGENT_RE.findall(s or "")}
+
+
+def parse_models(s):
+    """`claude-1 (claude: sonnet), codex-1 (codex)` -> {name: "sonnet" or None}: the model each pane was started with."""
+    return {name: (model.lower() or None) for name, _, model, _ in AGENT_RE.findall(s or "")}
 
 
 def parse_workers(s):
@@ -544,6 +726,24 @@ def cmd_sync(args):
         if lead[0] == reviewer:
             errors.append(f"lead {lead[0]!r} is also the Reviewer — the lead never reviews in its own run")
     reg = registry(required=False)
+    cat = models_catalog()
+    models = {**parse_models(get("workers")), **parse_models(rev), **parse_models(get("lead"))}
+    unrated = set()
+    for name, mid in models.items():
+        why = model_denied(cat, mid)
+        if why:
+            errors.append(f"{name} runs {mid!r}, which the model policy does not allow (pattern {why!r}: "
+                          f"{cat['policy'].get('deny_why', 'not allowed in runs')}) — pick another model (`orch models`)")
+        elif mid and cat and model_tier(cat, mid) is None:
+            unrated.add(mid)
+            warns.append(f"{name} runs {mid!r}, which is not in the model catalog, so it has no tier — add it to "
+                         f"{user_models_file()} (`orch models` shows the format)")
+    tier_of = lambda name: model_tier(cat, models.get(name)) if models.get(name) else None
+    lead_mode = get("lead mode", "events" if lead else "off").split()[0].lower()
+    if lead_mode not in ("events", "off"):
+        errors.append(f"Lead mode must be events or off, got {lead_mode!r}")
+    if lead_mode == "events" and not lead:
+        errors.append("`Lead mode: events` needs a `Lead: lead (<kind>)` header line")
 
     def detect(kind, pane, role):
         if pane:                       # addressed by pane id: herdr doesn't know it as an agent
@@ -656,6 +856,38 @@ def cmd_sync(args):
         if not [c for c in crit if c and c.lower() != "none"]:
             warns.append(f"{tid} has no Acceptance criteria — the coder's result and the review check each one")
 
+    # tiers: what each milestone asks of its coder's model, and whether the team can give it
+    tiers, needs = {}, {}
+    worker_ranks = [rank(tier_of(n)) for n in workers]
+    for t in tasks:
+        tid = t["id"]
+        tv = (field(t, "tier", "any").split() or ["any"])[0].lower()
+        if tv not in TIERS + ("any",):
+            errors.append(f"{tid}: Tier must be small, medium or high, got {tv!r}")
+            tv = "any"
+        tiers[tid] = None if tv == "any" else tv
+        needs[tid] = [n for n in re.split(r"[,\s]+", field(t, "needs").lower()) if n]
+        bad = [n for n in needs[tid] if n not in NEEDS]
+        if bad:
+            warns.append(f"{tid}: Needs has unknown value(s) {bad} — use any of: {', '.join(NEEDS)}")
+        if not t["enabled"] or not tiers[tid]:
+            continue
+        if not field(t, "model why"):
+            warns.append(f"{tid} has `Tier: {tv}` but no `Model why:` — say in one line why this tier fits")
+        if any(worker_ranks) and not any(r == 0 or r >= rank(tv) for r in worker_ranks):
+            warns.append(f"{tid} asks for a {tv}-tier model, but no coder in Workers runs one — it will go to the "
+                         f"strongest coder you have; start a coder with a {tv}-tier model (`orch models`) or lower the tier")
+        elif not any(worker_ranks) and workers:
+            warns.append(f"{tid} has `Tier: {tv}`, but Workers does not say which model each coder runs — write "
+                         f"`name (kind: model)` so the tier can be honoured")
+        if (field(t, "review", "no").lower().startswith("y") and reviewer and rank(tier_of(reviewer))
+                and rank(tier_of(reviewer)) < rank(tv)):
+            warns.append(f"{tid} is {tv}-tier work reviewed by a {tier_of(reviewer)}-tier model ({models[reviewer]}) — "
+                         f"a reviewer weaker than the coder misses design errors")
+    if lead and models.get(lead[0]) and rank(tier_of(lead[0])) not in (0, 3):
+        warns.append(f"the lead runs {models[lead[0]]!r} ({tier_of(lead[0])} tier) — planning and coordination are "
+                     f"high-tier work")
+
     max_tasks = int(os.environ.get("ORCH_MAX_TASKS", "4"))
     if len(enabled) > max_tasks:
         warns.append(f"{len(enabled)} enabled milestones (> {max_tasks}). Prefer merging coupled milestones or "
@@ -698,12 +930,22 @@ def cmd_sync(args):
         "setup": get("setup command", "none"),
         "reviewer": reviewer,
         "reviewer_info": ({"kind": rev_kind, "pane": rev_pane, "detect": detect(rev_kind, rev_pane, "Reviewer"),
+                           "model": models.get(reviewer), "tier": tier_of(reviewer),
                            **({k: v for k, v in (old.get("reviewer_info") or {}).items()
                                if k in ("cooldown_until", "cooldown_reason") and v is not None}
                               if old.get("reviewer") == reviewer else {})}
                           if reviewer else None),
         "reviewer_busy": old.get("reviewer_busy") if old.get("reviewer") == reviewer else None,
-        "lead": {"name": lead[0], "kind": lead[1][0]} if lead else None,
+        "lead": ({"name": lead[0], "kind": lead[1][0],
+                  **({"pane": lead[1][1]} if lead[1][1] else {}),
+                  **({"model": models[lead[0]], "tier": tier_of(lead[0])} if models.get(lead[0]) else {}),
+                  **({"detect": False} if lead_mode == "events" and not detect(lead[1][0], lead[1][1], "Lead") else {})}
+                 if lead else None),
+        "lead_mode": lead_mode,
+        "lead_events": old.get("lead_events", []),
+        "lead_seq": old.get("lead_seq", 0),
+        "lead_wake": old.get("lead_wake"),
+        "lead_ready_told": old.get("lead_ready_told"),
         "workers": {},
         "order": ids,
         "tasks": {},
@@ -714,7 +956,8 @@ def cmd_sync(args):
                                "cooldown_reason": ow.get("cooldown_reason", ""),
                                "dir": ow.get("dir"), "setup_done": ow.get("setup_done", False),
                                "setup_hash": ow.get("setup_hash"), "delivery_fails": ow.get("delivery_fails", 0),
-                               "pane": pane, "detect": detect(kind, pane, "Workers")}
+                               "pane": pane, "detect": detect(kind, pane, "Workers"),
+                               "model": models.get(name), "tier": tier_of(name)}
     for t in tasks:
         tid = t["id"]
         o = old_tasks.get(tid, {})
@@ -739,6 +982,7 @@ def cmd_sync(args):
             "wait": o.get("wait"),
             "files": sorted(files[tid]),
             "parallel": field(t, "parallel", "").lower().startswith("allow"),
+            "tier": tiers[tid], "needs": needs[tid], "model_why": field(t, "model why"),
         }
         if status != st["tasks"][tid]["status"]:
             move(st, tid, status, {"skipped": "unticked in plan.md", "needs-answer": "open questions in plan.md"}
@@ -1157,6 +1401,9 @@ def cmd_ready(args):
     out, waits = [], []
     for tid in cand:
         t = st["tasks"][tid]
+        if lead_on(st) and not t.get("go"):
+            waits.append(f"HOLD {tid} is ready and waits for the lead: orch dispatch {tid}")
+            continue
         clash = sorted({busy[f] for f in t.get("files") or [] if f in busy})
         if clash and not t.get("parallel") and st["isolation"] == "worktree":
             waits.append(f"WAIT {tid} shares files with {', '.join(clash)}")
@@ -1202,9 +1449,12 @@ def cmd_pick(args):
     st = load()
     t = task(st, args[0])
     pref = t["prefer"]
-    names = list(st["workers"])
+    names = eligible_workers(st, t)
     last = t.get("last_worker")
-    names.sort(key=lambda n: (0 if n == last else 1, 0 if pref in ("any", st["workers"][n]["kind"], n) else 1))
+    nr = need_rank(t)
+    # the last coder first (its work is in its folder), then the tier asked for before a stronger (dearer) one
+    names.sort(key=lambda n: (0 if n == last else 1, (rank(st["workers"][n].get("tier")) or nr) - nr
+                              if nr else 0, 0 if pref in ("any", st["workers"][n]["kind"], n) else 1))
     for n in names:
         if worker_free(st, n, st["workers"][n]):
             print(n)
@@ -1245,8 +1495,8 @@ def cmd_prepare(args):
         elif is_dirty(ROOT) and t["status"] == "pending" and not holds(st, tid):
             die("main tree has uncommitted changes that no milestone owns — commit, stash or discard them first")
     (d / TASK_DIR / tid).mkdir(parents=True, exist_ok=True)
-    t.update(worker=worker, last_worker=worker, dir=str(d),
-             )
+    t.update(worker=worker, last_worker=worker, dir=str(d))
+    t.pop("assign", None)          # a lead's "this coder" holds for one dispatch; later retries may move
     move(st, tid, "conflict" if t["status"] == "conflict" else "coding")
     w["task"] = tid
     save(st)
@@ -1277,6 +1527,8 @@ def record_attempt(t, outcome, usage=None):
     start = w.get("started", w.get("since", now()))
     a = {"kind": w.get("kind"), "agent": w.get("agent"), "file": w.get("file"), "start": start, "end": now(),
          "secs": max(0, now() - start), "nudges": w.get("nudges", 0), "outcome": outcome}
+    if w.get("model"):
+        a["model"], a["tier"] = w["model"], w.get("tier")
     if usage:
         a["usage"] = usage
     t.setdefault("attempts", []).append(a)
@@ -1356,7 +1608,8 @@ def cmd_send(args):
     move(st, tid, "coding")
     t["wait"] = {"agent": t["worker"], "sentinel": str(sentinel), "report": str(d / rel / f"report-{k}.md"),
                  "result": str(d / rel / f"result-{k}.json"), "since": now(), "started": now(), "kind": "coder",
-                 "prompt": text, "nudges": 0, "file": fname, "delivering": True}
+                 "prompt": text, "nudges": 0, "file": fname, "delivering": True,
+                 "model": st["workers"][t["worker"]].get("model"), "tier": st["workers"][t["worker"]].get("tier")}
     save(st)
     try:
         deliver(st, t["worker"], text)
@@ -1500,7 +1753,8 @@ def cmd_review(args):
     move(st, tid, "reviewing")
     t["wait"] = {"agent": st["reviewer"], "sentinel": str(sentinel), "report": str(rd / f"review-{k}.md"),
                  "result": str(rd / f"review-{k}.json"), "since": now(), "started": now(), "kind": "reviewer",
-                 "prompt": rtext, "nudges": 0, "delivering": True}
+                 "prompt": rtext, "nudges": 0, "delivering": True,
+                 "model": (st.get("reviewer_info") or {}).get("model"), "tier": (st.get("reviewer_info") or {}).get("tier")}
     save(st)
     try:
         deliver(st, st["reviewer"], rtext)
@@ -1665,7 +1919,8 @@ def cmd_bump(args):
     key, cap = ("fix", MAX_FIX) if kind == "fix" else ("review_round", MAX_REVIEW)
     if kind == "fix":
         t["fix"] += 1
-    over = t[key] > cap if kind == "fix" else t[key] >= cap
+    used = t[key] - t.get("fix_base" if kind == "fix" else "review_base", 0)   # rounds since an escalation
+    over = used > cap if kind == "fix" else used >= cap
     if over:
         save(st)
         print(f"CAP {tid} {kind} rounds exceeded ({t[key]}/{cap}) — park it and ask the developer")
@@ -1955,15 +2210,26 @@ def cmd_status(args):
     for n, w in st["workers"].items():
         cd = max(0, w.get("cooldown_until", 0) - now())
         print(f"  worker {n:<12} {w['kind']:<8} task={w.get('task') or '-':<5} "
-              f"{'cooldown ' + str(cd // 60) + 'm' if cd else ''}"
+              + (f"model={w['model']} ({w.get('tier') or 'unrated'}) " if w.get("model") else "")
+              + f"{'cooldown ' + str(cd // 60) + 'm' if cd else ''}"
               f"{'' if w.get('detect', True) else ' detect:off'}")
     for tid in st["order"]:
         t = st["tasks"][tid]
         print(f"  {tid:<4} {t['status']:<15} deps={','.join(t['deps']) or '-':<10} "
-              f"worker={t.get('worker') or '-':<10} {t['title']}"
+              f"worker={t.get('worker') or '-':<10} "
+              + (f"tier={t['tier'] if rank(t.get('min_tier')) <= rank(t.get('tier')) else t['min_tier'] + '^'} "
+                 if need_rank(t) else "") + t["title"]
               + (f"  [{t['reason']}]" if t.get("reason") else ""))
+    if lead_on(st):
+        ev = [e for e in st["lead_events"] if event_open(st, e)]
+        hold = undispatched(st)
+        print(f"  lead {st['lead']['name']}: {len(unread_events(st))} unread event(s), {len(ev)} open"
+              + (f"; waiting for `orch dispatch`: {', '.join(hold)}" if hold else "")
+              + ("" if driver_alive() else "; the event manager is NOT running (`orch autopilot`)"))
     if all(t["status"] in ("merged", "skipped") for t in st["tasks"].values()):
         print(f"ALL_DONE — run `orch finish` to push {st['branch']} and open a PR into {st.get('base')}")
+    elif lead_on(st) and (undispatched(st) or any(event_open(st, e) for e in st["lead_events"])):
+        pass
     elif not any(t["status"] in ACTIVE for t in st["tasks"].values()) and not any(
             t["status"] == "pending" and deps_met(st, t) for t in st["tasks"].values()):
         print("STUCK — nothing running and nothing ready; resolve paused/needs-answer/failed tasks with the developer")
@@ -2153,11 +2419,208 @@ def task_contract(st, tid):
         "goal": field(pt, "goal"), "why": field(pt, "why"),
         "acceptance_criteria": [{"id": f"AC{i}", "text": c} for i, c in enumerate(items("acceptance criteria"), 1)],
         "files_allowed": t.get("files") or [], "scope": st.get("scope", "warn"),
+        "tier": t.get("tier"), "needs": t.get("needs") or [],
         "interfaces": items("interfaces"), "constraints": items("constraints"), "out_of_scope": items("out of scope"),
         "depends_on": deps, "check": st["check"], "attempt": t.get("attempt", 0) + 1, "lost_attempts": t.get("lost", 0),
         "previous_work": {"by": t.get("last_worker")} if work_ref(st, tid) else None,
         "result_format": RESULT_FORMAT,
     }
+
+
+def start_manager():
+    """The lead's dispatch or answer needs the event manager (`orch autopilot`) to carry it out: start one,
+    detached from this shell, when none is running. Says what happened."""
+    if driver_alive():
+        return f"the event manager is running ({driver_line(driver_info())})"
+    if os.environ.get("ORCH_NO_AUTOSTART") == "1":
+        return "the event manager is NOT running — ask the developer to run `orch autopilot` in a terminal"
+    with open(ORCH / "manager.out", "a") as out:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "autopilot"], cwd=ROOT, stdin=subprocess.DEVNULL,
+                         stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
+                         env={k: v for k, v in os.environ.items() if not k.startswith("ORCH_DRIVER")})
+    for _ in range(20):
+        time.sleep(0.25)
+        if driver_alive():
+            return "started the event manager (`orch autopilot`, log: .orchestrate/autopilot.log)"
+    return ("could NOT start the event manager from here (see .orchestrate/manager.out) — ask the developer to run "
+            "`orch autopilot` in a terminal")
+
+
+def cmd_dispatch(args):
+    """orch dispatch Mn [Mn...] [--to <worker>] [--tier small|medium|high]
+    The lead's request to start (or restart) milestones. The event manager sends them when a coder is free."""
+    opts = {}
+    for flag in ("--to", "--tier"):
+        if flag in args:
+            i = args.index(flag)
+            opts[flag] = args[i + 1] if len(args) > i + 1 else die(f"{flag} needs a value")
+            del args[i:i + 2]
+    need(args, 1, "dispatch <Mn> [Mn...] [--to <worker>] [--tier small|medium|high]")
+    with state_lock():
+        st = load()
+        if opts.get("--to") and opts["--to"] not in st["workers"]:
+            die(f"unknown worker {opts['--to']!r} — workers: {', '.join(st['workers'])}")
+        if opts.get("--tier") and opts["--tier"] not in TIERS:
+            die("--tier must be small, medium or high")
+        for tid in args:
+            t = task(st, tid)
+            if t["status"] not in ("pending", "paused", "failed"):
+                die(f"{tid} is {t['status']} — only pending, paused or failed milestones can be dispatched"
+                    + (" (answer its open questions in plan.md, then `orch sync`)" if t["status"] == "needs-answer" else ""))
+        for tid in args:
+            t = st["tasks"][tid]
+            t["go"] = True
+            t.pop("ready_ts", None)
+            if opts.get("--to"):
+                t["assign"] = opts["--to"]
+            if opts.get("--tier"):
+                t["min_tier"] = opts["--tier"]
+            if t["status"] in ("paused", "failed"):         # a fresh round, decided by the lead
+                t["fix_base"], t["review_base"] = t.get("fix", 0), t.get("review_round", 0)
+                _park(st, tid, "pending", "dispatched again by the lead")
+            who = [n for n in eligible_workers(st, t)]
+            waits = [d for d in t["deps"] if st["tasks"][d]["status"] != "merged"]
+            print(f"DISPATCH {tid} -> {' or '.join(who)}" + (f" (tier {TIERS[need_rank(t) - 1]})" if need_rank(t) else "")
+                  + (f" — starts when {', '.join(waits)} merged" if waits else ""))
+        save(st)
+    print(start_manager())
+    print("You will be woken with `orch events` when something needs you. Stop here; do not poll.")
+
+
+NOTES_RE = re.compile(r"(?mi)^Notes from user:[ \t]*")
+
+
+def cmd_answer(args):
+    """orch answer Mn <the developer's answer> -> write it under the milestone's "Notes from user" in plan.md and
+    send the milestone back to the SAME coder, which carries on from its saved work."""
+    need(args, 2, "answer <Mn> <answer text>")
+    tid, text = args[0], " ".join(args[1:]).strip()
+    with state_lock():
+        st = load()
+        t = task(st, tid)
+        if t["status"] != "paused":
+            die(f"{tid} is {t['status']}, not paused" + (
+                " — its questions are in plan.md: answer them under \"Notes from user\", set \"Open questions:\" to "
+                "`- none`, then `orch sync`" if t["status"] == "needs-answer" else ""))
+        plan = ORCH / "plan.md"
+        lines, out, cur, done = plan.read_text().split("\n"), [], None, False
+        note = f"- {text}"
+        for i, line in enumerate(lines):
+            m = HEAD_RE.match(line)
+            if (m or line.startswith("## ")) and cur == tid and not done:       # section ended without a notes line
+                while out and not out[-1].strip():
+                    out.pop()
+                out += ["Notes from user:", note, ""]
+                done = True
+            if m or line.startswith("## "):
+                cur = m.group(2) if m else None
+            out.append(line)
+            if cur == tid and not done and NOTES_RE.match(line):
+                out.append(note)
+                done = True
+        if not done:
+            if cur != tid:
+                die(f"{tid} not found in plan.md")
+            while out and not out[-1].strip():
+                out.pop()
+            out += ["Notes from user:", note, ""]
+        plan.write_text("\n".join(out))
+        last = t.get("last_worker")
+        t["go"] = True
+        if last in st["workers"]:
+            t["assign"] = last
+        t.setdefault("answers", []).append({"ts": now(), "text": text})
+        _park(st, tid, "pending", f"answered: {text[:200]}")
+        print(f"ANSWERED {tid}: written to plan.md; it goes back to {last or 'the next free coder'} with its work so far")
+    print(start_manager())
+    print("You will be woken with `orch events` when something needs you. Stop here; do not poll.")
+
+
+EVENT_HELP = {
+    "paused": "a coder's question, or an agent that stopped. A question only the developer can settle: ask them, "
+              "then `orch answer {t} \"<their answer>\"`. An agent problem: tell the developer what to look at, then "
+              "`orch dispatch {t}`.",
+    "failed": "still failing after its rounds. Read the last report and check or review output, add the missing "
+              "FACT or constraint to the plan (never a how-to), then `orch dispatch {t}` (add `--tier high` or "
+              "`--to <worker>` to give it a stronger model).",
+    "held": "risky changes wait for the developer: show them the reasons; they run `orch approve {t}`. Never approve it yourself.",
+    "needs-answer": "open questions in plan.md: ask the developer, write the answers under \"Notes from user\", set "
+                    "\"Open questions:\" to `- none`, `orch sync`, then `orch dispatch {t}`.",
+    "merged": "landed on the feature branch. Nothing to do unless it unlocked work listed under READY.",
+    "ready": "milestones are ready for you: `orch dispatch <Mn>...`.",
+    "escalated": "moved to a stronger model after its rounds ran out. Nothing to do.",
+    "auto-dispatched": "started without you because you did not dispatch it in time. Nothing to do.",
+    "all_done": "every milestone landed. Finish .orchestrate/summary.md (see `orch lead run`, section ALL_DONE).",
+    "stopped": "the event manager stopped. Tell the developer why; they run `orch autopilot` again.",
+}
+
+
+def cmd_events(args):
+    """orch events [--peek] -> what the lead was woken for. Reading the events acknowledges them (not with --peek)."""
+    peek = "--peek" in args
+    with state_lock():
+        st = load()
+        if not lead_on(st):
+            print("This run has no lead events (plan header: `Lead: lead (<kind>)`, and not `Lead mode: off`).")
+            return
+        new = unread_events(st)
+        old = [e for e in st["lead_events"] if e.get("read") and e["kind"] in LEAD_BLOCKING and event_open(st, e)]
+
+        def show(e):
+            tt = st["tasks"].get(e.get("task") or "", {})
+            head = f"#{e['id']} {e['kind'].upper()}" + (f" {e['task']} \"{tt.get('title', '')}\"" if e.get("task") else "")
+            print(head + (f": {e['text']}" if e.get("text") else ""))
+            print("    -> " + EVENT_HELP.get(e["kind"], "").format(t=e.get("task") or "<Mn>"))
+        print(f"EVENTS for the lead — run {st['branch']}: {len(new)} new, {len(old)} still open")
+        for e in new:
+            show(e)
+        if old:
+            print("STILL OPEN (you have seen these; they close when the milestone moves on):")
+            for e in old:
+                show(e)
+        hold = undispatched(st)
+        if hold:
+            print("READY — waiting for your dispatch:")
+            for tid in hold:
+                t = st["tasks"][tid]
+                print(f"  {tid} \"{t['title']}\"" + (f" tier {t['tier']}" if t.get("tier") else "")
+                      + f" -> {' or '.join(eligible_workers(st, t))}:  orch dispatch {tid}")
+        free = [n for n, w in st["workers"].items() if not w.get("task")]
+        print("WORKERS: " + ", ".join(
+            f"{n} ({w['kind']}" + (f": {w['model']}, {w.get('tier') or 'unrated'}" if w.get("model") else "") + ")"
+            + (" free" if n in free else f" on {w['task']}") for n, w in st["workers"].items()))
+        print("event manager: " + (driver_line(driver_info()) if driver_alive() else
+                                   "NOT running — your next `orch dispatch` or `orch answer` starts it"))
+        if not new and not old and not hold:
+            print("Nothing needs you.")
+        print("Handle each event above, then STOP: you are woken again when something else happens. Never prompt a "
+              "coder yourself and never poll.")
+        if not peek and new:
+            for e in new:
+                e["read"] = now()
+            save(st)
+
+
+def cmd_escalate(args):
+    """orch escalate Mn [reason] -> a milestone out of rounds gets one more go on a stronger model, if the team has
+    one (exit 3: nothing stronger, or it was escalated before)."""
+    need(args, 1, "escalate <Mn> [reason]")
+    tid, reason = args[0], " ".join(args[1:])
+    st = load()
+    t = task(st, tid)
+    cur = rank(st["workers"].get(t.get("worker") or t.get("last_worker") or "", {}).get("tier"))
+    above = sorted({rank(w.get("tier")) for w in st["workers"].values()} - set(range(0, max(cur, need_rank(t)) + 1)))
+    if t.get("escalated") or not cur or not above:
+        print(f"NO_ESCALATION {tid}")
+        sys.exit(3)
+    tier = TIERS[above[0] - 1]
+    t.update(escalated=True, min_tier=tier, fix_base=t.get("fix", 0), review_base=t.get("review_round", 0))
+    t.pop("assign", None)
+    why = f"escalated to a {tier}-tier model: {reason}" if reason else f"escalated to a {tier}-tier model"
+    _park(st, tid, "pending", why)
+    lead_event(st, "escalated", tid, why)
+    save(st)
+    print(f"ESCALATED {tid} -> {tier}")
 
 
 def cmd_nudge(args):
@@ -2186,8 +2649,10 @@ RATE_RE = re.compile(r"usage limit|rate.?limit|quota|too many requests|\b429\b|l
 
 
 def cmd_autopilot(args):
-    """Run the whole plan with no AI lead in the loop. Stops (exit 3) only when a human is needed.
-    It is the only driver of a run: it holds the driver lease, and other processes can't change the run meanwhile."""
+    """The event manager: a plain script that watches the agents, runs checks, sends fixes and reviews, merges, and
+    wakes the lead when something needs a decision. It is the only driver of a run: it holds the driver lease, and
+    other processes can't change the run meanwhile (the lead's `orch dispatch` / `orch answer` are requests it
+    carries out). Without a lead (`Lead mode: off`) it dispatches by itself and stops (exit 3) when a human is needed."""
     me = [sys.executable, os.path.abspath(__file__)]
     log = ORCH / "autopilot.log"
     take_lease()
@@ -2228,6 +2693,78 @@ def cmd_autopilot(args):
         else:
             say(f"{tid} {status}: {reason}", important)
 
+    def fail(tid, reason):
+        """Out of rounds: one more go on a stronger model when the team has one, else failed (the lead hears of it)."""
+        code, out = run("escalate", tid, reason, ok=(0, 3))
+        if code == 0:
+            say(f"{tid}: {reason} -> {out.split('->')[-1].strip()}-tier model gets one fresh round, with the work so far", True)
+        else:
+            park(tid, "failed", reason)
+
+    def wake_lead(force=False):
+        """Tell the lead it has unread events: only when it is idle, once per batch, again after LEAD_REWAKE_S if it
+        never read them (up to LEAD_MAX_WAKES). The events themselves are already safe in state.json."""
+        s_ = load()
+        if not lead_on(s_):
+            return
+        un = unread_events(s_)
+        if not un:
+            return
+        lead, newest = s_["lead"]["name"], max(e["id"] for e in un)
+        lw = s_.get("lead_wake") or {}
+        # a wake the lead has not acted on yet covers newer events too: it reads the whole queue when it comes
+        same = any(e["id"] <= lw.get("upto", 0) for e in un)
+        if same and (now() - lw.get("ts", 0) < LEAD_REWAKE_S or lw.get("n", 0) >= LEAD_MAX_WAKES):
+            if lw.get("n", 0) >= LEAD_MAX_WAKES and now() - lw.get("ts", 0) >= LEAD_REWAKE_S and not lw.get("told"):
+                patch_state(lambda s2: s2["lead_wake"].update(told=True))
+                say(f"the lead ({lead}) has not read its events after {LEAD_MAX_WAKES} wake-ups — look at its pane, "
+                    f"or run `orch events --peek` yourself", True)
+            return
+        if watched(s_, lead) and not force:
+            hs = herdr_state(lead)
+            if hs is None:
+                if not lw.get("gone"):
+                    patch_state(lambda s2: s2.update(lead_wake={**(s2.get("lead_wake") or {}), "gone": True}))
+                    say(f"the lead ({lead}) is not in herdr — start it and name it `{lead}`; {len(un)} event(s) wait "
+                        f"for it (`orch events --peek` shows them)", True)
+                return
+            if word(hs, "working", "blocked"):
+                return                                # busy: the events wait in the queue, one wake when it is idle
+        text = (f"orch: {len(un)} new event(s) in the run on {s_['branch']} need the lead. Run `orch events` and "
+                f"handle what it prints, then stop.")
+        try:
+            deliver(s_, lead, text)
+        except DeliveryError as e:
+            say(f"could not wake the lead ({lead}): {e} — will retry; the events are kept")
+            patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now() - LEAD_REWAKE_S + SEND_RETRY_S,
+                                                        "n": lw.get("n", 0) if same else 0}))
+            return
+        patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now(), "n": (lw.get("n", 0) if same else 0) + 1}))
+        say(f"woke the lead ({lead}): {len(un)} event(s) — " + ", ".join(
+            f"{e['kind']}{' ' + e['task'] if e.get('task') else ''}" for e in un[:6]))
+
+    def lead_ready():
+        """Ready milestones the lead has not dispatched: tell it once per set; start them ourselves after LEAD_WAIT_S."""
+        s_ = load()
+        hold = undispatched(s_)
+        if not hold:
+            return
+        late = [k for k in hold if now() - s_["tasks"][k].get("ready_ts", now()) > LEAD_WAIT_S]
+
+        def upd(s2):
+            for k in hold:
+                s2["tasks"][k].setdefault("ready_ts", now())
+            for k in late:
+                s2["tasks"][k]["go"] = True
+                lead_event(s2, "auto-dispatched", k, f"not dispatched by the lead within {LEAD_WAIT_S // 60} min")
+            rest = [k for k in hold if k not in late]
+            if rest and rest != s2.get("lead_ready_told"):       # once per set, not once per loop
+                lead_event(s2, "ready", None, ", ".join(rest))
+            s2["lead_ready_told"] = rest
+        patch_state(upd)
+        for k in late:
+            say(f"{k}: the lead did not dispatch it within {LEAD_WAIT_S // 60} min -> started without it", True)
+
     def guarded(tid, fn):
         """One task's orch error never stops the run: that task is paused with the error, the rest carry on."""
         try:
@@ -2262,7 +2799,7 @@ def cmd_autopilot(args):
         """Count a fix round (capped by MAX_FIX), then send the coder a problem-only job."""
         code, _ = run("bump", tid, "fix", ok=(0, 3))
         if code == 3:
-            park(tid, "failed", cap_reason)
+            fail(tid, cap_reason)
             return
         n = load()["tasks"][tid]["fix"]
         write_and_send(tid, f"{fname_prefix}-{n}.md", body(n))
@@ -2373,7 +2910,7 @@ def cmd_autopilot(args):
             else:
                 code, out = run("bump", tid, "fix", ok=(0, 3))
                 if code == 3:
-                    park(tid, "failed", f"checks still failing after {MAX_FIX} fix rounds")
+                    fail(tid, f"checks still failing after {MAX_FIX} fix rounds")
                 else:
                     n = load()["tasks"][tid]["fix"]
                     say(f"{tid} checks failed -> fix round {n}")
@@ -2398,7 +2935,7 @@ def cmd_autopilot(args):
             elif blockers:
                 code, _ = run("bump", tid, "review", ok=(0, 3))
                 if code == 3:
-                    park(tid, "failed", f"reviewer still has blockers after {MAX_REVIEW} rounds: {where}")
+                    fail(tid, f"reviewer still has blockers after {MAX_REVIEW} rounds: {where}")
                 else:
                     run("needs-fix", tid)
                     s_ = load()
@@ -2531,14 +3068,19 @@ def cmd_autopilot(args):
         patch_state(lambda s_: s_.update(integration_broken=None))
         say(f"{st['branch']} passes its check again — carrying on")
     patch_state(lambda s_: s_["run"].setdefault("started", now()))
-    say(f"autopilot started: {st['isolation']} mode, max {st['max_parallel']} parallel, workers {list(st['workers'])}"
-        + (f", budget {st['budget_s'] // 60} min" if st.get("budget_s") else ""))
+    say(f"autopilot started: {st['isolation']} mode, max {st['max_parallel']} parallel, workers "
+        + str([n + (f" ({w['model']})" if w.get("model") else "") for n, w in st["workers"].items()])
+        + (f", budget {st['budget_s'] // 60} min" if st.get("budget_s") else "")
+        + (f"; events go to the lead ({st['lead']['name']})" if lead_on(st) else ""))
     last_tick = time.time()
+    waiting_since = None       # set while nothing runs and the run waits for the lead or the developer
 
     while True:
         st = load()
-        # 0. budget: driving time adds up across restarts
+        # 0. budget: driving time adds up across restarts (time spent only waiting for an answer doesn't count)
         el, last_tick = time.time() - last_tick, time.time()
+        if waiting_since:
+            el = 0
         patch_state(lambda s_: s_["run"].update(driven_s=round(s_["run"].get("driven_s", 0) + el, 1)))
         st = load()
         if st.get("budget_s") and st["run"].get("driven_s", 0) > st["budget_s"]:
@@ -2563,9 +3105,11 @@ def cmd_autopilot(args):
             kind, tid = line.split()[0], line.split()[1]
             code, worker = run("pick", tid, ok=(0, 3))
             if code == 3:
-                break
+                continue          # nobody of its tier (or its assigned coder) is free; others may still start
             guarded(tid, lambda: dispatch(kind, tid, worker))
             slots -= 1
+        lead_ready()
+        wake_lead()
 
         # 3. finished or stuck?
         st = load()
@@ -2585,6 +3129,14 @@ def cmd_autopilot(args):
                 if v.get("out_of_scope"):
                     scope.append(f"- {k}: {', '.join(v['out_of_scope'])}")
             _, report = run("report", ok=(0, 1, 2))
+            models = []
+            for k, v in tasks.items():
+                used = [a for a in v.get("attempts") or [] if a.get("kind") == "coder" and a.get("model")]
+                if v.get("tier") or used:
+                    ran = ", ".join(dict.fromkeys(f"{a['model']} ({a.get('tier') or 'unrated'})" for a in used)) or "-"
+                    models.append(f"| {k} | {v.get('tier') or 'any'} | {ran} | "
+                                  f"{'yes' if v.get('escalated') else 'no'} | {v.get('model_why') or '-'} |")
+            lead_ = lead_on(st)
             (ORCH / "summary.md").write_text(
                 f"# Summary: {st.get('title') or st['branch']}\n\nBranch `{st['branch']}` into `{base}`. "
                 f"Final check on the branch: {'PASS' if ok else 'FAIL'}\n\n"
@@ -2593,14 +3145,43 @@ def cmd_autopilot(args):
                 f"\n\n## Commits\n```\n{log_}```\n\n## Files changed\n```\n{stat}```\n\n"
                 "## Changed outside Likely files\n" + ("\n".join(scope) or "none") + "\n\n"
                 "## Reviewer suggestions not applied\n" + ("\n".join(sugg) or "none") + "\n\n"
+                + ("## Models: planned and actual\n| Milestone | Planned tier | Ran on | Escalated | Why this tier |\n"
+                   "|---|---|---|---|---|\n" + "\n".join(models) + "\n\n" if models else "") +
                 f"## Run report\n```\n{report}\n```\n\n"
-                "## Still to write (ask the lead: 'use the orch-run skill' to finish the summary)\n"
+                + ("## Still to write (the lead was woken to write these)\n" if lead_ else
+                   "## Still to write (ask the lead: 'use the orch-run skill' to finish the summary)\n") +
                 "- Design decisions & study notes\n- Manual verification checklist\n")
+            if lead_:
+                patch_state(lambda s_: lead_event(s_, "all_done", None,
+                                                  f"final check {'PASS' if ok else 'FAIL'} on {st['branch']}"))
+                for _ in range(6):                    # give a busy lead a moment, then wake it anyway
+                    hs = herdr_state(st["lead"]["name"]) if watched(st, st["lead"]["name"]) else ""
+                    if hs is None or not word(hs, "working", "blocked"):
+                        break
+                    time.sleep(POLL_STEP_S)
+                wake_lead(force=True)
             say(f"ALL_DONE on {st['branch']} — final check {'PASS' if ok else 'FAIL'}. See .orchestrate/summary.md, "
                 f"then run `orch finish` to push {st['branch']} and open a PR into {base}", True)
             sys.exit(0 if ok else 3)
         active = [k for k, v in tasks.items() if v["status"] in ACTIVE and v["status"] != "held"]
         ready = [k for k, v in tasks.items() if v["status"] == "pending" and deps_met(st, v)]
+        open_ev = ([e for e in st["lead_events"] if e["kind"] in LEAD_BLOCKING and event_open(st, e)]
+                   if lead_on(st) else [])
+        if not active and (undispatched(st) or (not ready and open_ev)):
+            # nothing is running and the next move is the lead's (or the developer's, through the lead): stay up,
+            # so the answer or dispatch is carried out the moment it comes. No AI runs while we wait.
+            if waiting_since is None:
+                waiting_since = time.time()
+                say("waiting for the lead: " + ", ".join(dict.fromkeys(
+                    [f"{e['kind']} {e['task']}" for e in open_ev if e.get("task")]
+                    + [f"dispatch {k}" for k in undispatched(st)])), True)
+            if time.time() - waiting_since > LEAD_IDLE_MAX_S:
+                say(f"STOPPED — no answer for {LEAD_IDLE_MAX_S // 60} min. Everything is kept: run `orch autopilot` "
+                    f"again when you are back (`orch events --peek` shows what is open).", True)
+                sys.exit(3)
+            run("poll", str(int(min(30, max(1, POLL_STEP_S * 3)))), ok=(0, 10))
+            continue
+        waiting_since = None
         if not active and not ready:
             waiting = [f"  {k} {v['status']}: {v.get('reason') or ''}" for k, v in tasks.items()
                        if v["status"] in ("paused", "failed", "needs-answer", "pending", "held")]
@@ -2665,7 +3246,30 @@ def run_report(st):
         tot["wasted_s"] += wasted
         tot["check_s"] += check_s
     tot["driven_s"] = (st.get("run") or {}).get("driven_s", 0)
-    return {"branch": st["branch"], "tasks": rows, "totals": tot}
+    # how each model really did: the numbers to hold against its catalog ratings
+    by_model = {}
+    for tid in st["order"]:
+        t = st["tasks"][tid]
+        coder = [a for a in t.get("attempts") or [] if a.get("kind") == "coder" and a.get("model")]
+        for a in coder:
+            m = by_model.setdefault(a["model"], {"model": a["model"], "tier": a.get("tier"), "attempts": 0, "done": 0,
+                                                 "agent_s": 0, "tasks": [], "merged": 0, "first_pass": 0,
+                                                 "escalated_away": 0})
+            m["attempts"] += 1
+            m["done"] += a.get("outcome") == "done"
+            m["agent_s"] += a.get("secs", 0)
+            if tid not in m["tasks"]:
+                m["tasks"].append(tid)
+        if coder:
+            last = by_model[coder[-1]["model"]]
+            last["merged"] += t["status"] == "merged"
+            last["first_pass"] += bool(next((r["first_pass"] for r in rows if r["task"] == tid), False))
+            if t.get("escalated") and coder[0]["model"] != coder[-1]["model"]:
+                by_model[coder[0]["model"]]["escalated_away"] += 1
+    for r in rows:
+        t = st["tasks"][r["task"]]
+        r["tier"], r["escalated"] = t.get("tier"), bool(t.get("escalated"))
+    return {"branch": st["branch"], "tasks": rows, "totals": tot, "models": list(by_model.values())}
 
 
 def cmd_report(args):
@@ -2687,6 +3291,13 @@ def cmd_report(args):
           f"{tot['reviewed']}; conflicts {tot['conflicts']}; lost attempts {tot['lost']}; fix rounds {tot['fix_rounds']}")
     print(f"agent time {_fmt_secs(tot['agent_s'])}, of which wasted {_fmt_secs(tot['wasted_s'])} (attempts that "
           f"didn't finish); checks {_fmt_secs(tot['check_s'])}; autopilot time {_fmt_secs(tot['driven_s'])}")
+    if rep_["models"]:
+        print(f"\n{'model':<18} {'tier':<8} {'tasks':>5} {'tries':>5} {'merged':>6} {'first pass':>10} {'moved up':>8} {'agent time':>10}")
+        for m in rep_["models"]:
+            print(f"{m['model']:<18} {m['tier'] or 'unrated':<8} {len(m['tasks']):>5} {m['attempts']:>5} {m['merged']:>6} "
+                  f"{m['first_pass']:>10} {m['escalated_away']:>8} {_fmt_secs(m['agent_s']):>10}")
+        print("(moved up = milestones this model could not finish, escalated to a stronger one; compare with "
+              "`orch models`)")
     if tot["usage_known"]:
         print(f"usage reported by agents on {tot['usage_known']} attempt(s): {tot['input_tokens']} input tokens, "
               f"{tot['output_tokens']} output tokens, ${tot['cost_usd']:.2f}")
@@ -2702,9 +3313,11 @@ COMMANDS = {
     "write-task": cmd_write_task, "nudge": cmd_nudge, "autopilot": cmd_autopilot,
     "send-job": cmd_send_job, "handoff": cmd_handoff, "needs-fix": cmd_needs_fix, "review-ok": cmd_review_ok,
     "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
-    "report": cmd_report,
+    "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer,
+    "escalate": cmd_escalate,
 }
-UNLOCKED = {"autopilot", "poll"}   # long-running: they lock per step instead of for the whole command
+# they lock per step instead of for the whole command (long-running, or they start the event manager after)
+UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
@@ -2712,7 +3325,12 @@ USAGE = """usage: orch <command> [args]
   lead check               preflight: is this agent in a Herdr pane / can it reach herdr?
   lead whoami              show the lead's own herdr pane and how to name it `lead`
   agents                   the agent registry: kinds, installed?, roles, herdr detection, launch commands
-  agents launch <kind>     print the command that starts <kind> in a pane (auto-approve edits)
+  agents launch <kind> [--model <id>]  print the command that starts <kind> in a pane (auto-approve edits)
+  models                   the model catalog: tiers (small / medium / high), ratings, and what policy forbids
+  models show|check <id>   one model's ratings and evidence / is it allowed?
+  events [--peek]          (lead) what you were woken for; reading acknowledges it
+  dispatch <Mn>... [--to <worker>] [--tier <tier>]   (lead) start or restart milestones; starts the event manager
+  answer <Mn> <text>       (lead) the developer's answer: into plan.md, and back to the same coder
   agents sync [kind...]    install the orch-plan / orch-run skills for every installed agent (run it after adding a new agent)
   agents check             check the orch-plan / orch-run skills are installed for every installed agent
   doctor [kind...]         check installed agents against the real tool: version, launch flags, skills, herdr
@@ -2721,7 +3339,8 @@ USAGE = """usage: orch <command> [args]
   status                   table of workers + tasks; prints ALL_DONE or STUCK when relevant
   report [--json]          time, rounds, first-pass rate, wasted work (and tokens/cost when agents report them)
   ready                    free coder slots, FIX jobs (do these first), then READY milestones
-  pick <Mn>                first available worker for the task (respects Prefer), or NONE (exit 3)
+  pick <Mn>                first available worker for the task (respects Tier, then Prefer), or NONE (exit 3)
+  escalate <Mn> [reason]   out of rounds: one more go on a stronger model, if the team has one (exit 3 if not)
   prepare <Mn> <worker>    reserve worker, put its worktree on the milestone's saved work (detached), print TASKDIR
   setup-done <worker>      mark the worker's worktree as dependency-installed
   send <Mn> <file>         prompt the task's worker to execute TASKDIR/<file> (task.md, fix-1.md, ...)
@@ -2738,7 +3357,7 @@ USAGE = """usage: orch <command> [args]
   finish [--no-push]       final check, drop hidden refs + worktrees, push the feature branch, open a PR into base
   write-task <Mn>          generate TASKDIR/task.md from plan.md (+ reports of merged dependencies)
   nudge <Mn>               re-send the current prompt once to an agent that stopped early
-  autopilot                run the whole plan with no AI in the loop; exits 0 ALL_DONE, 3 when it needs you
+  autopilot                the event manager: watches agents, checks, merges, wakes the lead; exits 0 ALL_DONE, 3 when it needs you
   handoff <Mn>             (worktree) save the milestone for review and free its coder for other work
   needs-fix <Mn>           queue the latest review's BLOCKERs as a fix job for the next free coder
   send-job <Mn>            send a queued fix/conflict job to the task's coder (after pick + prepare)
@@ -2749,7 +3368,7 @@ USAGE = """usage: orch <command> [args]
 Exit codes: 2 error · 3 needs you / busy / cap · 4 merge conflict · 5 prompt not delivered (retried later) ·
             6 check fails on the feature branch (nothing committed) · 7 held for approval · 10 poll wait
 While `orch autopilot` runs it holds the driver lease: other commands that change the run are refused
-(status, ready, pick, report and approve still work).
+(status, ready, pick, report, approve and the lead's events / dispatch / answer still work).
 """
 
 # Env vars a Herdr pane carries. Agents whose tools run in a separate background process (Hermes runs
@@ -2924,10 +3543,29 @@ def cmd_agents(args):
     sub = args[0] if args else ""
     installed = {k: bool(shutil.which(v.get("binary", k))) for k, v in reg.items()}
     if sub == "launch":
-        kind = args[1] if len(args) > 1 else die("usage: orch agents launch <kind>")
+        rest = args[1:]
+        model = None
+        if "--model" in rest:
+            i = rest.index("--model")
+            model = rest[i + 1] if len(rest) > i + 1 else die("usage: orch agents launch <kind> [--model <id>]")
+            del rest[i:i + 2]
+        kind = rest[0] if rest else die("usage: orch agents launch <kind> [--model <id>]")
         v = reg.get(kind) or die(f"unknown agent kind {kind!r} — known: {', '.join(reg)} "
                                  f"(add it in {user_agents_file()})")
-        print(v.get("launch") or v.get("binary", kind))
+        cmd = v.get("launch") or v.get("binary", kind)
+        if model:
+            cat = models_catalog()
+            why = model_denied(cat, model)
+            if why:
+                die(f"{model!r} is not allowed by the model policy (pattern {why!r}) — see `orch models`")
+            if not v.get("model_flag"):
+                die(f"the registry has no `model_flag` for {kind}, so orch can't build the command — choose the "
+                    f"model inside {kind}, or set model_flag for it in {user_agents_file()}")
+            kinds = ((cat or {}).get("models", {}).get(model.lower()) or {}).get("kinds")
+            if kinds and kind not in kinds:
+                print(f"WARN: the catalog lists {model} for {', '.join(kinds)}, not {kind}", file=sys.stderr)
+            cmd += f" {v['model_flag']} {shlex.quote(model)}"
+        print(cmd)
         return
     if sub == "dirs":           # for install.sh: <kind>\t<skills|commands|invoke>\t<dir or text>[\t<commands_from>]
         for k, v in reg.items():
@@ -3059,7 +3697,7 @@ if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] in ("version", "--version", "-v"):
         print(f"herdr-orchestra {installed_version()}")
         sys.exit(0)
-    NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents, "doctor": cmd_doctor}
+    NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents, "doctor": cmd_doctor, "models": cmd_models}
     if len(sys.argv) >= 2 and sys.argv[1] in NO_REPO_COMMANDS:   # work outside a git repo
         NO_REPO_COMMANDS[sys.argv[1]](sys.argv[2:])
         sys.exit(0)

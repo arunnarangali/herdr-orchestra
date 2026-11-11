@@ -19,6 +19,8 @@ Written by `orch write-task Mn` next to `task.md`.
   "acceptance_criteria": [{"id": "AC1", "text": "POST /upload returns 400 when the amount column is missing"}],
   "files_allowed": ["server/routes/categories.ts", "server/test/"],
   "scope": "warn",
+  "tier": "medium",
+  "needs": ["coding", "tool-use"],
   "interfaces": ["GET /categories -> [{id, name}]"],
   "constraints": [],
   "out_of_scope": [],
@@ -33,6 +35,7 @@ Written by `orch write-task Mn` next to `task.md`.
 
 - `acceptance_criteria` are the plan's `Acceptance criteria:` lines, numbered in order.
 - `files_allowed` is the plan's `Likely files:`. A path, a folder (`src/auth/`) or a glob (`src/auth/**`).
+- `tier` and `needs` are the plan's `Tier:` and `Needs:` (null and empty when the plan has none).
 - `previous_work` is `{"by": "<coder>"}` when an earlier attempt left work in the folder.
 - A fix, review-fix, conflict or integration-fix job also gets a small `job-N.json` (`kind`, `file`).
 
@@ -93,3 +96,29 @@ One line per status change, written when the state that contains it is saved:
 
 Replaying the file gives every task's current status. `"forced": true` marks `orch sync` rebuilding state from
 the plan, or a manual `orch set … --force`.
+
+## The lead's event queue (orch → lead)
+
+With a `Lead:` line in the plan (and not `Lead mode: off`), every change the lead should hear about is stored in
+`state.json` under `lead_events`, in the same write as the change that caused it:
+
+```json
+{"id": 7, "ts": 1731250000, "kind": "paused", "task": "M2", "text": "skip empty rows or reject the file?", "read": null}
+```
+
+| `kind` | Raised when | Open until |
+|---|---|---|
+| `paused`, `failed`, `held`, `needs-answer` | a milestone enters that status | the milestone leaves it |
+| `merged` | a milestone lands | read |
+| `ready` | milestones are waiting for `orch dispatch` | read, or nothing is left to dispatch |
+| `escalated`, `auto-dispatched` | orch moved a milestone to a stronger model, or started one the lead did not dispatch in time | read |
+| `all_done` | every milestone has landed | read |
+
+`orch events` prints the unread and still-open events and marks the unread ones read (`--peek` does not). The
+event manager wakes the lead with one prompt per batch, only when the lead is idle, and again after
+`ORCH_LEAD_REWAKE_S` if the batch was never read. The lead's requests are fields on the task, set under the state
+lock and carried out by the event manager: `go` (dispatched), `assign` (one coder, for the next dispatch),
+`min_tier` (a stronger model than the plan asked for).
+
+Each attempt in a task's `attempts` list carries the `model` and `tier` of the agent that made it, which is where
+the summary's model table and `orch report`'s per-model rows come from.

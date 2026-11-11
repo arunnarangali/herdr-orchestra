@@ -3,6 +3,8 @@
 #
 #   binary        executable that must be on PATH for the kind to count as installed
 #   launch        command to start it in a herdr pane, with its auto-approve-edits option
+#   model_flag    the launch option that picks the model (`orch agents launch <kind> --model <id>`); leave it
+#                 out when the tool has none or it is unverified, and choose the model inside the tool
 #   herdr_detect  herdr can tell idle / working / blocked for it (false: orch relies on the done file only)
 #   roles         any of "lead", "coder", "reviewer"
 #   skills_dirs   global SKILL.md folders the installer puts the thin orch-plan / orch-run skills into
@@ -18,6 +20,7 @@
 [claude]
 binary = "claude"
 launch = "claude --permission-mode acceptEdits"
+model_flag = "--model"
 herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.claude/skills"]
@@ -30,6 +33,7 @@ notes = "Claude Code 2.1: --permission-mode acceptEdits in --help; ~/.claude/ski
 [codex]
 binary = "codex"
 launch = "codex --approve-for-me"
+model_flag = "--model"
 herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.codex/skills"]
@@ -50,6 +54,7 @@ notes = "No auto-approve CLI flag; set amp.dangerouslyAllowAll or `amp permissio
 [opencode]
 binary = "opencode"
 launch = "opencode"
+model_flag = "--model"
 herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = []

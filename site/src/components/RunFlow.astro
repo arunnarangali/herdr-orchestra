@@ -1,34 +1,42 @@
 ---
-// One run end to end. Same layout as the plan doc's diagram; colours follow the roles.
+// One run end to end: the orchestration plan, then the orchestration run as a loop the lead is woken into.
 const box = (cx: number, cy: number, w: number) => ({ x: cx - w / 2, y: cy - 28, width: w, height: 56, rx: 8 });
 ---
-<svg class="dg" viewBox="0 0 760 452" role="img" aria-label="One run: you request a feature, the lead plans, you edit the plan, the team loops coders, checks and the reviewer, each approved milestone is committed on the feature branch, and you review one pull request.">
+<svg class="dg" viewBox="0 0 760 500" role="img" aria-label="One run: you request a feature, the lead writes the orchestration plan with a model tier for each milestone, and you say go. In the orchestration run the lead dispatches and pauses, a coder builds on a model of the milestone's tier, checks run, the reviewer reads the diff, and the event manager queues what happened and wakes the lead, which decides and dispatches again. Each approved milestone is committed on the feature branch, and you review one pull request.">
   <defs>
     <marker id="rf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z" /></marker>
   </defs>
   <g data-step="4">
-    <rect class="zone" x="24" y="156" width="712" height="174" rx="10" />
-    <text x="720" y="182" text-anchor="end" font-size="13" font-weight="600">4. The team builds, checks and reviews</text>
+    <rect class="zone" x="24" y="156" width="712" height="232" rx="10" />
+    <text x="720" y="182" text-anchor="end" font-size="13" font-weight="600">4. Orchestration run</text>
   </g>
   <g class="edge" marker-end="url(#rf-arrow)">
     <path data-step="1" d="M244 100H270" />
     <path data-step="2" d="M490 100H516" />
-    <path data-step="3" d="M626 128V142H146V212" />
-    <path data-step="4" d="M252 240H274" />
-    <path data-step="4" d="M486 240H508" />
-    <path data-step="4" d="M578 268V292H146V268" />
-    <path data-step="5" d="M650 268V372" />
-    <path data-step="5" d="M508 400H252" />
+    <path data-step="3" d="M626 128V142H146V198" />
+    <path data-step="4" d="M252 226H274" />
+    <path data-step="4" d="M486 226H508" />
+    <path data-step="4" d="M614 254V302" />
+    <path data-step="4" d="M508 330H486" />
+    <path data-step="4" d="M274 330H252" />
+    <path data-step="4" d="M146 302V254" />
+    <path data-step="5" d="M660 358V412" />
+    <path data-step="5" d="M508 440H252" />
   </g>
   <g data-step="1"><rect class="box you" {...box(134, 100, 220)} /><text x="134" y="96" text-anchor="middle" font-size="13" font-weight="600">1. You request a feature</text><text class="quiet" x="134" y="112" text-anchor="middle" font-size="11.5">Feature, why, must, done when</text></g>
-  <g data-step="2"><rect class="box lead" {...box(380, 100, 220)} /><text x="380" y="96" text-anchor="middle" font-size="13" font-weight="600">2. Lead plans</text><text class="quiet" x="380" y="112" text-anchor="middle" font-size="11.5">1 to 4 milestones, as issues</text></g>
-  <g data-step="3"><rect class="box you" {...box(626, 100, 220)} /><text x="626" y="96" text-anchor="middle" font-size="13" font-weight="600">3. You edit plan.md</text><text class="quiet" x="626" y="112" text-anchor="middle" font-size="11.5">Deps, coder, review, answers</text></g>
-  <g data-step="4"><rect class="box coder" {...box(146, 240, 212)} /><text x="146" y="236" text-anchor="middle" font-size="13" font-weight="600">Coder builds</text><text class="quiet" x="146" y="252" text-anchor="middle" font-size="11.5">Free coder, own worktree</text></g>
-  <g data-step="4"><rect class="box" {...box(380, 240, 212)} /><text x="380" y="236" text-anchor="middle" font-size="13" font-weight="600">Checks run</text><text class="quiet" x="380" y="252" text-anchor="middle" font-size="11.5">Fail: back to coder, 3 rounds</text></g>
-  <g data-step="4"><rect class="box reviewer" {...box(614, 240, 212)} /><text x="614" y="236" text-anchor="middle" font-size="13" font-weight="600">Reviewer reads the diff</text><text class="quiet" x="614" y="252" text-anchor="middle" font-size="11.5">Reports BLOCKER file:line</text></g>
-  <text data-step="4" class="quiet" x="380" y="314" text-anchor="middle" font-size="11.5">a failed check or a blocker becomes a fix job for the next free coder</text>
-  <text data-step="5" class="quiet" x="660" y="352" font-size="11.5">approved</text>
-  <g data-step="5"><rect class="box" {...box(614, 400, 212)} /><text x="614" y="396" text-anchor="middle" font-size="13" font-weight="600">Commit on feature/&lt;name&gt;</text><text class="quiet" x="614" y="412" text-anchor="middle" font-size="11.5">Next ready milestones start</text></g>
-  <text data-step="5" class="quiet" x="380" y="390" text-anchor="middle" font-size="11.5">when every milestone is in</text>
-  <g data-step="5"><rect class="accent" {...box(146, 400, 212)} /><text x="146" y="396" text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text><text x="146" y="412" text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text></g>
+  <g data-step="2"><rect class="box lead" {...box(380, 100, 220)} /><text x="380" y="96" text-anchor="middle" font-size="13" font-weight="600">2. Lead writes the plan</text><text class="quiet" x="380" y="112" text-anchor="middle" font-size="11.5">Milestones, a model tier for each</text></g>
+  <g data-step="3"><rect class="box you" {...box(626, 100, 220)} /><text x="626" y="96" text-anchor="middle" font-size="13" font-weight="600">3. You say go</text><text class="quiet" x="626" y="112" text-anchor="middle" font-size="11.5">Edit plan.md first if you like</text></g>
+
+  <g data-step="4"><rect class="box lead" {...box(146, 226, 212)} /><text x="146" y="222" text-anchor="middle" font-size="13" font-weight="600">Lead dispatches, then pauses</text><text class="quiet" x="146" y="238" text-anchor="middle" font-size="11.5">orch dispatch M1 M2</text></g>
+  <g data-step="4"><rect class="box coder" {...box(380, 226, 212)} /><text x="380" y="222" text-anchor="middle" font-size="13" font-weight="600">Coder builds</text><text class="quiet" x="380" y="238" text-anchor="middle" font-size="11.5">On a model of the milestone's tier</text></g>
+  <g data-step="4"><rect class="box" {...box(614, 226, 212)} /><text x="614" y="222" text-anchor="middle" font-size="13" font-weight="600">Checks run</text><text class="quiet" x="614" y="238" text-anchor="middle" font-size="11.5">Fail: back to coder, 3 rounds</text></g>
+  <text data-step="4" class="quiet" x="380" y="282" text-anchor="middle" font-size="11.5">retries go straight back to a coder</text>
+  <g data-step="4"><rect class="box reviewer" {...box(614, 330, 212)} /><text x="614" y="326" text-anchor="middle" font-size="13" font-weight="600">Reviewer reads the diff</text><text class="quiet" x="614" y="342" text-anchor="middle" font-size="11.5">Reports BLOCKER file:line</text></g>
+  <g data-step="4"><rect class="box" {...box(380, 330, 212)} /><text x="380" y="326" text-anchor="middle" font-size="13" font-weight="600">Event manager queues it</text><text class="quiet" x="380" y="342" text-anchor="middle" font-size="11.5">Landed, question, failed, held</text></g>
+  <g data-step="4"><rect class="box lead" {...box(146, 330, 212)} /><text x="146" y="326" text-anchor="middle" font-size="13" font-weight="600">Lead is woken, decides</text><text class="quiet" x="146" y="342" text-anchor="middle" font-size="11.5">Asks you only when it must</text></g>
+
+  <text data-step="5" class="quiet" x="670" y="404" font-size="11.5">approved</text>
+  <g data-step="5"><rect class="box" {...box(614, 440, 212)} /><text x="614" y="436" text-anchor="middle" font-size="13" font-weight="600">Commit on feature/&lt;name&gt;</text><text class="quiet" x="614" y="452" text-anchor="middle" font-size="11.5">One per milestone</text></g>
+  <text data-step="5" class="quiet" x="380" y="430" text-anchor="middle" font-size="11.5">when every milestone is in</text>
+  <g data-step="5"><rect class="accent" {...box(146, 440, 212)} /><text x="146" y="436" text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text><text x="146" y="452" text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text></g>
 </svg>

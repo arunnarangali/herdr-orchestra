@@ -24,6 +24,7 @@ export interface AgentKind {
   invoke: string;
   verified: boolean;
   notes: string;
+  model_flag: string;
 }
 
 // Display names; the registry only stores the kind key.
@@ -48,5 +49,42 @@ export const agents = (): AgentKind[] => {
     invoke: String(v.invoke ?? 'Run `orch lead plan` and follow it. Feature: <feature>'),
     verified: Boolean(v.verified),
     notes: String(v.notes ?? ''),
+    model_flag: String(v.model_flag ?? ''),
   }));
 };
+
+export type Tier = 'small' | 'medium' | 'high';
+export interface Model {
+  id: string;
+  tier: Tier;
+  kinds: string[];
+  reasoning: number;
+  coding: number;
+  speed: number;
+  open_weights: boolean;
+}
+interface Catalog {
+  policy?: { deny?: string[] };
+  tiers?: Record<string, { reasoning?: number; use?: string }>;
+  models?: Record<string, Record<string, unknown>>;
+}
+const catalog = (): Catalog => parse(read('models.default.toml')) as Catalog;
+
+// The default model catalog, as `orch models` prints it.
+export const models = (): Model[] =>
+  Object.entries(catalog().models ?? {}).map(([id, v]) => ({
+    id,
+    tier: String(v.tier) as Tier,
+    kinds: (v.kinds as string[]) ?? [],
+    reasoning: Number(v.reasoning ?? 0),
+    coding: Number(v.coding ?? 0),
+    speed: Number(v.speed ?? 0),
+    open_weights: Boolean(v.open_weights),
+  }));
+
+export const tierInfo = (tier: Tier) => ({
+  floor: Number(catalog().tiers?.[tier]?.reasoning ?? 0),
+  use: String(catalog().tiers?.[tier]?.use ?? ''),
+});
+
+export const deniedModels = (): string[] => catalog().policy?.deny ?? [];

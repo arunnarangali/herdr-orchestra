@@ -9,17 +9,33 @@ Run `orch` with no arguments for the full help.
 
 | Command | What it does |
 |---|---|
-| `orch status` | Workers and milestones; prints `ALL_DONE` or `STUCK` when relevant |
+| `orch status` | Workers with their models, milestones with their tiers, events waiting for the lead; prints `ALL_DONE` or `STUCK` when relevant |
 | `orch ready` | Free coder slots, fix jobs, then ready milestones |
-| `orch autopilot` | Drive the whole plan as a script; exits 0 when done, 3 when it needs you |
+| `orch autopilot` | The event manager: runs the plan as a script and wakes the lead; exits 0 when done, 3 when it needs you |
 | `orch approve <Mn>` | Let a milestone held for risky changes land |
-| `orch report [--json]` | Time, rounds, first-pass rate and wasted work for the run |
+| `orch report [--json]` | Time, rounds, first-pass rate and wasted work for the run, and how each model did |
 | `orch finish [--no-push]` | Final check, clean up, push the feature branch, open a PR |
 | `orch set <Mn> <status> [reason]` | Manual override; accepts `pending`, `paused`, `failed` and `skipped` |
 | `orch park <Mn> paused\|failed\|pending [reason]` | Free the worker and keep its work in a hidden ref |
 | `orch cooldown <agent> <min> [reason]` | Bench a worker or the reviewer; reason `gone` ends once Herdr sees it again |
 | `orch cleanup` | Remove clean worker worktrees |
 | `orch version` | The installed version |
+
+## The lead, during a run
+
+| Command | What it does |
+|---|---|
+| `orch dispatch <Mn>... [--to <worker>] [--tier <tier>]` | Start or restart milestones. Starts the event manager when none is running |
+| `orch events [--peek]` | What the lead was woken for, what is ready, who is free. Reading acknowledges it; `--peek` does not |
+| `orch answer <Mn> "<text>"` | The developer's answer: written under the milestone's "Notes from user", and the milestone goes back to the same coder |
+
+## Models
+
+| Command | What it does |
+|---|---|
+| `orch models` | The catalog: every allowed model with its tier and ratings, and what the policy denies |
+| `orch models show <id>` | One model's ratings and the evidence for them |
+| `orch models check <id>` | Is this model allowed, and which tier does it serve? |
 
 ## Lead and agents
 
@@ -30,20 +46,21 @@ Run `orch` with no arguments for the full help.
 | `orch lead check` | Preflight: is this agent in a Herdr pane, can it reach Herdr? |
 | `orch lead whoami` | The lead's own pane and how to name it `lead` |
 | `orch agents` | The agent registry: kinds, installed or not, roles, launch commands |
-| `orch agents launch <kind>` | The command that starts `<kind>` with edits auto-approved |
+| `orch agents launch <kind> [--model <id>]` | The command that starts `<kind>` with edits auto-approved, on a model |
 | `orch agents sync [kind...]` | Install the skills for every installed agent |
 | `orch agents check` | Check the skills are installed |
 | `orch doctor [kind]` | Check the installed agents against the real tools |
 
 ## Run steps
 
-`orch autopilot` uses these to drive a run. You rarely need them by hand, and while autopilot runs the ones that change the run are refused from any other terminal.
+The event manager uses these to run the work. You rarely need them by hand, and while it runs the ones that change the run are refused from any other terminal.
 
 | Command | What it does |
 |---|---|
-| `orch sync` | Parse `plan.md` into `state.json`; validates dependencies, cycles, overlaps |
+| `orch sync` | Parse `plan.md` into `state.json`; validates dependencies, cycles, overlaps, tiers and the model policy |
 | `orch start` | Create or switch to the feature branch; create worker worktrees |
-| `orch pick <Mn>` | The first available worker for the milestone, or `NONE` |
+| `orch pick <Mn>` | The first available worker whose model serves the milestone's tier, or `NONE` |
+| `orch escalate <Mn> [reason]` | A milestone out of rounds gets one fresh round on a stronger model; exits 3 when there is none |
 | `orch prepare <Mn> <worker>` | Reserve the worker and put its worktree on the milestone's saved work |
 | `orch setup-done <worker>` | Mark a worktree as dependency-installed |
 | `orch write-task <Mn>` | Build the task file from the plan and the dependency reports |

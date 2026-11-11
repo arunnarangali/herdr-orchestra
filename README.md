@@ -4,29 +4,35 @@
 
 **Website and docs: [herdr-orchestra.vercel.app](https://herdr-orchestra.vercel.app/)**
 
-Run a small team of AI coding agents inside [Herdr](https://herdr.dev). An AI **lead** plans the work. A **pool of coders** (whichever is free) builds it, in parallel git worktrees when tasks are independent. An optional **reviewer** checks every diff. **Any installed agent can play any role**: Claude Code, Codex, Amp, OpenCode, Hermes, Antigravity (`agy`), or anything else that can run shell commands. A plain script, **`orch autopilot`**, drives the run, so you only pay for AI when real judgment is needed.
+Run a small team of AI coding agents inside [Herdr](https://herdr.dev). An AI **lead** writes the **orchestration plan**, picks the level of model each step needs, hands out the work and then pauses. A **pool of coders** builds it, in parallel git worktrees when tasks are independent, each on a model that fits its task: a small fast one for simple work, a stronger one where reasoning is the hard part. An optional **reviewer** checks every diff. A plain script, the **event manager** (`orch autopilot`), runs the **orchestration run**: it watches the agents, runs checks, merges, and wakes the lead only when something needs a decision. **Any installed agent can play any role**: Claude Code, Codex, Amp, OpenCode, Hermes, Antigravity (`agy`), or anything else that can run shell commands.
 
 ```
- you ──► lead: plan (2–4 milestones, with dependencies) ──► you edit .orchestrate/plan.md
-                                                               │
-                         orch autopilot  (no AI in the loop)   ▼
-        ┌─────────── dispatch ready task to a free coder (any agent kind)
-        │                     │
+ you ──► lead: ORCHESTRATION PLAN  (1–4 milestones, dependencies, a model tier for each, and why)
+                    │  you read it, edit it, say go
+                    ▼
+         lead: orch dispatch M1 M2 ──► lead pauses (no AI running, nothing to pay for)
+                    │
+                    ▼        ORCHESTRATION RUN — the event manager (orch autopilot, a plain script)
+        ┌─────────── sends each milestone to a free coder on a model of its tier
         │          code ──► checks ──► review ──► one commit on feature/<name>
-        │            ▲   fail ┘   blocker ┘   conflict ┘
-        └── next tasks unlock ◄───────────────────────┘
+        │            ▲   fail ┘   blocker ┘   conflict ┘      (out of rounds: one go on a stronger model)
+        │
+        └── event queue ──► wakes the lead:  finished · question · failed · held · ready
+                                 │
+                 lead decides ◄──┘  dispatches what is ready, asks you when only you can answer,
+                 then pauses again  `orch answer` sends your answer back to the same coder
                                                                ▼
-                         ALL_DONE ──► orch finish: push feature/<name>, open a PR into main
+                         ALL_DONE ──► lead writes the summary ──► orch finish: push, open a PR into main
 ```
 
 ## Who does what
 
 | Agent | Does | Never does |
 |---|---|---|
-| **Lead** (any agent; you pick it by starting the playbook in its pane) | Researches the codebase; writes 1–4 milestones as issues (goal, why, acceptance criteria, constraints, interfaces, context facts, dependencies with reasons); handles questions with you | Writes code or tells coders how to implement or fix |
+| **Lead** (any agent; you pick it by starting the playbook in its pane) | Researches the codebase; writes 1–4 milestones as issues (goal, why, acceptance criteria, constraints, interfaces, context facts, dependencies with reasons); gives each a model tier with the reason; dispatches the work, pauses, and is woken to decide: what to start next, a coder's question (asking you when only you can answer), a failed or held milestone, the final summary | Writes code, tells coders how to implement or fix, prompts or polls agents |
 | **Coders** (any agents: Claude, Codex, Amp, OpenCode, Hermes, AGY…) | Own the how: design, code, tests, fixing failed checks, fixing review findings, resolving conflicts | Change scope or skip acceptance criteria |
 | **Reviewer** (any spare agent; AGY works well) | Reports problems: `BLOCKER: file:line — what — why` | Edits code or prescribes fixes |
-| **`orch autopilot`** | Moves work around, runs checks, merges | Thinks |
+| **Event manager** (`orch autopilot`, a script) | Sends work to coders of the right tier, watches every agent, runs checks, sends fixes and reviews, merges; queues every event and wakes the lead when it is idle | Thinks, or decides anything the lead or you should |
 
 The lead decides one technical thing: the **interfaces between milestones that run in parallel** (API shape, shared types, table columns), so two coders don't invent different versions.
 
@@ -87,14 +93,20 @@ Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `.
    | Pane | Example command | Rename to |
    |---|---|---|
    | Lead | any agent, e.g. `claude` or `opencode` | `lead` (the playbook does it) |
-   | Coder | `claude --permission-mode acceptEdits` | `claude-1` |
-   | Coder | `codex --approve-for-me` | `codex-1` |
-   | Reviewer (optional) | `agy --mode accept-edits` or a spare agent | `reviewer` |
+   | Coder (medium work) | `claude --permission-mode acceptEdits --model sonnet` | `claude-1` |
+   | Coder (small work) | `claude --permission-mode acceptEdits --model haiku` | `claude-2` |
+   | Reviewer (optional) | `claude --model opus`, `agy --mode accept-edits` or a spare agent | `reviewer` |
 
-2. **Plan:** start the plan playbook in the lead's pane (see [Choose your lead](#choose-your-lead)).
-   Then edit `.orchestrate/plan.md`: dependencies, preferred coder, review yes/no, and your answers to open questions.
-3. **Run:** `orch autopilot` in a spare terminal. It is the only driver of a run: while it runs, other `orch` commands that would change the run are refused (`orch status`, `orch report` and `orch approve` still work).
-4. **When it stops** (desktop notification + `.orchestrate/autopilot.log`): answer under "Notes from user" in the plan, run `orch set Mn pending` (or `orch approve Mn` for a held milestone), then run `orch autopilot` again. Or ask the lead to handle it with you: `/orch-run`, "use the orch-run skill", or "Run `orch lead run` and follow it".
+   `orch agents launch <kind> --model <id>` prints the command with the model; `orch models` lists the models and their tiers. Use whatever your installed agents already reach.
+
+2. **Orchestration plan:** start the plan playbook in the lead's pane (see [Choose your lead](#choose-your-lead)). The lead researches, writes `.orchestrate/plan.md` and shows you the milestones, which coder and model each one goes to, and why. Edit the plan if you like: dependencies, tier, review yes/no, your answers to open questions.
+3. **Orchestration run:** tell the lead **go** (`/orch-run`). It dispatches the milestones (`orch dispatch M1 M2`), which starts the event manager, and pauses. From here the run looks after itself:
+   - a milestone finishes → the event manager checks and merges it, then wakes the lead, which dispatches what that unlocked;
+   - a coder asks a question → the lead is woken; if the plan or the code already answers it, it answers, otherwise it asks you in its pane. `orch answer M2 "<your answer>"` writes the answer into the plan and the **same coder** carries on with its work;
+   - a risky change is **held** → you look and run `orch approve Mn`.
+
+   You can also start the event manager yourself: `orch autopilot` in a spare terminal. It is the only driver of a run: while it runs, other `orch` commands that would change the run are refused (`orch status`, `orch report`, `orch approve` and the lead's `orch events` / `orch dispatch` / `orch answer` still work).
+4. **If the lead is away** (its pane is closed, or it never reads its events): nothing is lost, the events wait in the queue. Ready work starts by itself after 15 minutes, you get a desktop notification, and `orch events --peek` shows what is open. With `Lead mode: off` in the plan header there is no lead in the run at all: `orch autopilot` dispatches by itself and stops (exit 3) when it needs you.
 5. **When it's done:** read `.orchestrate/summary.md`, test it, then run `orch finish`. It re-runs the check, removes the worktrees, pushes `feature/<name>` and opens a PR into `main` (with `gh`, or prints the compare link).
 
 ### Git: one branch per run, real commits, one PR
@@ -102,8 +114,34 @@ Planning touches no git at all. `orch start` creates the plan's `Branch:` (`feat
 
 A good feature request: Feature · Why · Must · Must not · Already decided · Done when · Mode (`shared` or `worktree`).
 
+### Models and tiers
+The lead does not pick a model by its name. It reads the catalog (`orch models`), which rates each model 1–5 on **reasoning, coding, architecture, instruction following, tool use, planning and speed**, records its context window, and says where each rating comes from. Each model serves one tier, and a model needs enough reasoning for its tier: coding skill alone never makes a model `high`.
+
+| Tier | For | Examples from the default catalog |
+|---|---|---|
+| **small** | classification, renames, docs, config, mechanical edits | `haiku`, `gpt-6-luna`, `qwen3.6-35b-a3b` |
+| **medium** | normal implementation, tests, debugging inside one module | `sonnet`, `gpt-6-sol`, `qwen3.8-27b` |
+| **high** | the lead itself, contracts and architecture, cross-module refactors, auth / payments / schema, escalations | `opus`, `deepseek-v4-pro`, `glm-5.3` |
+
+In the plan, each coder carries the model its pane runs, and each milestone says what it needs:
+
+```
+Workers: claude-1 (claude: sonnet), claude-2 (claude: haiku)
+
+## [x] M2: Import endpoint
+Tier: medium
+Needs: coding, tool-use
+Model why: one module, a clear contract, an existing endpoint to copy; no design decisions.
+```
+
+- **Dispatch follows the tier.** A milestone goes to a free coder of its tier, or a stronger one when none is free; never to a weaker one while a suitable coder exists.
+- **One escalation.** A milestone that runs out of fix or review rounds gets one fresh round on a stronger model, with the work so far, before it fails.
+- **Policy.** Ultra-premium models (`*fable*`, `*astra*`) are kept out of runs: `orch sync` refuses a plan that names one. Everything else your agents reach is allowed, open-weight models included. Edit `[policy] deny` to change the list.
+- **Checked against reality.** `summary.md` has a table of planned tier against the model that really did each milestone, and `orch report` shows first-pass rate and escalations per model. When a model does worse than its rating, lower the rating.
+- **Yours to change.** Add or re-rate models in `~/.config/herdr-orchestra/models.toml` (merged over `models.default.toml`). The default ratings are starting points with their sources, not benchmarks run by this project. A model that is not in the catalog still works; it just has no tier.
+
 ### Choose your lead
-The agent whose pane you start the plan playbook in becomes the lead. It names its pane `lead` and writes `Lead: lead (<kind>)` into the plan; it never codes or reviews in its own run (`orch sync` rejects that). Another pane of the same kind as a coder is fine.
+The agent whose pane you start the plan playbook in becomes the lead. It names its pane `lead` and writes `Lead: lead (<kind>)` into the plan; it never codes or reviews in its own run (`orch sync` rejects that). Give it a high-tier model: planning and coordination are reasoning work. Another pane of the same kind as a coder is fine.
 
 | Lead | Start it with |
 |---|---|
@@ -122,7 +160,8 @@ The skills and slash commands are thin wrappers: the playbooks themselves live i
 
 ```toml
 [claude]
-launch = "claude --permission-mode acceptEdits --model opus"
+launch = "claude --permission-mode acceptEdits"
+model_flag = "--model"        # what `orch agents launch claude --model <id>` appends
 
 [myagent]                     # a new kind
 binary = "myagent"
@@ -159,10 +198,12 @@ When a milestone passes its checks it's saved to its hidden ref and the coder is
 - **worktree**: each coder works in `../<repo>-wt/<name>`, independent tasks run in parallel, and each task is squash-merged when it passes checks and review. Start each coder inside its own worktree.
 - **shared**: everyone works in your folder, one milestone at a time. Two agents in one folder would overwrite each other's files and mix their changes, so this is only safe sequentially. Use it when every milestone depends on the previous one.
 
-### What autopilot handles by itself
+### What the event manager handles by itself
 | Situation | Behaviour |
 |---|---|
 | Checks fail | sends the last 60 lines back to the coder, up to 3 rounds |
+| Out of fix or review rounds | one fresh round on a coder with a stronger model, if the team has one; then failed, and the lead is woken |
+| The lead is busy, gone, or not reading | events wait in the queue; it is woken once per batch when idle, again after 5 min (3 times), then you are told; ready work starts by itself after 15 min |
 | Reviewer blockers | queued as a problem-only fix job for the next free coder, up to 2 rounds |
 | Merge conflict | the same coder merges the feature branch and resolves it, up to 2 rounds; if the milestone was already approved, the reviewer sees the resolution before it lands |
 | Passes alone, fails once merged | the check runs on the merged result **before** the commit; a failure commits nothing and goes back to a coder as a fix round |
@@ -178,19 +219,19 @@ When a milestone passes its checks it's saved to its hidden ref and the coder is
 | The final check fails on the branch | stops; the next run re-checks and carries on once it passes |
 | Permission prompt | desktop alert, other tasks keep running |
 | Agent stops early | nudged once, then parked |
-| Worker writes `QUESTION:` | that task and its dependents wait; everything else continues |
+| Worker writes `QUESTION:` | that task and its dependents wait, the lead is woken to answer or ask you; everything else continues |
 
 ### Contracts and reports
 `plan.md` stays the file you edit. From it `orch` generates a `task.json` for each milestone (numbered acceptance criteria `AC1…`, allowed files, interfaces, the commits of its dependencies). Coders answer with a `result-N.json` (status, commit message, files changed, the check they ran, each criterion met or not), and the reviewer with a `review-N.json` (a verdict per criterion plus findings). The old line formats (`COMMIT:`, `QUESTION:`, `BLOCKER:`) still work as a fallback. The shapes are in [docs/contracts.md](docs/contracts.md).
 
-Every status change is written to `.orchestrate/events.jsonl`, and `orch report [--json]` shows time per milestone, fix/review/conflict rounds, first-pass rate and wasted work. Tokens and cost appear only when an agent reports `usage` in its result file.
+Every status change is written to `.orchestrate/events.jsonl`, and `orch report [--json]` shows time per milestone, fix/review/conflict rounds, first-pass rate and wasted work, plus how each model did. Tokens and cost appear only when an agent reports `usage` in its result file.
 
-Optional plan header lines: `Scope: warn | strict` · `Risk hold: on | off` · `Budget: 3h` (autopilot stops when its running time is used up) · `Setup inputs: <globs>` (which files mean "run setup again"; default: lockfiles and manifests). Per milestone: `Parallel: allow` lets it run next to a milestone that shares its `Likely files`.
+Optional plan header lines: `Lead mode: events | off` (default `events` when the plan has a `Lead:` line) · `Scope: warn | strict` · `Risk hold: on | off` · `Budget: 3h` (autopilot stops when its running time is used up) · `Setup inputs: <globs>` (which files mean "run setup again"; default: lockfiles and manifests). Per milestone: `Tier`, `Needs`, `Model why` (see [Models and tiers](#models-and-tiers)) · `Parallel: allow` lets it run next to a milestone that shares its `Likely files`.
 
 ### Commands
-`orch status` · `orch report` · `orch approve Mn` · `orch doctor [kind]` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind>|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch` (full help)
+`orch status` · `orch report` · `orch approve Mn` · `orch models [show|check <id>]` · `orch events [--peek]` · `orch dispatch Mn... [--to <worker>] [--tier <tier>]` · `orch answer Mn "<answer>"` · `orch doctor [kind]` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind> [--model <id>]|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch` (full help)
 
-Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (4) · `ORCH_GONE_COOLDOWN_MIN` (10) · `ORCH_SEND_RETRY_S` (120) · `ORCH_HERDR_TIMEOUT_S` (30) · `ORCH_MAX_LOST` (4) · `ORCH_UNREACHABLE_MIN` (30) · `ORCH_CONFIRM_S` (30) · `ORCH_RISK_MAX_LINES` (1500)
+Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (4) · `ORCH_GONE_COOLDOWN_MIN` (10) · `ORCH_SEND_RETRY_S` (120) · `ORCH_HERDR_TIMEOUT_S` (30) · `ORCH_MAX_LOST` (4) · `ORCH_UNREACHABLE_MIN` (30) · `ORCH_CONFIRM_S` (30) · `ORCH_RISK_MAX_LINES` (1500) · `ORCH_LEAD_WAIT_MIN` (15: ready work the lead hasn't dispatched starts by itself) · `ORCH_LEAD_REWAKE_S` (300) · `ORCH_LEAD_MAX_WAKES` (3) · `ORCH_LEAD_IDLE_MAX_MIN` (720: how long the event manager waits for an answer) · `ORCH_NO_AUTOSTART=1` (the lead's commands never start the event manager)
 
 ## Develop and release
 

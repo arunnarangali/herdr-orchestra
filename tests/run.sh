@@ -5,9 +5,10 @@
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ORCH="$ROOT/bin/orch"
-export HERDR="$ROOT/tests/sim/herdr" ORCH_POLL_STEP_S=1 ORCH_IDLE_GRACE_S=4
+export HERDR="$ROOT/tests/sim/herdr" ORCH_POLL_STEP_S=1 ORCH_IDLE_GRACE_S=4 ORCH_BIN="$ORCH"
 WORK=$(mktemp -d); trap 'pkill -f -- "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 export ORCH_AGENTS_FILE="$WORK/user-agents.toml"   # keep the developer's own agents.toml out of the tests
+export ORCH_MODELS_FILE="$WORK/user-models.toml" ORCH_NO_AUTOSTART=1   # ...and their models.toml; no stray managers
 pass=0 fail=0
 ok()   { echo "  ok   $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $*"; fail=$((fail+1)); }
@@ -193,7 +194,7 @@ echo "8. any agent can lead: playbooks, Lead header, agent registry"
 out=$("$ORCH" lead plan)
 check "lead plan prints version line + playbook" 'grep -q "^herdr-orchestra .* lead playbook: plan" <<<"$out" && grep -q "You are the LEAD" <<<"$out"'
 out=$("$ORCH" lead run)
-check "lead run prints version line + playbook" 'grep -q "lead playbook: run" <<<"$out" && grep -q "exception handler" <<<"$out"'
+check "lead run prints version line + playbook" 'grep -q "lead playbook: run" <<<"$out" && grep -q "event manager" <<<"$out" && grep -q "orch dispatch" <<<"$out"'
 check "lead commands work outside a git repo" '(cd "$WORK" && "$ORCH" lead plan >/dev/null && "$ORCH" agents >/dev/null)'
 check "lead whoami names the pane" '"$ORCH" lead whoami | grep -q "herdr agent rename w1:p1 lead"'
 check "lead check passes on HERDR_ENV=1" 'HERDR_ENV=1 "$ORCH" lead check | grep -q "^OK inside a Herdr pane"'
@@ -206,7 +207,7 @@ check "plan playbook preflight uses lead check, not \$HERDR_ENV" 'grep -q "orch 
 newrepo ld
 printf '# Plan: t\nBranch: orch/ld\nCheck command: true\nLead: lead (claude)\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M1: a\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1); code=$?
-check "Lead header stored by sync" '[ $code -eq 0 ] && python3 -c "import json,sys;l=json.load(open(\".orchestrate/state.json\"))[\"lead\"];sys.exit(l!={\"name\":\"lead\",\"kind\":\"claude\"})"'
+check "Lead header stored by sync" '[ $code -eq 0 ] && python3 -c "import json,sys;s=json.load(open(\".orchestrate/state.json\"));sys.exit(s[\"lead\"]!={\"name\":\"lead\",\"kind\":\"claude\"} or s[\"lead_mode\"]!=\"events\")"'
 sed -i 's/^Lead: .*/Lead: claude-1 (claude)/' .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1); code=$?
 check "lead that is also a worker is an ERROR" '[ $code -eq 2 ] && grep -q "also listed in Workers" <<<"$out"'
@@ -509,6 +510,107 @@ for f in files:
 PY'
 out=$("$ORCH" lead run)
 check "the run playbook no longer has the lead drive the scheduler" '! grep -qE "orch (poll|send|prepare|merge)\b" <<<"$out" && grep -q "orch autopilot" <<<"$out"'
+
+echo "21. models: catalog, policy, tiers in the plan"
+out=$("$ORCH" models 2>&1)
+check "orch models lists the three tiers" 'grep -qE "^opus +high" <<<"$out" && grep -qE "^sonnet +medium" <<<"$out" && grep -qE "^haiku +small" <<<"$out"'
+check "ultra-premium models are not listed, and the policy says so" '! grep -qiE "^[a-z0-9.-]*(fable|astra)" <<<"$out" && grep -q "Not allowed in runs: .*fable.*astra" <<<"$out"'
+"$ORCH" models check fable >/dev/null 2>&1; code=$?
+check "models check refuses a denied model" '[ $code -eq 1 ] && grep -q DENIED <<<"$("$ORCH" models check gpt-6-astra-medium 2>&1)"'
+check "models show prints the evidence" '"$ORCH" models show opus | grep -q "evidence"'
+check "launch --model builds the command" '[ "$("$ORCH" agents launch claude --model haiku)" = "claude --permission-mode acceptEdits --model haiku" ]'
+check "launch --model refuses a denied model" '! "$ORCH" agents launch claude --model fable >/dev/null 2>&1'
+check "launch --model says when a kind has no model flag" 'grep -q "no \`model_flag\`" <<<"$("$ORCH" agents launch amp --model x 2>&1)"'
+printf '[models.my-local]\nkinds = ["opencode"]\ntier = "high"\nreasoning = 2\n[policy]\ndeny = ["*fable*", "sonnet"]\n' > "$ORCH_MODELS_FILE"
+check "user models.toml adds a model; a high tier needs the reasoning for it" '"$ORCH" models check my-local | grep -q "tier small"'
+check "user models.toml can change the policy" 'grep -q DENIED <<<"$("$ORCH" models check sonnet 2>&1)" && "$ORCH" models check gpt-6-astra-light | grep -q UNRATED'
+rm -f "$ORCH_MODELS_FILE"
+newrepo md
+MPLAN='# Plan: t\nBranch: feature/md\nCheck command: test ! -f broken.txt\nIsolation: worktree\nMax parallel: 2\nLEADLINE\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M1: Model\nDepends on: none\nTier: medium\nNeeds: coding\nModel why: one module, a pattern to copy.\nOpen questions:\n- none\n\n## [x] M4: Totals\nDepends on: none\nTier: small\nModel why: one small function.\nOpen questions:\n- none\n'
+printf "${MPLAN/LEADLINE/Lead mode: off}" > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "a plan with models and tiers syncs clean" '[ $code -eq 0 ] && ! grep -qiE "WARN.*(tier|model)" <<<"$out"'
+check "state knows each coder model and tier" 'python3 -c "import json,sys;s=json.load(open(\".orchestrate/state.json\"));w=s[\"workers\"];sys.exit(not (w[\"claude-1\"][\"tier\"]==\"medium\" and w[\"codex-1\"][\"model\"]==\"gpt-6-luna\" and s[\"tasks\"][\"M1\"][\"tier\"]==\"medium\"))"'
+check "pick sends medium work to the medium model, small work to the small one" '[ "$("$ORCH" pick M1)" = claude-1 ] && [ "$("$ORCH" pick M4)" = codex-1 ]'
+sed -i 's/claude: sonnet/claude: fable/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "a denied model in Workers is an ERROR" '[ $code -eq 2 ] && grep -q "model policy does not allow" <<<"$out"'
+sed -i 's/claude: fable/claude: mystery-9/; s/^Tier: medium/Tier: high/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "an unknown model warns; a tier nobody can serve warns" '[ $code -eq 0 ] && grep -q "not in the model catalog" <<<"$out"'
+sed -i 's/claude: mystery-9/claude: haiku/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "a tier no coder reaches warns, and the strongest coder still gets it" 'grep -q "asks for a high-tier model, but no coder" <<<"$out" && [ -n "$("$ORCH" pick M1)" ]'
+sed -i 's/^Tier: high/Tier: huge/' .orchestrate/plan.md
+"$ORCH" sync >/dev/null 2>&1; code=$?
+check "an unknown tier is an ERROR" '[ $code -eq 2 ]'
+
+echo "22. escalation: out of fix rounds on a small model, one fresh round on a stronger one"
+newrepo es
+printf '# Plan: t\nBranch: feature/es\nCheck command: test ! -f broken.txt\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M18: Report\nDepends on: none\nTier: small\nModel why: looks mechanical.\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 180 "$ORCH" autopilot > "$WORK/es.log" 2>&1; code=$?
+check "finished (exit 0)" '[ $code -eq 0 ]'
+check "the small model ran out of rounds and the milestone moved up" 'grep -q "medium-tier model gets one fresh round" "$WORK/es.log"'
+check "the stronger coder finished it" '"$ORCH" status | grep -q "M18 .*merged .*claude-1" && [ -f r.txt ]'
+check "report shows each model and the escalation" '"$ORCH" report --json | python3 -c "import json,sys; m={x[\"model\"]:x for x in json.load(sys.stdin)[\"models\"]}; sys.exit(not (m[\"gpt-6-luna\"][\"escalated_away\"]==1 and m[\"sonnet\"][\"merged\"]==1))" && "$ORCH" report | grep -q "moved up"'
+check "summary has the planned-vs-actual model table" 'grep -q "Models: planned and actual" .orchestrate/summary.md && grep -q "| M18 | small | gpt-6-luna (small), sonnet (medium) | yes |" .orchestrate/summary.md'
+
+echo "23. the lead's event queue (no event manager running)"
+newrepo ev; echo "$APP" > "$FH/lead.dir"
+printf "${MPLAN/LEADLINE/Lead: lead (claude: opus)}" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null
+check "ready milestones wait for the lead's dispatch" '"$ORCH" ready | grep -q "HOLD M1" && ! "$ORCH" ready | grep -q "^READY"'
+out=$("$ORCH" dispatch M1 2>&1)
+check "dispatch releases a milestone and names who can take it" 'grep -q "DISPATCH M1 -> claude-1 (tier medium)" <<<"$out" && "$ORCH" ready | grep -q "^READY M1"'
+check "dispatch says the event manager is not running (autostart off in tests)" 'grep -q "event manager is NOT running" <<<"$out"'
+"$ORCH" set M4 paused "which currency should totals use?" >/dev/null
+check "a pause is queued for the lead with nobody listening" '"$ORCH" events --peek | grep -q "PAUSED M4 .*which currency"'
+check "peek does not acknowledge" '"$ORCH" events --peek | grep -q "1 new"'
+"$ORCH" events >/dev/null
+check "reading acknowledges; the event stays open until the milestone moves on" '"$ORCH" events | grep -q "0 new, 1 still open"'
+out=$("$ORCH" answer M4 "INR only" 2>&1)
+check "answer writes the note into plan.md and requeues the milestone" 'grep -q "^- INR only" .orchestrate/plan.md && [ "$(status_of M4)" = pending ] && "$ORCH" ready | grep -q "^READY M4"'
+check "the answered event is closed" '"$ORCH" events | grep -q "0 new, 0 still open"'
+check "answer refuses a milestone that is not paused" '! "$ORCH" answer M1 "x" >/dev/null 2>&1'
+check "sync keeps the queue and the dispatch" '"$ORCH" sync >/dev/null && "$ORCH" ready | grep -q "^READY M1"'
+
+echo "24. event-driven run: the lead dispatches, pauses, is woken, answers, and the same coder carries on"
+newrepo lr; echo "$APP" > "$FH/lead.dir"; echo "INR only" > "$FH/lead-answer"
+printf "${MPLAN/LEADLINE/Lead: lead (claude: opus)}" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" dispatch M1 M4 >/dev/null
+timeout 180 "$ORCH" autopilot > "$WORK/lr.log" 2>&1; code=$?
+check "ALL_DONE with no human in between (exit 0)" '[ $code -eq 0 ] && [ "$(status_of M1)$(status_of M4)" = mergedmerged ]'
+check "the lead was woken for the question" 'grep -q "woke the lead (lead)" "$WORK/lr.log" && grep -q "PAUSED M4" "$FH/lead-events.log"'
+check "the answer reached plan.md and the task file" 'grep -q "^- INR only" .orchestrate/plan.md && [ -f d.txt ]'
+check "the same coder got the milestone back" '[ "$(grep -c "^codex-1 <- .*M4/task.md" "$FH/prompts.log")" -eq 2 ] && ! grep -q "^claude-1 <- .*M4/" "$FH/prompts.log"'
+check "the lead was woken at ALL_DONE and finished the summary" 'grep -q "ALL_DONE" "$FH/lead-events.log" && grep -q "check totals by hand" .orchestrate/summary.md'
+check "no duplicate wake-ups: one per batch of events" '[ "$(wc -l < "$FH/lead-wakes.log")" -le 4 ]'
+check "every event was delivered and read" 'python3 -c "import json,sys;s=json.load(open(\".orchestrate/state.json\"));sys.exit(any(not e[\"read\"] for e in s[\"lead_events\"]) or not s[\"lead_events\"])"'
+
+echo "25. the lead dispatches what becomes ready; a silent lead never stalls the run"
+newrepo lw; echo "$APP" > "$FH/lead.dir"
+printf '# Plan: t\nBranch: feature/lw\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: M5 (needs e)\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 180 "$ORCH" autopilot > "$WORK/lw.log" 2>&1; code=$?
+check "woken with READY, the lead dispatches each milestone as it unlocks" '[ $code -eq 0 ] && [ "$(status_of M5)$(status_of M6)" = mergedmerged ] && grep -q "orch dispatch M6" "$FH/lead-events.log"'
+check "the event manager waited for the lead instead of stopping" 'grep -q "waiting for the lead: dispatch M5" "$WORK/lw.log" && ! grep -q "started without it" "$WORK/lw.log"'
+newrepo lsil; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead-deaf"
+printf '# Plan: t\nBranch: feature/ls\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+ORCH_LEAD_WAIT_MIN=0 ORCH_LEAD_REWAKE_S=2 timeout 120 "$ORCH" autopilot > "$WORK/lsil.log" 2>&1; code=$?
+check "a lead that never answers: ready work starts by itself" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && grep -q "M5: the lead did not dispatch it" "$WORK/lsil.log"'
+check "its events are still in the queue, unread" '"$ORCH" events --peek | grep -q "AUTO-DISPATCHED M5" && "$ORCH" events --peek | grep -q "ALL_DONE"'
+newrepo lgone; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead.gone"
+printf '# Plan: t\nBranch: feature/lg\nCheck command: true\nIsolation: worktree\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+ORCH_LEAD_WAIT_MIN=0 timeout 120 "$ORCH" autopilot > "$WORK/lgone.log" 2>&1; code=$?
+check "a lead pane that is gone is reported once, and the run still finishes" '[ $code -eq 0 ] && [ "$(grep -c "is not in herdr" "$WORK/lgone.log")" -eq 1 ]'
+
+echo "26. the lead's dispatch starts the event manager when none is running"
+newrepo as; echo "$APP" > "$FH/lead.dir"
+printf '# Plan: t\nBranch: feature/as\nCheck command: true\nIsolation: worktree\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null
+out=$(ORCH_NO_AUTOSTART=0 "$ORCH" dispatch M5 --to claude-1 2>&1)
+check "dispatch starts it and says so" 'grep -q "started the event manager" <<<"$out"'
+for _ in $(seq 60); do grep -q "ALL_DONE" .orchestrate/autopilot.log 2>/dev/null && break; sleep 1; done
+check "the run it started finishes" '[ "$(status_of M5)" = merged ] && grep -q "ALL_DONE" .orchestrate/autopilot.log'
 
 echo "11. installer puts the thin skills in every installed agent's folders"
 FAKEBIN="$WORK/fakebin"; IH="$WORK/home"; mkdir -p "$FAKEBIN" "$IH"

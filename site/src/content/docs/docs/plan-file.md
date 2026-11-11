@@ -3,7 +3,7 @@ title: The plan file
 description: The format of .orchestrate/plan.md, field by field.
 ---
 
-The lead writes `.orchestrate/plan.md` and you edit it. `orch sync` parses it into `.orchestrate/state.json`; run it after every edit (the lead and autopilot run it for you).
+The lead writes `.orchestrate/plan.md` and you edit it. `orch sync` parses it into `.orchestrate/state.json`; run it after every edit (the lead and the event manager run it for you).
 
 ## Format
 
@@ -16,8 +16,8 @@ Check command: npm test
 Setup command: npm ci
 Isolation: worktree
 Max parallel: 2
-Lead: lead (claude)
-Workers: claude-1 (claude), codex-1 (codex)
+Lead: lead (claude: opus)
+Workers: claude-1 (claude: sonnet), claude-2 (claude: haiku)
 Reviewer: reviewer (agy)
 
 ## Global instructions
@@ -26,6 +26,9 @@ Must not add packages. Reuse the 10 MB upload limit.
 ## [x] M1: Shared import types
 Depends on: none
 Prefer: any
+Tier: high
+Needs: architecture, reasoning
+Model why: the contract both sides build on; a wrong shape costs two milestones.
 Review: no
 Likely files: packages/shared/src/imports.ts
 Goal: one ImportRow type both sides use
@@ -56,13 +59,14 @@ Notes from user:
 | `Setup command:` | Run once in each new worktree, e.g. `npm ci`, or `none` |
 | `Isolation:` | `worktree` (parallel) or `shared` (one at a time). See [Modes](/docs/modes/) |
 | `Max parallel:` | How many milestones may be in progress at once, usually the number of coders |
-| `Lead:` | The lead's pane and kind. It can't also be a worker or the reviewer |
-| `Workers:` | Coders as `name (kind)`, or `name (kind @pane:<id>)` for a pane Herdr doesn't list as an agent |
-| `Reviewer:` | `name (kind)` or `none` |
+| `Lead:` | The lead's pane, kind and model: `lead (claude: opus)`. It can't also be a worker or the reviewer |
+| `Lead mode:` | Optional. `events` (default when there is a `Lead:` line): the lead dispatches and is woken by events. `off`: `orch autopilot` dispatches by itself and stops when it needs you |
+| `Workers:` | Coders as `name (kind: model)`. The model is what the pane really runs; leave it out and the coder has no tier. `name (kind @pane:<id>)` addresses a pane Herdr doesn't list as an agent |
+| `Reviewer:` | `name (kind: model)` or `none` |
 | `Scope:` | Optional. `warn` (default) notes files changed outside a milestone's Likely files; `strict` sends them back to the coder |
 | `Parallel:` | Optional. `allow` lets milestones with overlapping Likely files run at once |
 | `Risk hold:` | Optional. `off` stops risky changes being held for `orch approve` |
-| `Budget:` | Optional. A time limit for the whole run, e.g. `4h`; autopilot stops when it is used up |
+| `Budget:` | Optional. A time limit for the whole run, e.g. `4h`; the event manager stops when it is used up. Time spent waiting for your answer does not count |
 | `Setup inputs:` | Optional. Extra files that make the setup command run again when they change, besides lockfiles |
 
 ## Milestone sections
@@ -71,7 +75,10 @@ Notes from user:
 |---|---|
 | `## [x] Mn: title` | Untick `[ ]` to skip the milestone |
 | `Depends on:` | `none`, or `M1 (what it needs from M1)`. The reason is required |
-| `Prefer:` | `any`, a worker kind (`codex`) or a worker name. A preference, not a lock |
+| `Prefer:` | `any`, a worker kind (`codex`) or a worker name. A preference, not a lock; the tier comes first |
+| `Tier:` | `small`, `medium` or `high`: the level of model the milestone needs. Leave it out and any coder may take it |
+| `Needs:` | What the work leans on: any of `reasoning`, `coding`, `architecture`, `long-context`, `tool-use`, `planning`, `speed` |
+| `Model why:` | One line: what in this milestone makes it that tier |
 | `Review:` | `yes` or `no` |
 | `Likely files:` | Where the work probably lands; used for the scope check and to run overlapping milestones one after the other |
 | `Goal`, `Why` | The outcome and the reason |
@@ -81,6 +88,6 @@ Notes from user:
 | `Context:` | Research facts: where things live, patterns to follow |
 | `Out of scope:` | What this milestone must not do |
 | `Open questions:` | `- none`, or questions with options. Unanswered questions block the milestone |
-| `Notes from user:` | Your answers and extra guidance. Coders see them |
+| `Notes from user:` | Your answers and extra guidance. Coders see them. `orch answer Mn "..."` adds a line here |
 
 Each section must stand alone: the coder receives it as written, plus the global instructions and the reports of the milestones it depends on.
