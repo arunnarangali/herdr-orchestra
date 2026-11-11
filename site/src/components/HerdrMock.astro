@@ -4,19 +4,19 @@
 type L = [seq: number, text: string, cls?: string];
 const panes: { name: string; kind: string; state: string; stateLabel: string; lines: L[] }[] = [
   {
-    name: 'lead', kind: 'claude', state: 'plan', stateLabel: 'planning',
+    name: 'lead', kind: 'claude · opus', state: 'plan', stateLabel: 'paused',
     lines: [
       [1, '› /orch-plan CSV import for transactions', 't-lead'],
       [2, 'Researching server/routes, web/src/pages', 't-dim'],
-      [3, 'Wrote .orchestrate/plan.md: 4 milestones'],
-      [4, 'M1 contract → M2 api ∥ M3 web → M4', 't-dim'],
-      [5, 'orch sync: OK 4 tasks, isolation=worktree', 't-ok'],
+      [3, 'Plan: M1 high → M2 medium ∥ M3 small'],
+      [5, 'orch dispatch M2 M3, then pause', 't-ok'],
+      [17, 'woken: M3 merged, M2 has a question', 't-lead'],
     ],
   },
   {
-    name: 'claude-1', kind: 'claude', state: 'working', stateLabel: 'working',
+    name: 'claude-1', kind: 'claude · sonnet', state: 'working', stateLabel: 'working',
     lines: [
-      [6, 'M2 backend: POST /imports', 't-coder'],
+      [6, 'M2 backend (medium): POST /imports', 't-coder'],
       [7, 'Reading server/routes/upload.ts', 't-dim'],
       [9, 'Editing server/imports/parse.ts'],
       [11, 'npm test … 48 passed', 't-ok'],
@@ -24,9 +24,9 @@ const panes: { name: string; kind: string; state: string; stateLabel: string; li
     ],
   },
   {
-    name: 'codex-1', kind: 'codex', state: 'working', stateLabel: 'working',
+    name: 'claude-2', kind: 'claude · haiku', state: 'working', stateLabel: 'working',
     lines: [
-      [6, 'M3 frontend: import page', 't-coder'],
+      [6, 'M3 import page (small)', 't-coder'],
       [8, 'Editing web/src/pages/Import.tsx'],
       [10, 'checks failed → fix round 1', 't-bad'],
       [12, 'Empty file now shows an error'],
@@ -45,7 +45,7 @@ const panes: { name: string; kind: string; state: string; stateLabel: string; li
   },
 ];
 ---
-<div class="term" role="img" aria-label="A Herdr window with four panes: the lead plans four milestones, two coders build the backend and frontend in parallel, and the reviewer reports a blocker that comes back as a fix job.">
+<div class="term" role="img" aria-label="A Herdr window with four panes: the lead plans the milestones with a model tier each, dispatches them and pauses; two coders on different models build in parallel; the reviewer reports a blocker that comes back as a fix job; and the lead is woken when something needs a decision.">
   <div class="bar"><i></i><i></i><i></i><span>herdr · csv-import</span></div>
   <div class="herdr" data-herdr>
     {panes.map((p) => (

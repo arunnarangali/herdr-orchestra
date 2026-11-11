@@ -5,12 +5,12 @@ import BranchFlow from '../components/BranchFlow.astro';
 import AutopilotLog from '../components/AutopilotLog.astro';
 import Modes from '../components/Modes.astro';
 ---
-<Base title="How it works · herdr-orchestra" description="One herdr-orchestra run, step by step: plan, edit, build, review the pull request.">
+<Base title="How it works · herdr-orchestra" description="One herdr-orchestra run, step by step: the orchestration plan, the orchestration run, and the pull request.">
   <section class="first">
     <div class="wrap">
       <p class="eyebrow">How it works</p>
       <h1>One run, from request to pull request.</h1>
-      <p class="lede">A run builds one feature. It has 1 to 4 milestones, runs on one feature branch, and ends in a pull request. Here is every step, using a CSV import feature as the example.</p>
+      <p class="lede">A run builds one feature. The lead writes an orchestration plan of 1 to 4 milestones, the orchestration run builds them on one feature branch, and it ends in a pull request. Here is every step, using a CSV import feature as the example.</p>
     </div>
   </section>
 
@@ -23,13 +23,14 @@ import Modes from '../components/Modes.astro';
   <section>
     <div class="wrap grid cols-2" style="gap:48px;align-items:start">
       <div>
-        <p class="eyebrow">Steps 1 to 3</p>
+        <p class="eyebrow">Steps 1 to 3 · the orchestration plan</p>
         <h2>You set the goal. The lead writes the plan.</h2>
         <ol class="steps" style="margin-top:28px">
-          <li><div><h3>Open your team</h3><p>One pane each: a lead, one or more coders, and an optional reviewer. <code>orch agents launch &lt;kind&gt;</code> prints each agent's command.</p></div></li>
+          <li><div><h3>Open your team</h3><p>One pane each: a lead, one or more coders, and an optional reviewer. Coders can run different models. <code>orch agents launch &lt;kind&gt; --model &lt;id&gt;</code> prints each agent's command.</p></div></li>
           <li><div><h3>Ask the lead for a feature</h3><p>Run <code>/orch-plan &lt;feature&gt;</code> in the lead's pane. A good request has Feature, Why, Must, Must not, Already decided, Done when.</p></div></li>
           <li><div><h3>The lead researches and plans</h3><p>It reads the codebase, finds the files and patterns involved, and writes milestones as issues. Anything it can't decide goes under Open questions, with options.</p></div></li>
-          <li><div><h3>You edit the plan</h3><p><code>.orchestrate/plan.md</code> is a normal Markdown file. Change dependencies, the preferred coder, review yes or no, and answer open questions.</p></div></li>
+          <li><div><h3>The lead picks a tier for each milestone</h3><p>Small for mechanical work, medium for normal implementation, high where reasoning is the hard part. It reads the model catalog (<code>orch models</code>) and writes the reason next to each choice.</p></div></li>
+          <li><div><h3>You read the plan and say go</h3><p><code>.orchestrate/plan.md</code> is a normal Markdown file. Change dependencies, a tier, review yes or no, and answer open questions. Nothing starts before you say so.</p></div></li>
         </ol>
       </div>
       <div class="term">
@@ -38,12 +39,16 @@ import Modes from '../components/Modes.astro';
 Branch: feature/csv-import
 Check command: npm test
 Isolation: worktree
-Workers: claude-1 (claude), codex-1 (codex)
+Lead: lead (claude: opus)
+Workers: claude-1 (claude: sonnet), claude-2 (claude: haiku)
 Reviewer: reviewer (agy)
 
 <span class="t-lead">## [x] M2: Import endpoint</span>
 <span class="t-dim">Depends on:</span> M1 (shared ImportRow type)
-<span class="t-dim">Prefer:</span> any
+<span class="t-dim">Tier:</span> medium
+<span class="t-dim">Needs:</span> coding, tool-use
+<span class="t-dim">Model why:</span> one module, a clear contract,
+  an endpoint to copy; no design decisions
 <span class="t-dim">Review:</span> yes
 <span class="t-dim">Goal:</span> users upload a bank CSV and get rows back
 <span class="t-dim">Acceptance criteria:</span>
@@ -62,15 +67,16 @@ Reviewer: reviewer (agy)
   <section>
     <div class="wrap grid cols-2" style="gap:48px;align-items:start">
       <div>
-        <p class="eyebrow">Step 4</p>
-        <h2>The team builds, checks and reviews.</h2>
+        <p class="eyebrow">Step 4 · the orchestration run</p>
+        <h2>The lead dispatches. The team builds, checks and reviews.</h2>
         <ol class="steps" style="margin-top:28px">
-          <li><div><h3>Dispatch</h3><p>Each ready milestone goes to a free coder, preferring the kind you asked for. In worktree mode, independent milestones run at once.</p></div></li>
-          <li><div><h3>Check</h3><p>When a coder finishes, your check command runs on its work. A failure sends the last 60 lines back, up to 3 rounds.</p></div></li>
+          <li><div><h3>Dispatch, then pause</h3><p>The lead runs <code>orch dispatch</code> and stops. Each milestone goes to a free coder whose model serves its tier. In worktree mode, independent milestones run at once.</p></div></li>
+          <li><div><h3>Check</h3><p>When a coder finishes, your check command runs on its work. A failure sends the last 60 lines back, up to 3 rounds. Out of rounds, the milestone gets one go on a stronger model.</p></div></li>
           <li><div><h3>Review</h3><p>The reviewer reads the diff and reports blockers. Each blocker round becomes a fix job for the next free coder, up to 2 rounds.</p></div></li>
           <li><div><h3>Land</h3><p>An approved milestone becomes one commit on the feature branch, and the milestones that depended on it unlock.</p></div></li>
+          <li><div><h3>Wake the lead</h3><p>The lead is woken with what happened: a milestone landed, a coder asked a question, something failed or is held. It decides, dispatches what is ready, and pauses again.</p></div></li>
         </ol>
-        <p class="diagram-note">A script drives this loop (<code>orch autopilot</code>); the lead helps when it stops (<code>/orch-run</code>). <a href="/docs/driving/">How a run is driven →</a></p>
+        <p class="diagram-note">A plain script, the event manager (<code>orch autopilot</code>), runs this loop; the lead makes its decisions. <a href="/docs/driving/">The orchestration run →</a></p>
       </div>
       <AutopilotLog />
     </div>
@@ -80,16 +86,16 @@ Reviewer: reviewer (agy)
     <div class="wrap">
       <p class="eyebrow">Step 5</p>
       <h2>One branch, one pull request.</h2>
-      <p class="lede" style="margin-bottom:36px">The run never adds bookkeeping branches or commits to your repo. You get a <code>feature/&lt;name&gt;</code> branch with a real commit per milestone and a summary in <code>.orchestrate/summary.md</code>. Run <code>orch finish</code> and it re-checks the branch, pushes it and opens the pull request.</p>
+      <p class="lede" style="margin-bottom:36px">The run never adds bookkeeping branches or commits to your repo. You get a <code>feature/&lt;name&gt;</code> branch with a real commit per milestone and a summary in <code>.orchestrate/summary.md</code>, including the tier planned for each milestone next to the model that really did it. Run <code>orch finish</code> and it re-checks the branch, pushes it and opens the pull request.</p>
       <div class="diagram reveal"><BranchFlow /></div>
     </div>
   </section>
 
   <section>
     <div class="wrap">
-      <p class="eyebrow">When it stops</p>
-      <h2>You answer, it resumes.</h2>
-      <p class="lede">If a coder asks a question or a round limit is hit, you get a desktop notification that says why. Answer under "Notes from user" in the plan and run <code>orch set Mn pending</code>, or ask the lead to handle it with you. The run picks up where it stopped.</p>
+      <p class="eyebrow">When it needs you</p>
+      <h2>You answer, the same coder carries on.</h2>
+      <p class="lede">If a coder asks something the plan and the code don't answer, the lead is woken and asks you in its pane. Your answer goes into the plan with <code>orch answer</code> and back to the coder that asked, which continues from its saved work. Other milestones keep running, and no event is lost while anyone is away. <a href="/docs/when-it-stops/">When a run needs you →</a></p>
     </div>
   </section>
 

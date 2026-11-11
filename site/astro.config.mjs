@@ -8,7 +8,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'herdr-orchestra',
-      description: 'A lead plans, coders build in parallel, a reviewer checks every diff, and you get one pull request.',
+      description: 'A lead plans and coordinates, coders build in parallel on models that fit each task, a reviewer checks every diff, and you get one pull request.',
       logo: { src: './src/assets/mark.svg', replacesTitle: false },
       favicon: '/favicon.svg',
       social: [
@@ -31,13 +31,15 @@ export default defineConfig({
           items: [
             { label: 'How a run works', slug: 'docs/workflow' },
             { label: 'Writing a feature request', slug: 'docs/feature-request' },
-            { label: 'Planning and milestones', slug: 'docs/planning' },
+            { label: 'The orchestration plan', slug: 'docs/planning' },
+            { label: 'The orchestration run', slug: 'docs/driving' },
+            { label: 'The lead and the event manager', slug: 'docs/lead' },
+            { label: 'Models and tiers', slug: 'docs/models' },
             { label: 'The plan file', slug: 'docs/plan-file' },
-            { label: 'Driving a run', slug: 'docs/driving' },
             { label: 'Checks, reviews and fixes', slug: 'docs/reviews' },
             { label: 'Modes', slug: 'docs/modes' },
             { label: 'Git, commits and the PR', slug: 'docs/git' },
-            { label: 'When a run stops', slug: 'docs/when-it-stops' },
+            { label: 'When a run needs you', slug: 'docs/when-it-stops' },
           ],
         },
         { label: 'Agents', items: [{ label: 'Agents and roles', slug: 'docs/agents' }] },

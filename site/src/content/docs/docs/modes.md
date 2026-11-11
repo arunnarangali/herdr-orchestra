@@ -16,6 +16,7 @@ Each coder works in its own git worktree next to your repo, `../<repo>-wt/<name>
 ```
 
 - Pick it when milestones can be built independently, which is usual with two or more coders.
+- Each coder can run a different model, so a small milestone and a high-tier one can run side by side.
 - Review is pipelined: coders move on while the reviewer reads.
 - `Setup command:` runs once in each new worktree.
 

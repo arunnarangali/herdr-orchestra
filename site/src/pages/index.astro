@@ -6,22 +6,24 @@ import RunFlow from '../components/RunFlow.astro';
 import BranchFlow from '../components/BranchFlow.astro';
 import AgentStrip from '../components/AgentStrip.astro';
 import Modes from '../components/Modes.astro';
-import { REPO_URL, version } from '../lib/repo';
+import AutopilotLog from '../components/AutopilotLog.astro';
+import { REPO_URL, version, models, tierInfo, deniedModels } from '../lib/repo';
+import type { Tier } from '../lib/repo';
 
 const roles = [
   {
     c: 'var(--text)', tag: 'you', name: 'You',
-    does: 'Describe the feature, edit the plan, answer questions when asked, and review one pull request.',
+    does: 'Describe the feature, approve the plan, answer the questions only you can answer, and review one pull request.',
     never: 'Babysit agents or copy work between them.',
   },
   {
     c: 'var(--lead)', tag: 'lead · any agent', name: 'Lead',
-    does: 'Researches the codebase and writes 1 to 4 milestones as issues: goal, why, acceptance criteria, interfaces, dependencies with reasons.',
-    never: 'Writes code or tells coders how to build it.',
+    does: 'Researches the codebase, writes the plan, and picks the model tier each milestone needs. Then it dispatches the work, pauses, and is woken to decide what happens next.',
+    never: 'Writes code, tells coders how to build it, or polls agents.',
   },
   {
     c: 'var(--coder)', tag: 'coders · a pool', name: 'Coders',
-    does: 'Own the how: design, code, tests, fixing failed checks and review findings, resolving conflicts. Whichever is free takes the next ready milestone.',
+    does: 'Own the how: design, code, tests, fixing failed checks and review findings, resolving conflicts. Each runs a model that fits its work, and takes milestones of its tier.',
     never: 'Change scope or skip acceptance criteria.',
   },
   {
@@ -31,6 +33,14 @@ const roles = [
   },
 ];
 
+const tiers: { tier: Tier; c: string; name: string; why: string }[] = [
+  { tier: 'small', c: 'var(--coder)', name: 'Small and fast', why: 'Speed matters more than depth.' },
+  { tier: 'medium', c: 'var(--reviewer)', name: 'Medium, for coding', why: 'Solid coding and tool use, little design.' },
+  { tier: 'high', c: 'var(--lead)', name: 'High reasoning', why: 'A wrong design here is expensive.' },
+];
+const catalog = models();
+const denied = deniedModels().filter((d) => d.includes('*')).map((d) => d.replaceAll('*', ''));
+
 const handles = [
   { trigger: 'checks fail', title: 'Sends the failure back', body: 'The last 60 lines of output go to the coder who built it.', limit: 'up to 3 rounds' },
   { trigger: 'BLOCKER', title: 'Queues a fix job', body: 'The problem, not the solution, goes to the next free coder, preferring the author.', limit: 'up to 2 rounds' },
@@ -38,17 +48,17 @@ const handles = [
   { trigger: 'usage limit', title: 'Benches the agent', body: 'Another coder continues with the work so far.', limit: '60 min cooldown' },
   { trigger: 'agent disappears', title: 'Moves the work on', body: 'Its task continues on another coder with the work so far; it rejoins when it is back.', limit: '10 min bench' },
   { trigger: 'permission prompt', title: 'Alerts you', body: 'A desktop notification; every other task keeps running.', limit: 'no waiting' },
-  { trigger: 'QUESTION:', title: 'Waits only where needed', body: 'That task and its dependents pause. Everything else continues.', limit: 'answer in plan.md' },
-  { trigger: 'coder freed', title: 'Pipelines review', body: 'Once checks pass, the coder takes the next milestone while the reviewer reads.', limit: 'worktree mode' },
+  { trigger: 'QUESTION:', title: 'Wakes the lead', body: 'That task pauses. The lead answers from the plan or asks you, and the same coder carries on.', limit: 'orch answer' },
+  { trigger: 'out of rounds', title: 'Moves it up a tier', body: 'A milestone a model could not finish gets one fresh round on a stronger model, with the work so far.', limit: 'once' },
 ];
 ---
 <Base>
   <section class="first">
     <div class="wrap hero">
       <div>
-        <a class="version-pill" href="/changelog"><b>{version()}</b> One feature branch per run, one pull request</a>
+        <a class="version-pill" href="/changelog"><b>{version()}</b> The lead picks a model for every step and coordinates the run</a>
         <h1>Your AI agents, <span>working as a team.</span></h1>
-        <p class="lede">A lead plans the feature. Coders build it in parallel. A reviewer checks every diff. You get one clean pull request.</p>
+        <p class="lede">A lead writes the orchestration plan and picks the right level of model for every step. Coders build in parallel, a reviewer checks every diff, and the lead coordinates the run. You get one clean pull request.</p>
         <Install />
         <div class="actions">
           <a class="btn primary" href="/docs/quick-start">Quick start</a>
@@ -63,9 +73,61 @@ const handles = [
   <section>
     <div class="wrap">
       <div class="section-head">
+        <p class="eyebrow">Orchestration plan and orchestration run</p>
+        <h2>One plan you can read. One run that follows it.</h2>
+        <p class="lede">You describe the feature and say go. Everything between is planned by the lead and carried out by the team, and the summary shows where the run differed from the plan.</p>
+      </div>
+      <div class="grid cols-2">
+        <div class="card">
+          <h3>The orchestration plan <code>/orch-plan</code></h3>
+          <p>The lead reads your codebase and writes 1 to 4 milestones as issues. For each one the plan says what it depends on, which level of model it needs, which coder will take it, and why.</p>
+          <ul><li>Goals and acceptance criteria, never how-to steps</li><li>A tier and a one-line reason for every milestone</li><li>A normal Markdown file you can edit before anything starts</li></ul>
+        </div>
+        <div class="card">
+          <h3>The orchestration run <code>/orch-run</code></h3>
+          <p>The lead dispatches the milestones and pauses. A plain script builds, checks, reviews and lands them, and wakes the lead whenever something needs a decision.</p>
+          <ul><li>The lead is woken by events; it never polls</li><li>Questions reach you only when only you can answer</li><li>Every event is stored first, so none is missed</li></ul>
+        </div>
+      </div>
+      <div class="diagram reveal" style="margin-top:16px"><RunFlow /></div>
+      <p class="diagram-note"><a href="/how-it-works">Walk through a full run, step by step →</a></p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">The right model for each step</p>
+        <h2>Small models for small work. Strong reasoning where it counts.</h2>
+        <p class="lede">The lead does not pick a model by its name. A catalog rates each model on reasoning, coding, architecture, instruction following, tool use, planning, speed and context size, and a model needs enough reasoning for its tier.</p>
+      </div>
+      <div class="grid cols-3">
+        {tiers.map((t) => (
+          <div class="card role" style={`--c:${t.c}`}>
+            <span class="tag">Tier: {t.tier}</span>
+            <h3>{t.name}</h3>
+            <dl>
+              <dt>For</dt><dd>{tierInfo(t.tier).use}. {t.why}</dd>
+              <dt>For example</dt><dd class="never">{catalog.filter((m) => m.tier === t.tier).map((m) => m.id).join(', ')}</dd>
+            </dl>
+          </div>
+        ))}
+      </div>
+      <div class="grid cols-3" style="margin-top:16px">
+        <div class="card"><h3>Explained in the plan</h3><p>Each milestone carries <code>Tier</code>, <code>Needs</code> and <code>Model why</code>, so you can see and change every choice before the run.</p></div>
+        <div class="card"><h3>Checked against the run</h3><p>The summary shows the tier that was planned next to the model that did the work, and <code>orch report</code> shows how each model really did.</p></div>
+        <div class="card"><h3>Yours to change</h3><p>Use the models your agents already reach. Add or re-rate models in one file. Ultra-premium models ({denied.join(', ')}) are kept out of runs by default.</p></div>
+      </div>
+      <p class="diagram-note"><a href="/docs/models/">How models and tiers work →</a></p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
         <p class="eyebrow">Works with your agents</p>
         <h2>Any installed agent can play any role.</h2>
-        <p class="lede">Mix them freely: a Claude lead, a Codex and a Claude coder, an Antigravity reviewer. Anything that can run shell commands can join.</p>
+        <p class="lede">Mix kinds and models freely: a Claude lead on a high-reasoning model, a Codex and a Claude coder, an Antigravity reviewer. Anything that can run shell commands can join.</p>
       </div>
       <AgentStrip />
     </div>
@@ -76,7 +138,7 @@ const handles = [
       <div class="section-head">
         <p class="eyebrow">Who does what</p>
         <h2>Clear roles, and clear limits.</h2>
-        <p class="lede">Each role has one job and a line it never crosses. The lead decides what and why; the coders decide how.</p>
+        <p class="lede">Each role has one job and a line it never crosses. The lead decides what, why and which level of model; the coders decide how.</p>
       </div>
       <div class="grid cols-4">
         {roles.map((r) => (
@@ -96,21 +158,9 @@ const handles = [
   <section>
     <div class="wrap">
       <div class="section-head">
-        <p class="eyebrow">How a run works</p>
-        <h2>You touch it three times.</h2>
-        <p class="lede">You describe the feature, edit the plan, and review the pull request. The team does everything in between.</p>
-      </div>
-      <div class="diagram reveal"><RunFlow /></div>
-      <p class="diagram-note"><a href="/how-it-works">Walk through a full run, step by step →</a></p>
-    </div>
-  </section>
-
-  <section>
-    <div class="wrap">
-      <div class="section-head">
         <p class="eyebrow">Parallel by design, clean history</p>
         <h2>Independent work runs side by side, on one branch.</h2>
-        <p class="lede">For each pair of milestones the lead asks: could B be built and pass its checks if A never existed? If yes, two coders build them at the same time in separate git worktrees.</p>
+        <p class="lede">For each pair of milestones the lead asks: could B be built and pass its checks if A never existed? If yes, two coders build them at the same time in separate git worktrees, each on its own model.</p>
       </div>
       <div class="diagram reveal"><BranchFlow /></div>
       <div class="grid cols-3" style="margin-top:16px">
@@ -125,8 +175,8 @@ const handles = [
     <div class="wrap">
       <div class="section-head">
         <p class="eyebrow">Built to keep going</p>
-        <h2>It stops only when it needs you.</h2>
-        <p class="lede">Failed checks, review findings, conflicts and tired agents are routed to the right place with a round limit. When a run really needs you, you get a desktop notification that says why.</p>
+        <h2>It comes to you only when it needs you.</h2>
+        <p class="lede">Failed checks, review findings, conflicts and tired agents are routed to the right place with a round limit. What needs judgment goes to the lead. What only you can decide reaches you, with the reason.</p>
       </div>
       <div class="grid cols-4">
         {handles.map((h) => (
@@ -144,22 +194,26 @@ const handles = [
   <section>
     <div class="wrap drive">
       <div class="section-head">
-        <p class="eyebrow">A script drives, the lead helps</p>
-        <h2>No AI in the scheduling loop.</h2>
-        <p class="lede">A plain script runs the build. The lead steps in only when it stops, and the run picks up where it left off.</p>
+        <p class="eyebrow">The lead decides, a script does</p>
+        <h2>Dispatch, pause, wake, decide.</h2>
+        <p class="lede">The run works like a call stack. The lead hands out work and pauses. A plain script does the work in between and resumes the lead with an event. No AI is spent on waiting or scheduling.</p>
       </div>
-      <div class="grid cols-2">
-        <div class="card">
-          <h3>The lead handles exceptions <code>/orch-run</code></h3>
-          <p>When the script stops, your lead agent reads the status and the log, asks you what it needs and writes your answers into the plan.</p>
-          <ul><li>Judgment on unclear failures</li><li>Never edits code or prompts a coder</li></ul>
+      <div class="grid cols-2" style="align-items:start">
+        <div class="grid" style="gap:16px">
+          <div class="card">
+            <h3>The lead coordinates <code>orch dispatch</code> <code>orch answer</code></h3>
+            <p>It starts each milestone when its dependencies have landed, answers a coder's question from the plan or asks you, and decides what to do with a milestone that failed.</p>
+            <ul><li>Woken once per batch of events, only when idle</li><li>Your answer goes back to the same coder</li><li>Never edits code or prompts a coder</li></ul>
+          </div>
+          <div class="card">
+            <h3>The event manager runs it <code>orch autopilot</code></h3>
+            <p>A plain program hands milestones to coders of the right tier, runs checks and reviews, lands the results, and keeps a queue of everything the lead should hear about.</p>
+            <ul><li>One driver per run, safe to kill and restart</li><li>Nothing red is committed; risky changes wait for you</li><li>If the lead is away, ready work still starts</li></ul>
+          </div>
         </div>
-        <div class="card">
-          <h3>A script drives <code>orch autopilot</code></h3>
-          <p>A plain program in a spare terminal hands out milestones, runs checks and reviews, and lands the results. Agents only spend tokens on coding and review.</p>
-          <ul><li>One driver per run, safe to kill and restart</li><li>Nothing red is committed; risky changes wait for you</li></ul>
-        </div>
+        <AutopilotLog />
       </div>
+      <p class="diagram-note"><a href="/docs/lead/">The lead and the event manager →</a></p>
     </div>
   </section>
 
@@ -181,8 +235,8 @@ const handles = [
       <Install />
       <p class="reqs">Runs in <a href="https://herdr.dev">Herdr</a> with git, python3 and curl. <a href="/docs/installation/">Requirements</a></p>
       <div class="first-run">
-        <span><b>/orch-plan &lt;feature&gt;</b> &nbsp;# the lead plans it</span>
-        <span><b>orch autopilot</b> &nbsp;# the team builds it</span>
+        <span><b>/orch-plan &lt;feature&gt;</b> &nbsp;# the lead writes the orchestration plan</span>
+        <span><b>/orch-run</b> &nbsp;# the lead dispatches, the team builds it</span>
         <span><b>orch finish</b> &nbsp;# push the branch, open the PR</span>
       </div>
       <div class="actions center" style="margin-top:28px">

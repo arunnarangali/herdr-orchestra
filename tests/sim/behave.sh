@@ -2,6 +2,21 @@
 # Fake worker for tests: parses the one-line prompt orch sends and acts out a scripted scenario.
 agent=$1; dir=$2; prompt=$3; FH=${FH:?}
 cd "$dir" || exit 1
+if [[ $prompt == orch:* ]]; then                        # the lead being woken by the event manager
+  echo "$prompt" >> "$FH/lead-wakes.log"
+  [ -f "$FH/lead-deaf" ] && { echo idle > "$FH/$agent.status"; exit 0; }
+  sleep 1
+  out=$(ORCH_NO_AUTOSTART=1 "$ORCH_BIN" events 2>&1); printf '%s\n' "$out" >> "$FH/lead-events.log"
+  # a scripted lead: answer a coder's question with what the developer said, dispatch what is ready
+  for tid in $(grep -oE '^#[0-9]+ PAUSED M[0-9]+' <<<"$out" | grep -oE 'M[0-9]+'); do
+    [ -f "$FH/lead-answer" ] && ORCH_NO_AUTOSTART=1 "$ORCH_BIN" answer "$tid" "$(cat "$FH/lead-answer")" >> "$FH/lead-events.log" 2>&1
+  done
+  ready=$(grep -oE 'orch dispatch M[0-9]+$' <<<"$out" | grep -oE 'M[0-9]+' | sort -u | tr '\n' ' ')
+  # shellcheck disable=SC2086
+  [ -n "$ready" ] && ORCH_NO_AUTOSTART=1 "$ORCH_BIN" dispatch $ready >> "$FH/lead-events.log" 2>&1
+  grep -q "ALL_DONE" <<<"$out" && echo "- [ ] check totals by hand" >> .orchestrate/summary.md
+  echo idle > "$FH/$agent.status"; exit 0
+fi
 file=$(grep -oE '(\.orch-task|\.orchestrate/review)/M[0-9]+/[a-z0-9-]+\.md' <<<"$prompt" | head -1)
 report=$(grep -oE '\.orch-task/M[0-9]+/report-[0-9]+\.md' <<<"$prompt" | head -1)
 result=$(grep -oE '\.orch-task/M[0-9]+/result-[0-9]+\.json' <<<"$prompt" | head -1)
@@ -73,6 +88,9 @@ COMMIT: build: add a dependency";;
   M16:task.md) git rm -q -f shared.txt; finish "removed shared.txt";;
   # says one acceptance criterion is not met, then meets it
   M17:task.md) echo p > p.txt; finish "built p" '{"status":"done","commit":"feat: p","criteria":[{"id":"AC1","met":false,"evidence":"no test yet"}]}';;
+  # too hard for the small model: its checks keep failing until a stronger coder takes it over
+  M18:task.md) echo r > r.txt; if [ "$agent" = codex-1 ]; then touch broken.txt; else rm -f broken.txt; fi; finish "built r";;
+  M18:fix-*) finish "tried again";;
   M17:criteria-fix-*) echo t > p.test; finish "added the test" '{"status":"done","commit":"feat: p","criteria":[{"id":"AC1","met":true,"evidence":"p.test"}]}';;
   *) finish "nothing to do for $tid:$base";;
 esac

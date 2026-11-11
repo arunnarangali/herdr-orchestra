@@ -8,7 +8,8 @@ Load the `herdr` skill for exact CLI syntax if you have it (otherwise `herdr --s
 - Research findings go in as **facts**, not instructions:
   - ✅ "Uploads are handled in `server/routes/upload.ts`; categories live in the `categories` table."
   - ❌ "Add a `matchCategory()` function to upload.ts that loops over rows."
-- You never edit application code, and you never prompt worker agents during planning.
+- You also decide **which level of model each milestone needs** (small, medium or high) and say why (step 6).
+- You never edit application code, and you never prompt worker agents: you hand out work with `orch dispatch`, and the event manager (`orch autopilot`, a plain script) prompts the agents, watches them and wakes you when something needs a decision.
 
 Feature request = the user's message that asked you to run this playbook.
 
@@ -33,6 +34,8 @@ Feature request = the user's message that asked you to run this playbook.
 - You are never a coder or the reviewer in your own run. Another pane of the same kind as you is fine.
 - A pane herdr doesn't recognise as an agent (it isn't in `herdr agent list`) can still work: write it as `name (kind @pane:<pane id>)` in `Workers:`. `orch` then types prompts into that pane and relies only on its done file.
 - If it's unclear which pane should play which role, ask.
+- **Models.** Run `orch models`: the catalog of models with a tier (small / medium / high) and ratings for reasoning, coding, architecture, instruction following, tool use, planning, speed and context size, and the models policy keeps out of runs. Find out which model each pane runs (ask the developer if herdr or the pane doesn't show it) and write it in the plan as `name (kind: model)`. Use the models the installed agents already reach; nobody has to set up anything new. A pane on a model the policy denies cannot be used: ask the developer to restart it on another model (`orch agents launch <kind> --model <id>` prints the command). A model that is not in the catalog is allowed but has no tier; say so, and suggest adding it to `~/.config/herdr-orchestra/models.toml`.
+- **The team should cover the work.** If the plan will have high-tier milestones and no coder runs a high-tier model, say so and propose the pane to start (kind, model, launch command). Don't ask for more panes than the milestones need. You, the lead, should run a high-tier model; the reviewer should be at least as strong as the work it reviews.
 
 ## 4. Milestones: as few as possible, never more than 4
 Count the coders you found in step 3 (N). Split for the team you actually have:
@@ -66,18 +69,30 @@ Frontend only:   M1 scaffold (route, nav, packages, types) → M2 component A �
 Small:           M1 the whole thing   (or M1 core → M2 polish)
 ```
 
-## 6. Choose the isolation mode (ask if the user hasn't said)
+## 6. Give every milestone a tier, from what it actually demands
+Judge the milestone, not the model's name. For each one ask what it needs most, and write it down:
+- **small**: mechanical and well specified. Renames, config, docs, a classification or lookup, a change that copies an existing pattern in one or two files. Speed matters more than depth.
+- **medium**: normal implementation inside one module or one side (an endpoint with its tests, a component, a bug with a known cause). Needs solid coding and tool use, little design.
+- **high**: reasoning is the hard part. A contract or interface other milestones build on, architecture or data-model decisions, a refactor across modules, auth / payments / schema changes, a bug nobody has diagnosed, anything where a wrong design is expensive.
+
+Then:
+- `Needs:` lists what the work leans on, from: `reasoning`, `coding`, `architecture`, `long-context` (it must hold a lot of code at once), `tool-use`, `planning`, `speed`.
+- `Model why:` is one line a developer can check: what in this milestone makes it that tier.
+- Don't put everything on `high`: a small model on small work is faster and cheaper, and that is the point. Don't put design work on `small` to save money either: a milestone that runs out of fix rounds is moved up to a stronger model once, and that costs more than starting right.
+- orch gives a milestone to a free coder of its tier, or a stronger one when none is free; never to a weaker one while a suitable coder exists.
+
+## 7. Choose the isolation mode (ask if the user hasn't said)
 - **worktree**: needed whenever 2+ milestones are independent. Each coder gets its own folder `../<repo>-wt/<worker>` (on a detached HEAD, no extra branch), so they can't overwrite each other. A coder whose milestone is under review is freed to take other work. Needs a **Setup command** for fresh folders (`npm ci`, `pnpm install`, `flutter pub get`, `go mod download`…). Keep the check command free of fixed ports (no dev server); run e2e after merging.
 - **shared**: one folder, so one milestone at a time (two agents in one folder would overwrite each other's files and mix their changes). Fine when every milestone depends on the previous one.
 
 **Worktree setup:** after writing the plan, run `orch sync` and then `orch start`. Each coder's agent must run INSIDE its worktree: split a pane with `--cwd <worktree>`, launch the agent with `herdr pane run <pane> "$(orch agents launch <kind>)"`, and name it with `herdr agent rename`. If you can't do that through herdr, print the exact commands for the user. Run `orch start` again until every worker shows `herdr=found`.
 
-## 7. Check and setup commands; baseline
+## 8. Check and setup commands; baseline
 - **Check command**: one command for lint + typecheck + unit tests, taken from the repo's scripts (package.json, Makefile, pubspec.yaml, Cargo.toml, pyproject.toml…). No dev servers, no fixed ports.
 - **Setup command**: what a fresh worktree needs, or `none`.
 - Run the check yourself. It must pass before any work: autopilot checks it at the start (and records `.orchestrate/baseline.txt` itself), and runs it on every merge before committing. If it already fails, list what fails and propose to the developer a narrower check command that passes today and still covers the feature. Never plan on "no new failures" being judged by eye.
 
-## 8. Write `.orchestrate/plan.md` in EXACTLY this format (`orch sync` parses it)
+## 9. Write `.orchestrate/plan.md` in EXACTLY this format (`orch sync` parses it)
 
 ```
 # Plan: <feature title>
@@ -88,9 +103,9 @@ Isolation: worktree | shared
 Max parallel: <number of coders>
 Scope: warn | strict
 Budget: <e.g. 3h — optional>
-Lead: lead (<your kind>)
-Workers: claude-1 (claude), codex-1 (codex)
-Reviewer: reviewer (agy) | none
+Lead: lead (<your kind>: <your model>)
+Workers: claude-1 (claude: sonnet), claude-2 (claude: haiku), codex-1 (codex: gpt-6-sol)
+Reviewer: reviewer (claude: opus) | none
 
 ## Global instructions
 <constraints for every milestone, e.g. the developer's "Must not" rules — or "none">
@@ -98,6 +113,9 @@ Reviewer: reviewer (agy) | none
 ## [x] M1: <title>
 Depends on: none
 Prefer: any | <worker kind> | <worker name>
+Tier: small | medium | high
+Needs: <any of: reasoning, coding, architecture, long-context, tool-use, planning, speed>
+Model why: <one line: what in this milestone makes it that tier>
 Review: yes | no
 Likely files: src/a.ts, src/b.ts, src/feature/
 Parallel: <leave this line out | allow>
@@ -120,19 +138,23 @@ Notes from user:
 
 Git: the run makes ONE branch, `Branch:` (use `feature/<slug>`, or `fix/<slug>` for a bug fix). It is created by `orch start`, not now: planning never creates a branch or a commit. orch keeps each milestone's work in progress in hidden refs (not branches), lands each milestone as one commit whose message describes the change (the coder writes it), and `orch finish` pushes the branch and opens a PR. Optional header lines: `Base: <branch>` (defaults to the branch you start from) and `Commits: single` (squash the whole run into one commit at finish; default `per-milestone`).
 
-Optional header lines: `Scope: strict` sends a milestone back when its coder changes files outside `Likely files` (default `warn`: listed in the summary); `Budget: 3h` stops autopilot when its running time is used up; `Risk hold: off` lets risky changes (deleted files, migrations, CI config, secrets files, unlisted dependency changes, very large diffs) land without `orch approve`; `Setup inputs: <globs>` names the files that mean "run the setup command again" (default: lockfiles and manifests).
+Optional header lines: `Scope: strict` sends a milestone back when its coder changes files outside `Likely files` (default `warn`: listed in the summary); `Budget: 3h` stops autopilot when its running time is used up; `Risk hold: off` lets risky changes (deleted files, migrations, CI config, secrets files, unlisted dependency changes, very large diffs) land without `orch approve`; `Setup inputs: <globs>` names the files that mean "run the setup command again" (default: lockfiles and manifests); `Lead mode: off` makes the event manager dispatch by itself and stop for the developer instead of waking you (default with a `Lead:` line: `events`).
 
 Rules for every milestone:
 - **Acceptance criteria are observable**: "POST /upload returns 400 when the amount column is missing", not "handles errors well". One per line: orch numbers them AC1, AC2… in the milestone's `task.json`, the coder says for each whether it is met, and the reviewer checks each one. A milestone without any gets a warning.
 - **Likely files is the scope**: list every file or folder (`src/feature/`, globs work) the milestone should change, including dependency files (`package.json`, lockfiles) when it adds packages. orch compares the coder's real diff with it, runs milestones that share a listed file one after the other, and holds an unlisted dependency change for approval. `Parallel: allow` lets a milestone run next to one it shares files with (expect a merge conflict).
 - **No how**: no code blocks, no function names to create, no numbered implementation steps. `orch sync` warns if it sees them.
-- **Prefer**: a worker kind or name from `Workers:` (e.g. `claude` for UI and multi-file refactors, `codex` for focused backend and tests), otherwise `any`. A preference, not a lock.
+- **Tier, Needs, Model why**: from step 6, on every milestone. The model in `Workers:` is what the pane really runs, never a wish. `orch sync` refuses a denied model and warns when no coder reaches a milestone's tier or the reviewer is weaker than the work.
+- **Prefer**: a worker kind or name from `Workers:` when a tool (not a model) suits the work better, otherwise `any`. A preference, not a lock; the tier comes first.
 - **Review**: `yes` for UI, API contracts, auth, payments and schema; `no` for mechanical milestones.
 - **ZERO GUESSWORK**: missing business rules, undefined data shapes, and auth or security trade-offs go under **Open questions** with 2–3 concrete options. `orch sync` marks such milestones `needs-answer`, and their dependents wait.
 - Each section must stand alone: autopilot hands it to the coder verbatim, together with the global instructions and the reports of merged dependencies.
 
-## 9. Validate and hand back
-- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, more than 4 milestones, independent milestones in shared mode, coders left idle by a fully sequential plan.
-- Run `orch status`. Show the developer: the milestones, the parallel shape (which run together), the research facts that shaped the plan, and all open questions.
-- Then say: "Plan written to .orchestrate/plan.md. Edit it: untick `[x]` to skip a milestone, change `Depends on`/`Prefer`, answer open questions under 'Notes from user' and set 'Open questions: - none'. Then run `orch autopilot` in a terminal: it drives the whole run. When it stops for you, ask me to help: `/orch-run`, "use the orch-run skill", or "Run `orch lead run` and follow it"."
-- STOP.
+## 10. Validate and show the plan
+- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, more than 4 milestones, independent milestones in shared mode, coders left idle by a fully sequential plan, a tier no coder reaches, a model outside the catalog.
+- Run `orch status`. Show the developer:
+  - the milestones and the parallel shape (which run together);
+  - **the team and model table**: each milestone, its tier, which coder and model it will go to, and the `Model why`;
+  - the research facts that shaped the plan, and all open questions.
+- Then say: "Plan written to .orchestrate/plan.md. Edit it if you like: untick `[x]` to skip a milestone, change `Tier` / `Depends on` / `Prefer`, answer open questions under 'Notes from user' and set 'Open questions: - none'. Say **go** (or `/orch-run`, "use the orch-run skill", "Run `orch lead run` and follow it") and I will start the run: I dispatch the milestones, the event manager runs them, and I come back when one finishes, asks a question or needs a decision."
+- STOP and wait for the developer. Do not dispatch before they say so.

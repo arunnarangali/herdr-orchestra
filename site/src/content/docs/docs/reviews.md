@@ -7,7 +7,7 @@ description: How a coder's work is checked and reviewed, and what happens when s
 
 Your `Check command:` runs on every coder's result. Before the run starts it is saved as a baseline in `.orchestrate/baseline.txt`; it has to pass before the run starts. If it already fails, the lead helps you pick a narrower check that passes today.
 
-A failing check goes back to the coder with the last 60 lines of output: "These checks fail. Diagnose and fix; you decide how. Don't weaken or skip tests." Up to 3 rounds, then the milestone is parked as failed and the work is kept.
+A failing check goes back to the coder with the last 60 lines of output: "These checks fail. Diagnose and fix; you decide how. Don't weaken or skip tests." Up to 3 rounds. A milestone that is still failing then gets one fresh round on a coder with a stronger model, if the team has one, with the work so far. If that fails too it is parked as failed, the work is kept, and the lead is woken to work out what is missing.
 
 After each milestone lands in worktree mode, the check runs again on the feature branch, so a merge that breaks something is caught right away.
 
@@ -21,7 +21,9 @@ SUGGESTION: web/src/pages/Import.tsx:88 — the preview re-renders on every keys
 ```
 
 - **No blockers:** the review passes. Suggestions are kept for the summary.
-- **Blockers:** they become a problem-only **fix job** for the next free coder, preferring the one who built it. Up to 2 rounds.
+- **Blockers:** they become a problem-only **fix job** for the next free coder, preferring the one who built it. Up to 2 rounds, then one more on a stronger model.
+
+A reviewer should be at least as strong as the work it reviews: `orch sync` warns when a high-tier milestone is reviewed by a lower-tier model.
 
 ### Review pipelining
 
@@ -40,4 +42,4 @@ If a milestone no longer merges cleanly because others landed first, a conflict 
 | A prompt can't be delivered | The task goes back in the queue and that agent is retried after 2 minutes |
 | A permission prompt | You get a desktop alert; other tasks keep running |
 | An agent stops early | It is nudged once, then the task is parked |
-| A coder writes `QUESTION:` | That task and its dependents wait; everything else continues |
+| A coder writes `QUESTION:` | That task and its dependents wait and the lead is woken. It answers from the plan or the code, or asks you; `orch answer` sends the milestone back to the same coder. Everything else continues |

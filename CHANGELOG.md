@@ -2,6 +2,33 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [4.7.0] - 2026-11-11
+
+The lead is back in the run, without giving up the single crash-safe driver: it plans, picks a model tier for every milestone, dispatches, pauses, and is woken by events. Plans written for 4.6 keep working.
+
+### Added
+- **Event-driven lead.** With a `Lead:` line in the plan, a run works like a call stack: the lead dispatches milestones (`orch dispatch M1 M2`) and pauses; `orch autopilot` is now the **event manager**: it sends the work, watches the agents, checks, reviews and merges as before, and wakes the lead with one prompt (`orch events`) when a milestone lands, a coder asks a question, a milestone fails or is held, or new work is ready. The lead decides and pauses again. At ALL_DONE the lead is woken to finish the summary.
+- **A queue that loses nothing.** Each event is stored in `state.json` in the same write as the change that caused it. The lead is woken only when it is idle, once per batch; an unread batch is sent again after `ORCH_LEAD_REWAKE_S` (300 s), up to `ORCH_LEAD_MAX_WAKES` (3) times, and then you are told. Reading `orch events` is the acknowledgement (`--peek` looks without acknowledging). Blocking events stay open until their milestone moves on.
+- **`orch answer Mn "<text>"`**: the developer's answer goes under the milestone's "Notes from user" in `plan.md`, and the milestone goes back to the same coder with its saved work.
+- **`orch dispatch Mn... [--to <worker>] [--tier <tier>]`**: start or restart milestones. It starts the event manager when none is running (`ORCH_NO_AUTOSTART=1` turns that off). While the event manager waits for the lead or for you, it stays up and its waiting time does not count against `Budget:`.
+- **A run never stalls on the lead.** Ready milestones the lead has not dispatched after `ORCH_LEAD_WAIT_MIN` (15) start by themselves; a lead pane that is gone is reported once. `Lead mode: off` gives the 4.6 behaviour: autopilot dispatches by itself and exits 3 when it needs you.
+- **Model catalog** (`models.default.toml`, yours in `~/.config/herdr-orchestra/models.toml`): each model has a tier (small, medium, high), 1–5 ratings for reasoning, coding, architecture, instruction following, tool use, planning and speed, its context window, and the evidence for the ratings. A tier has a reasoning floor. `orch models`, `orch models show <id>`, `orch models check <id>`.
+- **Model policy.** `[policy] deny` keeps ultra-premium models (`*fable*`, `*astra*`) out of runs: `orch sync` refuses a plan that names one, and `orch agents launch` refuses to build the command.
+- **Tiers in the plan.** `Workers: claude-1 (claude: sonnet)` records the model each pane runs; milestones take `Tier:`, `Needs:` and `Model why:`. `orch sync` warns when no coder reaches a milestone's tier, when the reviewer is weaker than the work, when the lead is not on a high-tier model, and when a model is not in the catalog. `task.json` carries `tier` and `needs`.
+- **Tier-aware dispatch.** `orch pick` gives a milestone to a free coder of its tier, or a stronger one; never a weaker one while a suitable coder exists.
+- **One escalation.** A milestone out of fix or review rounds gets one fresh round on a coder with a stronger model (`orch escalate`), with the work so far, before it fails.
+- **Planned against actual.** Every attempt records its model. `summary.md` has a table of planned tier, the models that ran, and escalations; `orch report` adds per-model rows (tries, merged, first pass, moved up).
+- `orch agents launch <kind> --model <id>` and the registry key `model_flag`.
+
+### Changed
+- The lead playbooks: `orch lead plan` adds model discovery and a tier per milestone, and ends by waiting for your go; `orch lead run` is the dispatch, pause, wake, decide loop.
+- With a lead in the run, a paused, failed or held milestone no longer ends autopilot: it wakes the lead and keeps waiting (up to `ORCH_LEAD_IDLE_MAX_MIN`, 720).
+- One busy or unsuitable coder no longer blocks the dispatch of other ready milestones in the same pass.
+
+### Upgrade notes
+- A plan with a `Lead:` line now runs in `Lead mode: events`. Add `Lead mode: off` to keep driving it from a terminal only.
+- The default model ratings are starting points with their sources, not benchmarks run by this project. Check the ids against your tools, and re-rate from `orch report`.
+
 ## [4.6.0] - 2026-11-11
 
 Answers the architecture review: one driver, checked state transitions, nothing red committed, bounded retries, structured contracts, and a record of what each run did. Plan format and existing commands keep working; in-flight 4.5 runs are migrated on load.

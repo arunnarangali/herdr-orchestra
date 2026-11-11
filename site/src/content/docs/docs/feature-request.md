@@ -30,4 +30,5 @@ Done when: a bank CSV becomes transactions, and bad rows show an error.
 
 - Your "Must not" and "Already decided" lines become **Global instructions** and **Constraints** that every coder sees.
 - Anything the lead can't decide from the code (a business rule, a data shape, a security trade-off) becomes an **Open question** with 2 or 3 options. The milestone waits until you answer.
+- A clear request also saves questions later. When a coder asks something during the run, the lead answers it from your request if it can, and only comes to you when it can't.
 - A feature too big for 4 milestones comes back as a proposal to split it into separate runs.
