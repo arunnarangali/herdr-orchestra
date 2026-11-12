@@ -1,0 +1,37 @@
+{
+  "name": "herdr-orchestra",
+  "version": "4.11.0",
+  "description": "A lead agent plans, coders build, a reviewer checks, all in herdr panes. Install with: npx herdr-orchestra@latest",
+  "license": "MIT",
+  "bin": {
+    "herdr-orchestra": "npm/cli.js"
+  },
+  "files": [
+    "npm/cli.js",
+    "install.sh",
+    "bin",
+    "skills",
+    "opencode-commands",
+    "claude-commands",
+    "playbooks",
+    "agents.default.toml",
+    "models.default.toml",
+    "VERSION",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arunnarangali/herdr-orchestra.git"
+  },
+  "homepage": "https://herdr-orchestra.vercel.app/",
+  "bugs": "https://github.com/arunnarangali/herdr-orchestra/issues",
+  "keywords": ["herdr", "agents", "orchestration", "claude-code", "codex", "opencode"],
+  "engines": {
+    "node": ">=16"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

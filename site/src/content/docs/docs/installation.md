@@ -1,27 +1,36 @@
 ---
 title: Installation
-description: Install herdr-orchestra, pick or pin a version, set up new agents, and uninstall.
+description: Install herdr-orchestra with npx, pick or pin a version, set up new agents, and uninstall.
 ---
 
 ## Install
 
 ```bash
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash
+npx herdr-orchestra@latest
 ```
 
-The script comes from the latest GitHub Release, not from `main`. To install from git instead:
+`@latest` is the newest GitHub Release: the npm package is published from every release, not from `main`. Run the same command again to update.
+
+### Without Node
+
+The release script does the same job and needs only curl:
 
 ```bash
-git clone https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra.git
-cd herdr-orchestra && git checkout v4.10.1 && bash install.sh
+curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash
+```
+
+To install from git instead:
+
+```bash
+git clone https://github.com/arunnarangali/herdr-orchestra.git
+cd herdr-orchestra && git checkout v4.11.0 && bash install.sh
 ```
 
 ### Requirements
 
 - [Herdr](https://herdr.dev), where the agents run
-- git and curl
-- python3 (3.11 or newer for the agent registry; older versions still run plans)
-- Node/npx is optional; it installs the official Herdr skill for your agents
+- Node (for `npx`), git and python3 (3.11 or newer for the agent registry; older versions still run plans). Linux and macOS; on Windows use WSL.
+- Node also installs the official Herdr skill for your agents
 
 ### What it installs
 
@@ -44,28 +53,30 @@ It finds every installed agent, copies the skills and slash commands into its fo
 
 ## Versions
 
-Every release is a git tag with its own `install.sh`, and every installed version is kept, so switching back is instant.
+Every release is a git tag with a GitHub Release and an npm version, and every installed version is kept, so switching back is instant.
 
 ```bash
 # install a specific version
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/download/v4.10.1/install.sh | bash
+npx herdr-orchestra@4.11.0                    # that npm release
+npx herdr-orchestra@latest --version v4.11.0  # or download any tag from GitHub
 
 # list versions
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --list
-
-# switch version
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --version v4.10.1
+npx herdr-orchestra@latest --list
 
 # pin a version for one project: commit this file, then run the installer from that folder
-echo v4.10.1 > .orch-version
+echo v4.11.0 > .orch-version
 
 orch version   # what's active now
 ```
 
-Version choice, first match wins: `--version` flag, then `ORCH_VERSION`, then `./.orch-version`, then the release the script came from.
+Version choice, first match wins: `--version` flag, then `ORCH_VERSION`, then `./.orch-version`, then the release the installer came from (the npm package or the release script).
+
+With the curl script, put the options after `bash -s --`, for example `curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --list`.
 
 ## Uninstall
 
 ```bash
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --uninstall
+npx herdr-orchestra@latest --uninstall
 ```
+
+This removes `orch`, the skills and the slash commands it installed. The Herdr skill and your projects' `.orchestrate/` folders are left alone.

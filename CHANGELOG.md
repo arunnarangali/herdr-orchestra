@@ -2,6 +2,15 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [4.11.0] - 2026-11-12
+
+### Added
+- **Install with npx.** `npx herdr-orchestra@latest` installs herdr-orchestra, the same way the curl script did. The npm package carries the release files and a small launcher (`npm/cli.js`) that runs the bundled `install.sh`, so install behaviour lives in one place. Every `install.sh` option works after the name: `--version v4.2.0` (downloads that release from GitHub), `--list`, `--current`, `--uninstall`, `--no-herdr-skill`. Needs Node, bash, python3 and git (no native Windows; use WSL).
+- **npm publish is part of the release.** After the GitHub Release is made, the Release workflow publishes the same version to npm (with provenance) when the `NPM_TOKEN` repository secret is set, and skips it with a warning when it is not. A version already on npm is left alone. CI and the release check that `package.json` and `VERSION` match, and CI installs from the packed tarball.
+
+### Changed
+- `install.sh` run from the npm package installs `vX.Y.Z` (not `-dev`). The README, website and install docs show npx first; the curl command stays as the way to install without Node.
+
 ## [4.10.1] - 2026-11-12
 
 ### Changed

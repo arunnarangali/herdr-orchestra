@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # herdr-orchestra installer
 #
-#   curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash
-#   curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/download/v4.2.0/install.sh | bash
-#   curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --list
-#   curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --uninstall
+#   npx herdr-orchestra@latest                      (installs the version in the npm package)
+#   npx herdr-orchestra@latest --version v4.2.0     (downloads that release from GitHub)
+#   npx herdr-orchestra@latest --list
+#   npx herdr-orchestra@latest --uninstall
+#
+# Without Node, use the script from the GitHub Release instead:
+#   curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash
+#   (add `-s -- --version v4.2.0`, `-s -- --list` or `-s -- --uninstall` after `bash`)
 #
 # install.sh is attached to every GitHub Release with RELEASE_TAG set to that release, so the
 # /releases/download/vX.Y.Z/ URL installs vX.Y.Z and /releases/latest/download/ installs the latest.
@@ -123,6 +127,8 @@ if [[ -z "$WANT" && -n "$SELF_DIR" && -f "$SELF_DIR/bin/orch" && -f "$SELF_DIR/V
   TAG=$(git -C "$SRC" describe --tags --exact-match 2>/dev/null || true)
   if [[ "$TAG" == "$VER" ]]; then
     say "installing $VER from $SRC"
+  elif [[ "${ORCH_PACKAGE:-}" == 1 ]]; then   # run by `npx herdr-orchestra`: the package is a release
+    say "installing $VER from the npm package"
   else
     VER="$VER-dev"
     say "installing $VER from $SRC (not at a release tag — see: git tag -l 'v*')"
