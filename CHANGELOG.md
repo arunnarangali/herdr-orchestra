@@ -2,7 +2,7 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
-## [4.11.2] - 2026-11-12
+## [5.0.0] - 2026-11-12
 
 ### Fixed
 - **Links go to github.com again.** Some files pointed at mirror domains in place of github.com and api.github.com: the website's GitHub links (header, footer, docs header, "Star on GitHub"), the PR link `orch finish` prints, and the version lookup and source download in `install.sh` (used for `--version`, `--list` and the git-less fallback). All of them use github.com and api.github.com now.
