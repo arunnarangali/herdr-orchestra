@@ -1,6 +1,6 @@
 ---
-title: Quick start
-description: Build your first feature with a lead, two coders on different models, and a reviewer.
+title: "Quick start: your first multi-agent coding run"
+description: "Build your first feature with a multi-agent workflow: a lead, two coders on different models, and a reviewer."
 ---
 
 This walks through one feature from request to pull request. It assumes herdr-orchestra is [installed](/docs/installation/) and your repo has a clean working tree.

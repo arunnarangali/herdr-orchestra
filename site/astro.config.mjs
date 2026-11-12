@@ -8,11 +8,16 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'herdr-orchestra',
-      description: 'A lead plans and coordinates, coders build in parallel on models that fit each task, a reviewer checks every diff, and you get one pull request.',
+      description: 'Orchestrate AI coding agents in Herdr: a lead plans, coders build in parallel on models that fit each task, a reviewer checks every diff, and you get one pull request.',
+      // Share cards for docs pages, the same image as the landing pages.
+      head: [
+        { tag: 'meta', attrs: { property: 'og:image', content: 'https://herdr-orchestra.vercel.app/og.png' } },
+        { tag: 'meta', attrs: { name: 'twitter:image', content: 'https://herdr-orchestra.vercel.app/og.png' } },
+      ],
       logo: { src: './src/assets/mark.svg', replacesTitle: false },
       favicon: '/favicon.svg',
       social: [
-        { icon: 'github', label: 'GitHub', href: 'https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra' },
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/arunnarangali/herdr-orchestra' },
       ],
       components: { Header: './src/components/DocsHeader.astro' },
       customCss: ['./src/styles/tokens.css', './src/styles/starlight.css'],

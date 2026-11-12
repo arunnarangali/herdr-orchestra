@@ -1,9 +1,11 @@
 ---
-title: Introduction
-description: What herdr-orchestra is, who does what, and how one run goes from a feature request to a pull request.
+title: "What is herdr-orchestra? AI agent orchestration for Herdr"
+description: "herdr-orchestra orchestrates the AI coding agents you already use (Claude Code, Codex, OpenCode and more) as one team in Herdr: who does what, and how one run goes from a feature request to a pull request."
 ---
 
 herdr-orchestra turns the AI coding agents you already use into a small team. You describe a feature. A **lead** agent researches your codebase, writes the **orchestration plan** and picks the level of model each step needs. A pool of **coders** builds it, in parallel when the work allows, each on a model that fits its task. An optional **reviewer** checks every diff. During the **orchestration run** the lead stays in charge: it hands out the work, pauses, and is woken whenever something needs a decision. You review one pull request at the end.
+
+Install it with one command: `npx herdr-orchestra@latest` (see [Installation](/docs/installation/)).
 
 ## Who does what
 

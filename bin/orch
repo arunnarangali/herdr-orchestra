@@ -2283,7 +2283,7 @@ def cmd_cleanup(args):
 
 def github_compare_url(remote, base, branch):
     m = re.match(r"(?:git@github\.com:|https://(?:[^@/]+@)?github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$", remote)
-    return f"https://gh.ali360.cloudns.ch/{m.group(1)}/compare/{base}...{branch}?expand=1" if m else None
+    return f"https://github.com/{m.group(1)}/compare/{base}...{branch}?expand=1" if m else None
 
 
 def cmd_finish(args):

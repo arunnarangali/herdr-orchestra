@@ -1,8 +1,16 @@
 # herdr-orchestra
 
-[![Website](https://img.shields.io/badge/website-herdr--orchestra.vercel.app-f5a524)](https://herdr-orchestra.vercel.app/)
+**Orchestrate AI coding agents as one team in [Herdr](https://herdr.dev).** A lead agent plans, coders build in parallel, a reviewer checks every diff, and you get one pull request. Works with Claude Code, Codex, OpenCode, Amp, Hermes and Antigravity.
 
-**Website and docs: [herdr-orchestra.vercel.app](https://herdr-orchestra.vercel.app/)**
+```bash
+npx herdr-orchestra@latest
+```
+
+[![npm](https://img.shields.io/npm/v/herdr-orchestra)](https://www.npmjs.com/package/herdr-orchestra) [![Website](https://img.shields.io/badge/website-herdr--orchestra.vercel.app-f5a524)](https://herdr-orchestra.vercel.app/)
+
+**Website and docs: [herdr-orchestra.vercel.app](https://herdr-orchestra.vercel.app/)** · [Install](#install) · [Quick start](https://herdr-orchestra.vercel.app/docs/quick-start/)
+
+## What is herdr-orchestra?
 
 Run a small team of AI coding agents inside [Herdr](https://herdr.dev). An AI **lead** writes the **orchestration plan**, picks the level of model each step needs, hands out the work and then pauses. A **pool of coders** builds it, in parallel git worktrees when tasks are independent, each on a model that fits its task: a small fast one for simple work, a stronger one where reasoning is the hard part. An optional **reviewer** checks every diff. A plain script, the **event manager** (`orch autopilot`), runs the **orchestration run**: it watches the agents, runs checks, merges, and wakes the lead only when something needs a decision. **Any installed agent can play any role**: Claude Code, Codex, Amp, OpenCode, Hermes, Antigravity (`agy`), or anything else that can run shell commands.
 

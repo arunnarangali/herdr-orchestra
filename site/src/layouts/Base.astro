@@ -6,10 +6,13 @@ import { REPO_URL, version } from '../lib/repo';
 interface Props {
   title?: string;
   description?: string;
+  /** Adds the SoftwareApplication JSON-LD block. The homepage sets it. */
+  structuredData?: boolean;
 }
 const {
-  title = 'herdr-orchestra: your AI agents, working as a team',
-  description = 'A lead plans, coders build in parallel, a reviewer checks every diff, and you get one clean pull request. Works with Claude Code, Codex, Amp, OpenCode, Hermes and Antigravity.',
+  title = 'herdr-orchestra: orchestrate AI coding agents in Herdr',
+  description = 'Orchestrate a team of AI coding agents: a lead plans, coders build in parallel, a reviewer checks every diff, and you get one pull request. Works with Claude Code, Codex, OpenCode, Amp, Hermes and Antigravity. Install with npx herdr-orchestra@latest.',
+  structuredData = false,
 } = Astro.props;
 const path = Astro.url.pathname.replace(/\/$/, '') || '/';
 const links = [
@@ -20,6 +23,26 @@ const links = [
 ];
 const v = version();
 const ogImage = new URL('/og.png', Astro.site ?? Astro.url).href;
+// One address per page for search engines: the production site, with the trailing slash the sitemap and docs use.
+const canonical = new URL(path === '/' ? '/' : path + '/', Astro.site ?? Astro.url).href;
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'herdr-orchestra',
+  alternateName: ['herdr orchestra', 'orch'],
+  description,
+  applicationCategory: 'DeveloperApplication',
+  operatingSystem: 'Linux, macOS, Windows (WSL)',
+  softwareVersion: v.replace(/^v/, ''),
+  url: Astro.site?.href,
+  downloadUrl: 'https://www.npmjs.com/package/herdr-orchestra',
+  installUrl: Astro.site ? new URL('/docs/installation', Astro.site).href : undefined,
+  codeRepository: REPO_URL,
+  license: 'https://opensource.org/licenses/MIT',
+  keywords: 'herdr, AI agent orchestration, multi-agent coding workflow, Claude Code, Codex, OpenCode',
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+  author: { '@type': 'Person', name: 'arunnarangali', url: 'https://github.com/arunnarangali' },
+};
 ---
 <!doctype html>
 <html lang="en" data-theme="dark">
@@ -28,12 +51,20 @@ const ogImage = new URL('/og.png', Astro.site ?? Astro.url).href;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <meta property="og:site_name" content="herdr-orchestra" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
     <meta property="og:image" content={ogImage} />
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    {structuredData && <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
     <script is:inline>
       // Same storage key as the Starlight docs, so the theme follows you between them.
       (() => {
