@@ -28,6 +28,7 @@ Run `orch` with no arguments for the full help.
 | `orch dispatch <Mn>... [--to <worker>] [--tier <tier>]` | Start or restart milestones. Starts the event manager when none is running |
 | `orch events [--peek]` | What the lead was woken for, what is ready, who is free. Reading acknowledges it; `--peek` does not |
 | `orch answer <Mn> "<text>"` | The developer's answer: written under the milestone's "Notes from user", and the milestone goes back to the same coder |
+| `orch fix <Mn> "<change>" [--to <worker>]` | A change to something Mn already landed: one small follow-up milestone in the plan, sent straight to the coder who built Mn. Check, review and summary still apply. Works after ALL_DONE; you or the lead can run it |
 
 ## Models
 

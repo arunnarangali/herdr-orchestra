@@ -147,7 +147,7 @@ def state_lock():
 
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
-LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer"}
+LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "fix"}
 _LEASE = None
 
 
@@ -2536,6 +2536,66 @@ def cmd_answer(args):
     print("You will be woken with `orch events` when something needs you. Stop here; do not poll.")
 
 
+def cmd_fix(args):
+    """orch fix Mn <what should change> [--to <worker>] -> a small follow-up milestone for something Mn built, sent
+    straight to the coder who built Mn. No new planning round: the check, the review (when Mn had one) and the
+    summary still apply. Works after ALL_DONE and while a run is going; the developer or the lead may run it."""
+    to = None
+    if "--to" in args:
+        i = args.index("--to")
+        to = args[i + 1] if len(args) > i + 1 else die("--to needs a value")
+        del args[i:i + 2]
+    need(args, 2, "fix <Mn> <what should change> [--to <worker>]")
+    tid, text = args[0], " ".join(" ".join(args[1:]).split())
+    if not text:
+        die("say what should change: orch fix <Mn> \"<what should change>\"")
+    with state_lock():
+        st = load()
+        t = task(st, tid)
+        if t["status"] != "merged":
+            die(f"{tid} is {t['status']}, not landed yet — `orch fix` is for work that already landed"
+                + (f" (a paused milestone takes `orch answer {tid} \"<text>\"`)" if t["status"] == "paused" else ""))
+        if to and to not in st["workers"]:
+            die(f"unknown worker {to!r} — workers: {', '.join(st['workers'])}")
+        plan = ORCH / "plan.md"
+        _, ptasks = parse_plan(plan.read_text())
+        src = next((x for x in ptasks if x["id"] == tid), None)
+        if src is None:
+            die(f"{tid} not found in plan.md")
+        nums = [int(k[1:]) for k in list(st["tasks"]) + [x["id"] for x in ptasks]]
+        new = f"M{max(nums) + 1}"
+        built = [a.get("agent") for a in t.get("attempts") or [] if a.get("kind") == "coder" and a.get("agent")]
+        who = to or next((w for w in (t.get("worker"), t.get("last_worker"), *reversed(built)) if w in st["workers"]), None)
+        title = f"Fix for {tid}: {text[:60]}" + ("..." if len(text) > 60 else "")
+        review = field(src, "review", "no")
+        sec = [f"## [x] {new}: {title}", f"Depends on: {tid} (a fix to what {tid} built)", f"Review: {review}"]
+        if field(src, "likely files"):
+            sec.append(f"Likely files: {field(src, 'likely files')}")
+        if t.get("tier"):
+            sec += [f"Tier: {t['tier']}", f"Model why: a fix to {tid}, for the coder who built it."]
+        sec += [f"Goal: {text}", f"Why: the developer asked for this after {tid} landed.", "Acceptance criteria:",
+                f"- {text}", f"- nothing else that {tid} built changes, and the check command passes",
+                "Open questions:", "- none", ""]
+        body = plan.read_text()
+        plan.write_text(body.rstrip("\n") + "\n\n" + "\n".join(sec))
+        st["order"].append(new)
+        st["tasks"][new] = {
+            "title": title, "deps": [tid], "prefer": "any",
+            "review": review.lower().startswith("y") and st.get("reviewer") is not None,
+            "status": "pending", "reason": f"fix for {tid}", "worker": None, "dir": None, "attempt": 0, "fix": 0,
+            "review_round": 0, "wait": None, "files": list(t.get("files") or []), "parallel": False,
+            "tier": t.get("tier"), "needs": [], "model_why": f"a fix to {tid}, for the coder who built it." if t.get("tier") else "",
+            "go": True, "fix_of": tid,
+        }
+        if who:
+            st["tasks"][new]["assign"] = who
+        save(st)
+        print(f"FIX {new} \"{title}\" -> {who or 'the next free coder (nobody on the team built ' + tid + ')'}; "
+              f"added to plan.md, the check" + (" and the review" if st["tasks"][new]["review"] else "") + " still run")
+    print(start_manager())
+    print(f"It lands like any milestone: `orch status` shows {new}, and the summary is written again when it is in.")
+
+
 EVENT_HELP = {
     "paused": "a coder's question, or an agent that stopped. A question only the developer can settle: ask them, "
               "then `orch answer {t} \"<their answer>\"`. An agent problem: tell the developer what to look at, then "
@@ -3137,6 +3197,9 @@ def cmd_autopilot(args):
                     models.append(f"| {k} | {v.get('tier') or 'any'} | {ran} | "
                                   f"{'yes' if v.get('escalated') else 'no'} | {v.get('model_why') or '-'} |")
             lead_ = lead_on(st)
+            prev = ORCH / "summary.md"
+            if prev.exists():                      # a fix after ALL_DONE writes the summary again: keep the lead's notes
+                shutil.copyfile(prev, ORCH / "summary.prev.md")
             (ORCH / "summary.md").write_text(
                 f"# Summary: {st.get('title') or st['branch']}\n\nBranch `{st['branch']}` into `{base}`. "
                 f"Final check on the branch: {'PASS' if ok else 'FAIL'}\n\n"
@@ -3150,7 +3213,9 @@ def cmd_autopilot(args):
                 f"## Run report\n```\n{report}\n```\n\n"
                 + ("## Still to write (the lead was woken to write these)\n" if lead_ else
                    "## Still to write (ask the lead: 'use the orch-run skill' to finish the summary)\n") +
-                "- Design decisions & study notes\n- Manual verification checklist\n")
+                "- Design decisions & study notes\n- Manual verification checklist\n"
+                + ("\nThe summary before this one is in `.orchestrate/summary.prev.md`: carry its notes and checklist "
+                   "over, and add what the new work changed.\n" if prev.exists() else ""))
             if lead_:
                 patch_state(lambda s_: lead_event(s_, "all_done", None,
                                                   f"final check {'PASS' if ok else 'FAIL'} on {st['branch']}"))
@@ -3314,10 +3379,10 @@ COMMANDS = {
     "send-job": cmd_send_job, "handoff": cmd_handoff, "needs-fix": cmd_needs_fix, "review-ok": cmd_review_ok,
     "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
     "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer,
-    "escalate": cmd_escalate,
+    "escalate": cmd_escalate, "fix": cmd_fix,
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
-UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer"}
+UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "fix"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
@@ -3331,6 +3396,8 @@ USAGE = """usage: orch <command> [args]
   events [--peek]          (lead) what you were woken for; reading acknowledges it
   dispatch <Mn>... [--to <worker>] [--tier <tier>]   (lead) start or restart milestones; starts the event manager
   answer <Mn> <text>       (lead) the developer's answer: into plan.md, and back to the same coder
+  fix <Mn> <text> [--to <worker>]   a change to something Mn already landed: a small follow-up milestone, sent
+                           straight to the coder who built Mn (no new plan; check, review and summary still apply)
   agents sync [kind...]    install the orch-plan / orch-run skills for every installed agent (run it after adding a new agent)
   agents check             check the orch-plan / orch-run skills are installed for every installed agent
   doctor [kind...]         check installed agents against the real tool: version, launch flags, skills, herdr
@@ -3368,7 +3435,7 @@ USAGE = """usage: orch <command> [args]
 Exit codes: 2 error · 3 needs you / busy / cap · 4 merge conflict · 5 prompt not delivered (retried later) ·
             6 check fails on the feature branch (nothing committed) · 7 held for approval · 10 poll wait
 While `orch autopilot` runs it holds the driver lease: other commands that change the run are refused
-(status, ready, pick, report, approve and the lead's events / dispatch / answer still work).
+(status, ready, pick, report, approve, fix and the lead's events / dispatch / answer still work).
 """
 
 # Env vars a Herdr pane carries. Agents whose tools run in a separate background process (Hermes runs
