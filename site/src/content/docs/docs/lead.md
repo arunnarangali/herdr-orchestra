@@ -46,6 +46,20 @@ coder-2  →  carries on from its saved work; when it finishes, the lead is woke
 
 Other milestones keep running the whole time. `orch answer` always sends the milestone back to the coder that asked.
 
+## When you want a change after the summary
+
+The run is done, you read the summary, and something needs to change. Tell the lead, not the coder. There is no new planning round.
+
+```text
+you  →  "the login button should be blue"
+lead  →  orch fix M1 "the login button should be blue"
+orch  →  adds M5 "Fix for M1: ..." to the plan, already dispatched to coder-1 (who built M1)
+coder-1  →  makes the change; the check (and the review, if M1 had one) runs as usual
+event manager  →  lands M5, writes the summary again (the old one is kept as summary.prev.md), wakes the lead
+```
+
+You can run `orch fix` yourself as well. Add `--to <worker>` to give it to a different coder. If you type into a coder's pane instead, nothing checks the change and it is not in the summary.
+
 ## Nothing is lost, nothing is sent twice
 
 - **Every event is stored first.** An event is written to `.orchestrate/state.json` in the same write as the change that caused it. If the lead is busy, paused, or its pane is closed, the event waits.
@@ -74,4 +88,5 @@ Put `Lead mode: off` in the plan header. `orch autopilot` then dispatches by its
 | `orch dispatch <Mn>... [--to <worker>] [--tier <tier>]` | Start or restart milestones; starts the event manager if needed |
 | `orch events [--peek]` | What the lead was woken for, what is ready, who is free |
 | `orch answer <Mn> "<text>"` | Your answer, into the plan and back to the same coder |
+| `orch fix <Mn> "<change>" [--to <worker>]` | A change after Mn landed, as one small follow-up milestone for the coder who built Mn |
 | `orch status` | Every worker and milestone |

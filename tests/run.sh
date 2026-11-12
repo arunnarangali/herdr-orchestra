@@ -587,6 +587,20 @@ check "the lead was woken at ALL_DONE and finished the summary" 'grep -q "ALL_DO
 check "no duplicate wake-ups: one per batch of events" '[ "$(wc -l < "$FH/lead-wakes.log")" -le 4 ]'
 check "every event was delivered and read" 'python3 -c "import json,sys;s=json.load(open(\".orchestrate/state.json\"));sys.exit(any(not e[\"read\"] for e in s[\"lead_events\"]) or not s[\"lead_events\"])"'
 
+echo "27. orch fix: a change after ALL_DONE goes straight to the coder who built it"
+out=$("$ORCH" fix M1 "the model must also say hello" 2>&1); code=$?
+check "fix adds a small follow-up milestone for the coder who built M1" '[ $code -eq 0 ] && grep -q "^FIX M5 .*-> claude-1" <<<"$out" && grep -q "^## \[x\] M5: Fix for M1: the model must also say hello" .orchestrate/plan.md'
+check "it is dispatched already and tied to that coder, with no new plan round" 'python3 -c "import json,sys;t=json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M5\"];sys.exit(not (t[\"go\"] and t[\"assign\"]==\"claude-1\" and t[\"fix_of\"]==\"M1\" and t[\"deps\"]==[\"M1\"] and t[\"tier\"]==\"medium\"))" && "$ORCH" ready | grep -q "^READY M5"'
+check "the plan with the fix in it still syncs, and keeps the dispatch" '"$ORCH" sync >/dev/null 2>&1 && "$ORCH" ready | grep -q "^READY M5"'
+out=$("$ORCH" fix M5 "x" 2>&1); code=$?
+check "fix refuses a milestone that has not landed" '[ $code -eq 2 ] && grep -q "not landed yet" <<<"$out"'
+timeout 180 "$ORCH" autopilot > "$WORK/lr2.log" 2>&1; code=$?
+check "the fix ran through the check and landed (exit 0)" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && [ -f e.txt ]'
+check "only the coder who built M1 was prompted for it" 'grep -q "^claude-1 <- .*M5/task.md" "$FH/prompts.log" && ! grep -q "^codex-1 <- .*M5/" "$FH/prompts.log"'
+check "the summary was written again and the earlier one kept" 'grep -q "M5: Fix for M1" .orchestrate/summary.md && grep -q "summary.prev.md" .orchestrate/summary.md && grep -q "check totals by hand" .orchestrate/summary.prev.md'
+out=$("$ORCH" fix M4 "totals need a header" --to claude-1 2>&1)
+check "--to sends a fix to another coder" 'grep -q "^FIX M6 .*-> claude-1" <<<"$out"'
+
 echo "25. the lead dispatches what becomes ready; a silent lead never stalls the run"
 newrepo lw; echo "$APP" > "$FH/lead.dir"
 printf '# Plan: t\nBranch: feature/lw\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: M5 (needs e)\nOpen questions:\n- none\n' > .orchestrate/plan.md

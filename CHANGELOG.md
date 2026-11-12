@@ -2,6 +2,14 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [4.8.0] - 2026-11-12
+
+### Added
+- **`orch fix Mn "<change>" [--to <worker>]`**: a change to something a milestone already landed, without a new planning round. It adds one small follow-up milestone to `plan.md` (depends on Mn, same Likely files, tier and review setting), already dispatched to the coder who built Mn, and starts the event manager. The check, the review and the summary apply as for any milestone. It works after ALL_DONE and during a run; the developer or the lead may run it (`--to` names another coder). The lead playbook's ALL_DONE section now tells the lead to use it when the developer asks for a change after the summary.
+
+### Changed
+- When the summary is written again (a fix after ALL_DONE), the earlier one is kept as `.orchestrate/summary.prev.md`, so the lead's notes and checklist are not lost.
+
 ## [4.7.0] - 2026-11-11
 
 The lead is back in the run, without giving up the single crash-safe driver: it plans, picks a model tier for every milestone, dispatches, pauses, and is woken by events. Plans written for 4.6 keep working.

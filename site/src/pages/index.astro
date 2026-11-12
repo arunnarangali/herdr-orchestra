@@ -49,6 +49,7 @@ const handles = [
   { trigger: 'agent disappears', title: 'Moves the work on', body: 'Its task continues on another coder with the work so far; it rejoins when it is back.', limit: '10 min bench' },
   { trigger: 'permission prompt', title: 'Alerts you', body: 'A desktop notification; every other task keeps running.', limit: 'no waiting' },
   { trigger: 'QUESTION:', title: 'Wakes the lead', body: 'That task pauses. The lead answers from the plan or asks you, and the same coder carries on.', limit: 'orch answer' },
+  { trigger: 'after the summary', title: 'Sends it to the coder who built it', body: 'Tell the lead what to change. One small follow-up job goes to the same coder, with the check and review, and no new plan.', limit: 'orch fix' },
   { trigger: 'out of rounds', title: 'Moves it up a tier', body: 'A milestone a model could not finish gets one fresh round on a stronger model, with the work so far.', limit: 'once' },
 ];
 ---
@@ -203,7 +204,7 @@ const handles = [
           <div class="card">
             <h3>The lead coordinates <code>orch dispatch</code> <code>orch answer</code></h3>
             <p>It starts each milestone when its dependencies have landed, answers a coder's question from the plan or asks you, and decides what to do with a milestone that failed.</p>
-            <ul><li>Woken once per batch of events, only when idle</li><li>Your answer goes back to the same coder</li><li>Never edits code or prompts a coder</li></ul>
+            <ul><li>Woken once per batch of events, only when idle</li><li>Your answer goes back to the same coder</li><li>A change after the summary goes to the coder who built it</li><li>Never edits code or prompts a coder</li></ul>
           </div>
           <div class="card">
             <h3>The event manager runs it <code>orch autopilot</code></h3>
