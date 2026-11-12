@@ -16,7 +16,7 @@ Most settings for a run live in the plan header: branch, base, commit style, che
 | `ORCH_CHECK_TIMEOUT_MIN` | 30 | Timeout for the check command |
 | `ORCH_COOLDOWN_MIN` | 60 | How long a rate-limited agent is benched |
 | `ORCH_GONE_COOLDOWN_MIN` | 10 | Bench for an agent that disappeared; ends early when it's back |
-| `ORCH_SEND_RETRY_S` | 120 | Wait before retrying an agent that couldn't be prompted |
+| `ORCH_SEND_RETRY_S` | 120 | Wait before retrying an agent that couldn't be prompted (a reviewer herdr can't find is retried as soon as herdr sees it again) |
 | `ORCH_HERDR_TIMEOUT_S` | 30 | Timeout for each Herdr call |
 | `ORCH_IDLE_GRACE_S` | 120 | How long an agent may sit idle before it counts as stopped |
 | `ORCH_POLL_STEP_S` | 10 | How often `poll` looks for events |

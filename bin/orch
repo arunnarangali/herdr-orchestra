@@ -1787,9 +1787,28 @@ def _review_undelivered(st, tid):
         st["reviewer_busy"] = None
     move(st, tid, "awaiting-review")
     ri = st.get("reviewer_info")
-    if ri is not None:
-        ri["delivery_fails"] = ri.get("delivery_fails", 0) + 1
-        ri["cooldown_until"], ri["cooldown_reason"] = now() + SEND_RETRY_S, "unreachable"
+    if ri is None:
+        return
+    name = st["reviewer"]
+    n = ri["delivery_fails"] = ri.get("delivery_fails", 0) + 1
+    # herdr can't find the name (pane closed, agent restarted in a new pane without its name): a `gone` bench, which
+    # ends the moment herdr sees the name again, so a rename is picked up on the next loop instead of minutes later
+    gone = ri.get("detect", True) and herdr_state(name) is None
+    ri["cooldown_until"] = now() + (UNREACHABLE_MIN * 60 if n >= UNREACHABLE_AFTER else SEND_RETRY_S)
+    ri["cooldown_reason"] = "gone" if gone else "unreachable"
+    fix = reviewer_fix_hint(st)
+    if n in (1, UNREACHABLE_AFTER):              # the lead hears of it on the first failure, and once more later
+        lead_event(st, "reviewer-lost", tid, f"the review prompt could not reach {name} ({n} tries). {fix}")
+    print(f"REVIEWER_LOST {name} (try {n}): {tid} waits for review, its work is kept. {fix}")
+
+
+def reviewer_fix_hint(st):
+    name = st["reviewer"]
+    pane = (st.get("reviewer_info") or {}).get("pane")
+    if pane:
+        return f"Check that pane {pane} still exists (`herdr pane get {pane}`)."
+    return (f"herdr has no agent named `{name}`. Find its pane with `herdr agent list`, then "
+            f"`herdr agent rename <pane> {name}`, and check it with `herdr agent get {name}`.")
 
 
 def cmd_resend(args):
@@ -2618,6 +2637,9 @@ EVENT_HELP = {
     "ready": "milestones are ready for you: `orch dispatch <Mn>...`.",
     "escalated": "moved to a stronger model after its rounds ran out. Nothing to do.",
     "auto-dispatched": "started without you because you did not dispatch it in time. Nothing to do.",
+    "reviewer-lost": "the reviewer can't be reached, so the milestone waits for review (its work is kept). Tell the "
+                     "developer the fix in the event text (usually: rename the reviewer's new pane). Review resumes "
+                     "by itself once herdr finds the reviewer again.",
     "all_done": "every milestone landed. Finish .orchestrate/summary.md (see `orch lead run`, section ALL_DONE).",
     "stopped": "the event manager stopped. Tell the developer why; they run `orch autopilot` again.",
 }
@@ -2992,7 +3014,10 @@ def cmd_autopilot(args):
             if code == 0:
                 say(out)
             elif code == 5:
-                say(f"{tid}: could not reach the reviewer — retrying after {SEND_RETRY_S}s\n{out}")
+                n = (load().get("reviewer_info") or {}).get("delivery_fails", 0)
+                say(f"{tid}: could not reach the reviewer — retrying when herdr sees it again (or after "
+                    f"{SEND_RETRY_S if n < UNREACHABLE_AFTER else UNREACHABLE_MIN * 60}s)\n{out}",
+                    n in (1, UNREACHABLE_AFTER))
         elif t["status"] == "reviewed":
             k = t["review_round"]
             blockers, _, known = review_findings(tid, k)

@@ -23,7 +23,7 @@ To install from git instead:
 
 ```bash
 git clone https://github.com/arunnarangali/herdr-orchestra.git
-cd herdr-orchestra && git checkout v4.11.0 && bash install.sh
+cd herdr-orchestra && git checkout v4.11.1 && bash install.sh
 ```
 
 ### Requirements
@@ -57,14 +57,14 @@ Every release is a git tag with a GitHub Release and an npm version, and every i
 
 ```bash
 # install a specific version
-npx herdr-orchestra@4.11.0                    # that npm release
-npx herdr-orchestra@latest --version v4.11.0  # or download any tag from GitHub
+npx herdr-orchestra@4.11.1                    # that npm release
+npx herdr-orchestra@latest --version v4.11.1  # or download any tag from GitHub
 
 # list versions
 npx herdr-orchestra@latest --list
 
 # pin a version for one project: commit this file, then run the installer from that folder
-echo v4.11.0 > .orch-version
+echo v4.11.1 > .orch-version
 
 orch version   # what's active now
 ```

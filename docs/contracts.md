@@ -112,6 +112,7 @@ With a `Lead:` line in the plan (and not `Lead mode: off`), every change the lea
 | `merged` | a milestone lands | read |
 | `ready` | milestones are waiting for `orch dispatch` | read, or nothing is left to dispatch |
 | `escalated`, `auto-dispatched` | orch moved a milestone to a stronger model, or started one the lead did not dispatch in time | read |
+| `reviewer-lost` | a review prompt could not reach the reviewer (first failure, and again after `ORCH_UNREACHABLE_AFTER`); the text has the rename fix | read |
 | `all_done` | every milestone has landed | read |
 
 `orch events` prints the unread and still-open events and marks the unread ones read (`--peek` does not). The

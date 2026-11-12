@@ -2,6 +2,8 @@ name: Release
 # A release is made by itself: when a merge to main carries a VERSION that has no tag yet, this tests it, tags
 # vX.Y.Z on that commit and publishes the GitHub Release with its own install.sh. Nobody has to push a tag.
 # It then publishes the same version to npm (`npx herdr-orchestra@latest`) when the NPM_TOKEN secret is set.
+# Re-runnable: run it again by hand (Run workflow) after fixing NPM_TOKEN; an existing GitHub Release is skipped and
+# only the missing npm version is published.
 # Pushing a tag by hand still works (the tag must match VERSION).
 on:
   push:
@@ -78,4 +80,12 @@ jobs:
           if npm view "herdr-orchestra@$V" version >/dev/null 2>&1; then
             echo "herdr-orchestra@$V is on npm already: nothing to do."; exit 0
           fi
-          npm publish --provenance --access public
+          rc=0; npm publish --provenance --access public > publish.log 2>&1 || rc=$?
+          cat publish.log
+          [ "$rc" -eq 0 ] && exit 0
+          if grep -q "EOTP\|one-time password" publish.log; then
+            echo "::error::npm asked for a one-time password: NPM_TOKEN is a token that needs two-factor codes. On npmjs.com make a Granular Access Token with Read and write on packages and 'Bypass two-factor authentication' ticked (or a Classic Automation token), save it as the NPM_TOKEN secret, then run this workflow again (Actions > Release > Run workflow). The GitHub Release is skipped when it exists; only the npm publish runs."
+          elif grep -q "E401\|E403\|ENEEDAUTH" publish.log; then
+            echo "::error::npm refused NPM_TOKEN (expired, read-only, or not allowed to publish herdr-orchestra). Make a new token with Read and write on packages and 'Bypass two-factor authentication', update the NPM_TOKEN secret, and run this workflow again."
+          fi
+          exit 1
