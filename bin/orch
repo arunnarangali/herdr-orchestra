@@ -888,10 +888,16 @@ def cmd_sync(args):
         warns.append(f"the lead runs {models[lead[0]]!r} ({tier_of(lead[0])} tier) — planning and coordination are "
                      f"high-tier work")
 
-    max_tasks = int(os.environ.get("ORCH_MAX_TASKS", "4"))
-    if len(enabled) > max_tasks:
-        warns.append(f"{len(enabled)} enabled milestones (> {max_tasks}). Prefer merging coupled milestones or "
-                     f"splitting the feature into separate runs; set ORCH_MAX_TASKS to allow more")
+    # the feature decides how many milestones there are: every split has to say what it buys
+    if len(enabled) > 1:
+        for tid in enabled:
+            if not field(by_id[tid], "why separate"):
+                warns.append(f"{tid} has no `Why separate:` — say why it is its own milestone (parallel work, a "
+                             f"foundation others build on, too big for one sitting), or merge it into another")
+    max_tasks = int(os.environ.get("ORCH_MAX_TASKS", "0") or 0)     # no limit unless you set one
+    if max_tasks and len(enabled) > max_tasks:
+        warns.append(f"{len(enabled)} enabled milestones (> ORCH_MAX_TASKS={max_tasks}). Merge coupled milestones "
+                     f"or split the feature into separate runs")
 
     if errors:
         for e in errors:
@@ -2568,7 +2574,8 @@ def cmd_fix(args):
         who = to or next((w for w in (t.get("worker"), t.get("last_worker"), *reversed(built)) if w in st["workers"]), None)
         title = f"Fix for {tid}: {text[:60]}" + ("..." if len(text) > 60 else "")
         review = field(src, "review", "no")
-        sec = [f"## [x] {new}: {title}", f"Depends on: {tid} (a fix to what {tid} built)", f"Review: {review}"]
+        sec = [f"## [x] {new}: {title}", f"Depends on: {tid} (a fix to what {tid} built)",
+               f"Why separate: a change the developer asked for after {tid} landed.", f"Review: {review}"]
         if field(src, "likely files"):
             sec.append(f"Likely files: {field(src, 'likely files')}")
         if t.get("tier"):

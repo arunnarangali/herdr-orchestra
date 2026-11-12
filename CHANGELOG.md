@@ -2,6 +2,17 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [4.9.0] - 2026-11-12
+
+The feature decides how many milestones a plan has. Small features no longer get split because coders are free.
+
+### Changed
+- **The lead sizes the plan to the feature.** The planning playbook no longer has a milestone budget (1–2 small, 3–4 medium, never more than 4) or the rule that split backend and frontend "even when the feature is small". The lead now writes a `## Feature breakdown` first (the real pieces of work and how they connect), starts from one milestone, and splits a piece off only when another coder can build it in parallel, other work has to build on it first, or the whole is too big for one sitting. More coders never means more milestones. Contract, scaffold and integration milestones are made only when the feature needs them.
+- **`orch sync` no longer warns above 4 milestones.** `ORCH_MAX_TASKS` is unset by default; set it to get the warning above a number of your own.
+
+### Added
+- **`Why separate:`** on a milestone: why it is its own milestone. In a plan with two or more enabled milestones, `orch sync` warns for each one without it. Plans written for 4.8 keep working (a warning, never an error); a plan with one milestone needs nothing. `orch fix` writes the line for the follow-up milestone it adds.
+
 ## [4.8.0] - 2026-11-12
 
 ### Added
