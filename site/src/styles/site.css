@@ -78,6 +78,8 @@ h1 { font-size: clamp(40px, 6vw, 64px); font-weight: 700; }
 h2 { font-size: clamp(30px, 4vw, 42px); font-weight: 680; }
 h3 { font-size: 19px; font-weight: 640; }
 .lede { color: var(--muted); font-size: 19px; margin: 18px 0 0; max-width: 62ch; }
+.hero-note { font-size: 15px; margin: 12px 0 0; max-width: 62ch; padding: 10px 14px; border-left: 3px solid var(--lead); background: color-mix(in srgb, var(--lead) 8%, transparent); border-radius: 6px; }
+.hero-note b { color: var(--text, inherit); }
 .section-head { margin-bottom: 44px; }
 
 /* Hero */

@@ -44,7 +44,7 @@ npx herdr-orchestra@latest
 
 Requirements: [herdr](https://herdr.dev), Node (for npx), git, python3 (3.11+ for the agent registry). Node is also what installs the official herdr skill.
 
-The package is published from every GitHub Release, so `@latest` is the newest release (not the `main` branch). No Node? Use the script from the release instead: `curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash`. Prefer git? `git clone https://github.com/arunnarangali/herdr-orchestra.git && cd herdr-orchestra && git checkout v4.11.0 && bash install.sh`
+The package is published from every GitHub Release, so `@latest` is the newest release (not the `main` branch). No Node? Use the script from the release instead: `curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash`. Prefer git? `git clone https://github.com/arunnarangali/herdr-orchestra.git && cd herdr-orchestra && git checkout v4.11.1 && bash install.sh`
 
 It installs:
 
@@ -252,7 +252,7 @@ bash tests/live/run.sh claude codex   # opt-in: one tiny real run per agent kind
 bash install.sh            # install your checkout (vX.Y.Z at a tag, vX.Y.Z-dev otherwise)
 ```
 
-Releases are made by themselves. A PR that bumps `VERSION` and adds its `## [X.Y.Z]` section to `CHANGELOG.md` is released when it is merged: the Release workflow runs the tests, tags `vX.Y.Z` on main and publishes the GitHub Release with its own `install.sh`. Nobody pushes a tag. (`bash scripts/release.sh X.Y.Z` still bumps VERSION and checks the CHANGELOG for you; a tag pushed by hand still works, and must match VERSION.)
+Releases are made by themselves. A PR that bumps `VERSION` and adds its `## [X.Y.Z]` section to `CHANGELOG.md` is released when it is merged: the Release workflow runs the tests, tags `vX.Y.Z` on main and publishes the GitHub Release with its own `install.sh`. Nobody pushes a tag. The same workflow publishes to npm with the `NPM_TOKEN` secret, which must be a Granular Access Token with Read and write on packages and "Bypass two-factor authentication" ticked (or a Classic Automation token); a token that asks for two-factor codes fails with EOTP. After fixing the secret, run the Release workflow again by hand: it skips the existing GitHub Release and only publishes to npm. (`bash scripts/release.sh X.Y.Z` still bumps VERSION and checks the CHANGELOG for you; a tag pushed by hand still works, and must match VERSION.)
 
 Semantic versioning: **major** for breaking changes to the plan format or commands, **minor** for new features, **patch** for fixes.
 

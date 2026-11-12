@@ -2,6 +2,15 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [4.11.1] - 2026-11-12
+
+### Fixed
+- **A reviewer herdr can't find no longer stalls a review in silence.** orch reaches agents by name only. When the reviewer's pane was closed and the agent came back in a new pane without its name, `orch review` failed with "agent not found", put the milestone back in the review queue and tried again every 2 minutes, with one line in `autopilot.log` and nothing else. `ORCH_MAX_LOST` counts coder failures only, so this retry never stopped, and the loud "reviewer is gone" alert fires only when the reviewer disappears in the middle of a review. Now, on the first failed review send, orch shows a desktop alert, puts a `reviewer-lost` event in the lead's queue (the lead is woken), and prints the fix: `herdr agent list`, then `herdr agent rename <pane> reviewer`. The milestone keeps waiting for review with its work kept, and the review goes out on the next loop once herdr finds the reviewer again, instead of after the 2-minute wait. After 3 failures in a row the reviewer is benched for `ORCH_UNREACHABLE_MIN` (30 min, ended early by a rename) and the lead is told once more.
+- **npm publish failures say what to do.** `npx herdr-orchestra@latest` returned E404 because the package was never published: the 4.11.0 publish stopped with EOTP (the `NPM_TOKEN` secret was a token that needs two-factor codes). The Release workflow now explains EOTP and refused tokens in plain words. The fix is a Granular Access Token with Read and write on packages and "Bypass two-factor authentication" ticked (or a Classic Automation token) saved as `NPM_TOKEN`; this release, or a by-hand re-run of the Release workflow, then publishes. A re-run skips the GitHub Release that already exists and only publishes to npm.
+
+### Changed
+- The website hero says in plain words what herdr-orchestra is: a skill you install into the coding agents you already use, plus a small `orch` command.
+
 ## [4.11.0] - 2026-11-12
 
 ### Added

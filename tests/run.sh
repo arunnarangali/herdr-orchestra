@@ -634,6 +634,26 @@ check "dispatch starts it and says so" 'grep -q "started the event manager" <<<"
 for _ in $(seq 60); do grep -q "ALL_DONE" .orchestrate/autopilot.log 2>/dev/null && break; sleep 1; done
 check "the run it started finishes" '[ "$(status_of M5)" = merged ] && grep -q "ALL_DONE" .orchestrate/autopilot.log'
 
+echo "28. a reviewer herdr can't find: the lead and the developer hear it at once, review resumes after a rename"
+newrepo rl; echo "$APP" > "$FH/lead.dir"
+printf '# Plan: t\nBranch: feature/rl\nCheck command: true\nIsolation: shared\nMax parallel: 1\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: reviewer (agy)\n\n## [x] M1: Model\nDepends on: none\nReview: yes\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null
+python3 - "$APP" <<'PY'
+import json, sys
+p = sys.argv[1] + "/.orchestrate/state.json"; s = json.load(open(p))
+s["tasks"]["M1"].update(status="awaiting-review", dir=sys.argv[1]); json.dump(s, open(p, "w"))
+PY
+touch "$FH/reviewer.missing" "$FH/reviewer.deaf"
+out=$("$ORCH" review M1 2>&1); code=$?
+check "an unreachable reviewer is reported with the rename fix (exit 5)" '[ $code -eq 5 ] && grep -q "REVIEWER_LOST reviewer (try 1)" <<<"$out" && grep -q "herdr agent rename <pane> reviewer" <<<"$out"'
+check "the milestone keeps waiting for review" '[ "$(status_of M1)" = awaiting-review ]'
+check "the lead gets an event on the first failure" '"$ORCH" events --peek | grep -qi "reviewer-lost M1 .*herdr agent rename <pane> reviewer"'
+out=$("$ORCH" review M1 2>&1); code=$?
+check "no new send while herdr still can't find the reviewer" '[ $code -eq 3 ] && grep -q "benched" <<<"$out"'
+rm -f "$FH/reviewer.missing" "$FH/reviewer.deaf"
+out=$("$ORCH" review M1 2>&1); code=$?
+check "once the reviewer is found again the review goes out at once, no 2-minute wait" '[ $code -eq 0 ] && grep -q "SENT review M1 -> reviewer" <<<"$out"'
+
 echo "11. installer puts the thin skills in every installed agent's folders"
 FAKEBIN="$WORK/fakebin"; IH="$WORK/home"; mkdir -p "$FAKEBIN" "$IH"
 for b in claude codex hermes agy; do printf '#!/bin/sh\n' > "$FAKEBIN/$b"; chmod +x "$FAKEBIN/$b"; done

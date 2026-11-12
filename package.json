@@ -1,6 +1,6 @@
 {
   "name": "herdr-orchestra",
-  "version": "4.11.0",
+  "version": "4.11.1",
   "description": "A lead agent plans, coders build, a reviewer checks, all in herdr panes. Install with: npx herdr-orchestra@latest",
   "license": "MIT",
   "bin": {
