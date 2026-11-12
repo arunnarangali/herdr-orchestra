@@ -25,3 +25,12 @@ jobs:
           test -f "$HOME/.agents/skills/orch-plan/SKILL.md"
           test -f "$HOME/.config/opencode/commands/orch-run.md"
           ls -d "$HOME/.local/share/herdr-orchestra"/v*
+      - name: npm package
+        run: |
+          test "$(node -p "require('./package.json').version")" = "$(tr -d '[:space:]' < VERSION)"
+          npm pack --dry-run 2>&1 | grep -q 'npm/cli.js'
+          export HOME=$(mktemp -d)
+          npm pack --silent && npx --yes ./herdr-orchestra-*.tgz --no-herdr-skill
+          "$HOME/.local/bin/orch" version
+          ls -d "$HOME/.local/share/herdr-orchestra"/v*
+          case "$(ls "$HOME/.local/share/herdr-orchestra")" in *-dev*) echo "npm install must not be -dev"; exit 1;; esac

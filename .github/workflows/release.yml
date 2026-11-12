@@ -1,6 +1,7 @@
 name: Release
 # A release is made by itself: when a merge to main carries a VERSION that has no tag yet, this tests it, tags
 # vX.Y.Z on that commit and publishes the GitHub Release with its own install.sh. Nobody has to push a tag.
+# It then publishes the same version to npm (`npx herdr-orchestra@latest`) when the NPM_TOKEN secret is set.
 # Pushing a tag by hand still works (the tag must match VERSION).
 on:
   push:
@@ -9,6 +10,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  id-token: write   # npm provenance
 concurrency:
   group: release
   cancel-in-progress: false
@@ -60,3 +62,20 @@ jobs:
             git push origin "$TAG"
           fi
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md dist/install.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          V=$(tr -d '[:space:]' < VERSION)
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN is not set: skipping the npm publish"; exit 0
+          fi
+          test "$(node -p "require('./package.json').version")" = "$V" || { echo "::error::package.json version does not match VERSION"; exit 1; }
+          if npm view "herdr-orchestra@$V" version >/dev/null 2>&1; then
+            echo "herdr-orchestra@$V is on npm already: nothing to do."; exit 0
+          fi
+          npm publish --provenance --access public

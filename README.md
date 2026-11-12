@@ -39,12 +39,12 @@ The lead decides one technical thing: the **interfaces between milestones that r
 ## Install
 
 ```bash
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash
+npx herdr-orchestra@latest
 ```
 
-Requirements: [herdr](https://herdr.dev), git, python3 (3.11+ for the agent registry), curl. Node/npx is optional; it's used to install the official herdr skill.
+Requirements: [herdr](https://herdr.dev), Node (for npx), git, python3 (3.11+ for the agent registry). Node is also what installs the official herdr skill.
 
-The script comes from the latest GitHub Release (not the `main` branch). Prefer git? `git clone https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra.git && cd herdr-orchestra && git checkout v4.2.0 && bash install.sh`
+The package is published from every GitHub Release, so `@latest` is the newest release (not the `main` branch). No Node? Use the script from the release instead: `curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash`. Prefer git? `git clone https://github.com/arunnarangali/herdr-orchestra.git && cd herdr-orchestra && git checkout v4.11.0 && bash install.sh`
 
 It installs:
 
@@ -69,22 +69,22 @@ Every release is a git tag (`v4.2.0`) with a GitHub Release that carries its own
 
 ```bash
 # install a specific version
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/download/v4.2.0/install.sh | bash
+npx herdr-orchestra@4.2.0            # that npm release
+npx herdr-orchestra@latest --version v4.2.0   # or download any tag from GitHub
 
 # list versions
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --list
-
-# switch to any version
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --version v4.2.0
+npx herdr-orchestra@latest --list
 
 # pin a version for one project: commit this file, then run the installer from that folder
 echo v4.2.0 > .orch-version
 
-orch version                     # what's active now
-curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --uninstall
+orch version                         # what's active now
+npx herdr-orchestra@latest --uninstall
 ```
 
-Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `./.orch-version` › the release the script came from.
+Without Node, the same options work through the release script: `curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash -s -- --list` (or `--version v4.2.0`, `--uninstall`).
+
+Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `./.orch-version` › the release the script (or npm package) came from.
 
 ## Use
 
