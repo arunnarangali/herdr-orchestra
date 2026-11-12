@@ -26,7 +26,7 @@ import Modes from '../components/Modes.astro';
         <p class="eyebrow">Steps 1 to 3 · the orchestration plan</p>
         <h2>You set the goal. The lead writes the plan.</h2>
         <ol class="steps" style="margin-top:28px">
-          <li><div><h3>Open your team</h3><p>One pane each: a lead, one or more coders, and an optional reviewer. Coders can run different models. <code>orch agents launch &lt;kind&gt; --model &lt;id&gt;</code> prints each agent's command.</p></div></li>
+          <li><div><h3>Open your team</h3><p>One pane each: a lead, one or more coders, and an optional reviewer. Coders can run different models. <code>orch agents launch &lt;kind&gt; --model &lt;id&gt;</code> prints each agent's command. Only one tool, or one window? Open just the lead: it builds the team from its own tool (<code>orch team codex</code>) and <code>orch team up</code> opens the other panes when you say go.</p></div></li>
           <li><div><h3>Ask the lead for a feature</h3><p>Run <code>/orch-plan &lt;feature&gt;</code> in the lead's pane. A good request has Feature, Why, Must, Must not, Already decided, Done when.</p></div></li>
           <li><div><h3>The lead researches and plans</h3><p>It reads the codebase, finds the files and patterns involved, and writes milestones as issues. Anything it can't decide goes under Open questions, with options.</p></div></li>
           <li><div><h3>The lead picks a tier for each milestone</h3><p>Small for mechanical work, medium for normal implementation, high where reasoning is the hard part. It reads the model catalog (<code>orch models</code>) and writes the reason next to each choice.</p></div></li>
