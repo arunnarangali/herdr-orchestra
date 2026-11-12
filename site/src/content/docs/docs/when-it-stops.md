@@ -14,7 +14,7 @@ Most things never reach you: the event manager retries, and the lead decides. A 
 | A permission prompt in an agent's pane | Answer it in that pane |
 | A milestone is `held` for a risky change | Look at the reasons in `orch status`, then `orch approve Mn` (or `orch set Mn paused`) |
 | A round limit was hit, even on a stronger model | The lead reads the report and tells you what keeps failing. Add a fact or constraint to the plan, or take it over |
-| An agent is missing or a pane id is stale | Start the agent (`orch agents launch <kind> --model <id>`), or fix the pane id from `herdr pane list` |
+| An agent is missing or a pane id is stale | `orch team up` opens every missing agent in its folder on its model; or start it yourself (`orch agents launch <kind> --model <id>`), or fix the pane id from `herdr pane list` |
 | A milestone lost 4 attempts | The agents were unreachable, gone or rate-limited. Restart or wait for them |
 | The lead is not reading its events | Look at its pane. Nothing is lost: `orch events --peek` lists what waits, and ready work starts by itself after 15 minutes |
 | The run's budget is used up | Raise or remove `Budget:` in the plan header |

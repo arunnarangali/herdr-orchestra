@@ -3,7 +3,7 @@
 # Panes addressed by id (@pane:<id>) map to an agent name through $FH/pane-<id>.name.
 FH=${FH:?}
 case "$1 $2" in
-  "agent get")  [ -f "$FH/$3.gone" ] && { echo "no such agent $3" >&2; exit 1; }
+  "agent get")  [ -f "$FH/$3.gone" ] || [ -f "$FH/$3.missing" ] && { echo "no such agent $3" >&2; exit 1; }
                 echo "{\"name\":\"$3\",\"status\":\"$(cat "$FH/$3.status" 2>/dev/null || echo idle)\"}";;
   "agent prompt") [ -f "$FH/$3.deaf" ] && { echo "agent $3 unreachable" >&2; exit 1; }
                   echo "$3 <- $4" >> "$FH/prompts.log"; echo working > "$FH/$3.status"
@@ -16,4 +16,14 @@ case "$1 $2" in
                     agent=$(cat "$FH/pane-$3.name"); echo "pane $3 ($agent) <- $4" >> "$FH/pane-prompts.log"
                     nohup "$(dirname "$0")/behave.sh" "$agent" "$(cat "$FH/$agent.dir")" "$4" >> "$FH/behave.log" 2>&1 &;;
   "pane send-keys") echo "pane $3 keys ${*:4}" >> "$FH/pane-prompts.log";;
+  "pane split") n=$(( $(cat "$FH/pane-seq" 2>/dev/null || echo 1) + 1 )); echo "$n" > "$FH/pane-seq"
+                echo "split ${*:3}" >> "$FH/team.log"
+                cwd=; while [ $# -gt 0 ]; do [ "$1" = --cwd ] && { cwd=$2; shift; }; shift; done
+                echo "$cwd" > "$FH/pane-w1:p$n.cwd"
+                echo "{\"result\":{\"pane\":{\"pane_id\":\"w1:p$n\"}}}";;
+  "pane run")   [ -f "$FH/pane-$3.cwd" ] || { echo "pane $3 not found" >&2; exit 1; }
+                echo "run $3 $4" >> "$FH/team.log"; echo "$4" > "$FH/pane-$3.cmd";;
+  "pane rename") echo "pane-rename $3 $4" >> "$FH/team.log";;
+  "agent rename") [ -f "$FH/pane-$3.cmd" ] && [ ! -f "$FH/nodetect" ] || { echo "no agent detected in $3" >&2; exit 1; }
+                  echo "rename $3 $4" >> "$FH/team.log"; rm -f "$FH/$4.missing"; cp "$FH/pane-$3.cwd" "$FH/$4.dir";;
 esac

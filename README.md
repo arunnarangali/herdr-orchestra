@@ -31,7 +31,7 @@ Run a small team of AI coding agents inside [Herdr](https://herdr.dev). An AI **
 |---|---|---|
 | **Lead** (any agent; you pick it by starting the playbook in its pane) | Researches the codebase; writes 1–4 milestones as issues (goal, why, acceptance criteria, constraints, interfaces, context facts, dependencies with reasons); gives each a model tier with the reason; dispatches the work, pauses, and is woken to decide: what to start next, a coder's question (asking you when only you can answer), a failed or held milestone, the final summary | Writes code, tells coders how to implement or fix, prompts or polls agents |
 | **Coders** (any agents: Claude, Codex, Amp, OpenCode, Hermes, AGY…) | Own the how: design, code, tests, fixing failed checks, fixing review findings, resolving conflicts | Change scope or skip acceptance criteria |
-| **Reviewer** (any spare agent; AGY works well) | Reports problems: `BLOCKER: file:line — what — why` | Edits code or prescribes fixes |
+| **Reviewer** (any spare agent, or another pane of the same tool) | Reports problems: `BLOCKER: file:line — what — why` | Edits code or prescribes fixes |
 | **Event manager** (`orch autopilot`, a script) | Sends work to coders of the right tier, watches every agent, runs checks, sends fixes and reviews, merges; queues every event and wakes the lead when it is idle | Thinks, or decides anything the lead or you should |
 
 The lead decides one technical thing: the **interfaces between milestones that run in parallel** (API shape, shared types, table columns), so two coders don't invent different versions.
@@ -98,6 +98,17 @@ Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `.
    | Reviewer (optional) | `claude --model opus`, `agy --mode accept-edits` or a spare agent | `reviewer` |
 
    `orch agents launch <kind> --model <id>` prints the command with the model; `orch models` lists the models and their tiers. Use whatever your installed agents already reach.
+
+   **Only one tool installed, or just one window open?** Open only the lead and start the plan playbook. The lead sees it is alone and builds the team from its own tool: `orch team codex` picks coders and a reviewer of that tool on the models the catalog allows, spread over its tiers, and the lead writes them into the plan. When you say go, `orch team up` opens their panes next to the lead, each in its own folder and on its model, and names them. You never type either command yourself (you can: `orch team codex --coders 1`, `orch team up --dry-run`). Each pane is a separate session of the same tool, on your existing login.
+
+   ```
+   you (1 Codex pane) ──► $orch-plan add a login page
+                             lead: only me here → orch team codex
+                             Workers: codex-1 (codex: gpt-6-luna), codex-2 (codex: gpt-6-sol)
+                             Reviewer: reviewer (codex: gpt-6-sol)
+                  you ──► go
+                             orch start → orch team up → 3 more Codex panes open → the run as usual
+   ```
 
 2. **Orchestration plan:** start the plan playbook in the lead's pane (see [Choose your lead](#choose-your-lead)). The lead researches, writes `.orchestrate/plan.md` and shows you the milestones, which coder and model each one goes to, and why. Edit the plan if you like: dependencies, tier, review yes/no, your answers to open questions.
 3. **Orchestration run:** tell the lead **go** (`/orch-run`). It dispatches the milestones (`orch dispatch M1 M2`), which starts the event manager, and pauses. From here the run looks after itself:
@@ -171,7 +182,7 @@ roles = ["coder"]
 skills_dirs = ["~/.myagent/skills"]
 ```
 
-`orch doctor [kind]` checks an installed agent against the real tool (version, whether the launch flags still exist in its `--help`, skills, herdr detection). `orch agents launch <kind>` prints the command · `orch agents sync` installs the skills for every installed agent (run it after adding a new one) · `orch agents check` confirms the skills are installed for every installed agent. The installer copies the skills into each installed agent's folders (`~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.hermes/skills`, `~/.gemini/config/skills`) plus Claude Code and OpenCode slash commands.
+`orch doctor [kind]` checks an installed agent against the real tool (version, whether the launch flags still exist in its `--help`, skills, herdr detection). `orch agents launch <kind>` prints the command · `orch team <kind>` / `orch team up` build and open a whole team from one tool · `orch agents sync` installs the skills for every installed agent (run it after adding a new one) · `orch agents check` confirms the skills are installed for every installed agent. The installer copies the skills into each installed agent's folders (`~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.hermes/skills`, `~/.gemini/config/skills`) plus Claude Code and OpenCode slash commands.
 
 ### Agents herdr can't watch
 For a kind with `herdr_detect = false` (or one missing from the registry, which `orch sync` warns about), `orch` relies only on the **done file and the time budget**: it never reports GONE, BLOCKED or IDLE for it, treats it as free whenever it has no task, and `orch status` marks it `detect:off`. If herdr doesn't recognise the pane as an agent at all, address it by pane id: `Workers: hermes-1 (hermes @pane:w1:p3)`. `orch` then types prompts into that pane, and `orch start` reports a `STALE pane` when the id has changed (`herdr pane list` shows the current ids).

@@ -147,7 +147,8 @@ def state_lock():
 
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
-LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "fix"}
+LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "fix",
+              "team"}
 _LEASE = None
 
 
@@ -3377,6 +3378,214 @@ def cmd_report(args):
         print("tokens/cost: unknown (no agent reported `usage` in its result file)")
 
 
+def launch_cmd(kind, v, model=None, strict=True):
+    """The shell command that starts agent `kind` in a pane, on `model` when given. With strict=False a kind
+    without a model_flag starts on its default model instead of failing (the caller says so)."""
+    cmd = v.get("launch") or v.get("binary", kind)
+    if model:
+        cat = models_catalog()
+        why = model_denied(cat, model)
+        if why:
+            die(f"{model!r} is not allowed by the model policy (pattern {why!r}) — see `orch models`")
+        if not v.get("model_flag"):
+            if not strict:
+                return cmd
+            die(f"the registry has no `model_flag` for {kind}, so orch can't build the command — choose the "
+                f"model inside {kind}, or set model_flag for it in {user_agents_file()}")
+        kinds = ((cat or {}).get("models", {}).get(model.lower()) or {}).get("kinds")
+        if kinds and kind not in kinds:
+            print(f"WARN: the catalog lists {model} for {', '.join(kinds)}, not {kind}", file=sys.stderr)
+        cmd += f" {v['model_flag']} {shlex.quote(model)}"
+    return cmd
+
+
+# ---------------------------------------------------------------- team: the whole team from one installed tool
+TEAM_WAIT_S = float(os.environ.get("ORCH_TEAM_WAIT_S", "90"))
+
+
+def team_models(cat, kind):
+    """Catalog models this kind can run, allowed by policy and rated, weakest first: [(id, tier)]."""
+    out = [(mid, model_tier(cat, mid)) for mid, m in ((cat or {}).get("models") or {}).items()
+           if kind in (m.get("kinds") or []) and not model_denied(cat, mid)]
+    return sorted(((mid, t) for mid, t in out if t), key=lambda x: (rank(x[1]), x[0]))
+
+
+def team_pick(cands, n):
+    """n coder models spread over the tiers on offer: always the strongest, then the weakest, then the middle."""
+    if not cands:
+        return [None] * n
+    if n == 1:
+        return [cands[-1][0]]
+    idx = [round(i * (len(cands) - 1) / (n - 1)) for i in range(n)]
+    return [cands[i][0] for i in idx]
+
+
+def cmd_team(args):
+    """orch team <kind> [--coders N] [--models a,b] [--no-reviewer] -> the plan's team built from one tool.
+    orch team up [--dry-run] -> open a herdr pane for every agent in the plan that herdr cannot find."""
+    if args and args[0] == "up":
+        return team_up(args[1:])
+    usage = "usage: orch team <kind> [--coders N] [--models a,b] [--no-reviewer]  |  orch team up [--dry-run]"
+    rest, coders, models, reviewer = list(args), None, None, True
+    if "--no-reviewer" in rest:
+        rest.remove("--no-reviewer")
+        reviewer = False
+    for flag in ("--coders", "--models"):
+        if flag in rest:
+            i = rest.index(flag)
+            val = rest[i + 1] if len(rest) > i + 1 else die(usage)
+            del rest[i:i + 2]
+            if flag == "--coders":
+                coders = int(val) if val.isdigit() and int(val) >= 1 else die("--coders needs a number from 1")
+            else:
+                models = [m.strip().lower() for m in val.split(",") if m.strip()]
+    if len(rest) != 1 or rest[0].startswith("-"):
+        die(usage)
+    kind = rest[0].lower()
+    reg = registry()
+    v = reg.get(kind) or die(f"unknown agent kind {kind!r} — known: {', '.join(reg)} (add it in {user_agents_file()})")
+    if not shutil.which(v.get("binary", kind)):
+        print(f"WARN: `{v.get('binary', kind)}` is not on PATH here, so {kind} panes would not start", file=sys.stderr)
+    roles = v.get("roles", ["lead", "coder", "reviewer"])
+    if "coder" not in roles:
+        die(f"{kind} does not have the coder role in the agent registry")
+    cat = models_catalog()
+    cands = team_models(cat, kind)
+    if models:
+        for m in models:
+            why = model_denied(cat, m)
+            if why:
+                die(f"{m!r} is not allowed by the model policy (pattern {why!r}) — see `orch models`")
+        picked = models if coders is None else (models * coders)[:coders]
+    else:
+        picked = team_pick(cands, coders or 2)
+    top = cands[-1][0] if cands else None
+    no_flag = not v.get("model_flag")
+    fmt = lambda name, m: f"{name} ({kind}: {m})" if m and not no_flag else f"{name} ({kind})"
+    workers = [fmt(f"{kind}-{i + 1}", m) for i, m in enumerate(picked)]
+    tier = {mid: t for mid, t in cands}
+    print(f"TEAM from {kind}: {len(workers)} coder(s)" + (", 1 reviewer" if reviewer and "reviewer" in roles else ""))
+    for i, m in enumerate(picked):
+        print(f"  {kind + '-' + str(i + 1):<12} {m or 'its default model'}" + (f"  ({tier[m]} tier)" if m in tier else ""))
+    if reviewer and "reviewer" in roles:
+        print(f"  {'reviewer':<12} {top or 'its default model'}" + (f"  ({tier[top]} tier)" if top in tier else ""))
+    print("\nPlan header lines:")
+    print(f"Lead: lead ({kind}: <the model your own pane runs>)")
+    print("Workers: " + ", ".join(workers))
+    print("Reviewer: " + (fmt("reviewer", top) if reviewer and "reviewer" in roles else "none"))
+    if not cands and not models:
+        print(f"\nNOTE: the model catalog has no allowed model for {kind}, so every pane starts on its default model "
+              f"(add models in {user_models_file()} to get tiers)")
+    if no_flag:
+        print(f"\nNOTE: {kind} has no model option in the registry: pick each pane's model inside {kind}")
+    if top and tier.get(top) != "high":
+        print(f"\nNOTE: the strongest allowed {kind} model is {top} ({tier.get(top)} tier): high-tier milestones go to "
+              f"it, and `orch sync` will say so")
+    print(f"\nCheck these are models your {kind} really reaches (`--models a,b` to choose others).")
+    print("\nThese panes don't exist yet. After `orch sync` and `orch start`, `orch team up` opens each one in its "
+          "own folder, on its model, and names it.")
+
+
+def _herdr_json(cmd):
+    """Run a herdr command; (ok, parsed JSON or None, text)."""
+    try:
+        r = subprocess.run(cmd, text=True, capture_output=True, timeout=HERDR_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, None, str(e)
+    out = (r.stdout + r.stderr).strip()
+    try:
+        data = json.loads(r.stdout)
+    except ValueError:
+        data = None
+    return r.returncode == 0, data, out
+
+
+def team_up(args):
+    """Open a pane for every worker and the reviewer in the plan that herdr can't find: split from this pane, cd
+    into the agent's folder (its worktree, or the repo), start it on its plan model, and give it its plan name."""
+    dry = "--dry-run" in args
+    st = load()
+    reg = registry(required=False) or {}
+    agents = [(n, w, w.get("dir")) for n, w in st["workers"].items()]
+    if st.get("reviewer"):
+        agents.append((st["reviewer"], st.get("reviewer_info") or {}, str(ROOT)))
+    missing_dirs = [n for n, w, d in agents if n in st["workers"] and not d]
+    if missing_dirs:
+        die(f"run `orch start` first: it makes each coder's folder ({', '.join(missing_dirs)} have none yet)")
+    todo = []
+    for name, w, d in agents:
+        if w.get("pane"):
+            ok, _, _ = _herdr_json([HERDR, "pane", "get", w["pane"]])
+            print(f"ok      {name}: pane {w['pane']}" if ok else
+                  f"STALE   {name}: pane {w['pane']} is gone — remove `@pane:` from plan.md, `orch sync`, then "
+                  f"`orch team up` again")
+            continue
+        if herdr_state(name) is not None:
+            print(f"ok      {name}: already running")
+            continue
+        todo.append((name, w, d))
+    if not todo:
+        print("TEAM UP: every agent in the plan is running")
+        return
+    failed, last = 0, None
+    for name, w, d in todo:
+        kind, model = w.get("kind"), w.get("model")
+        v = reg.get(kind)
+        if not v:
+            print(f"SKIP    {name}: kind {kind!r} is not in the agent registry — start it yourself in {d}")
+            failed += 1
+            continue
+        cmd = launch_cmd(kind, v, model, strict=False)
+        split = [HERDR, "pane", "split"] + ([last] if last else []) + \
+                ["--direction", "down" if last else "right", "--cwd", d, "--no-focus"]
+        if dry:
+            print(f"WOULD   {name}: {' '.join(shlex.quote(x) for x in split)}  then  herdr pane run <new pane> "
+                  f"{shlex.quote(cmd)}  then  herdr agent rename <new pane> {name}")
+            continue
+        ok, data, out = _herdr_json(split)
+        pid = None
+        try:
+            pid = data["result"]["pane"]["pane_id"] if ok else None
+        except (TypeError, KeyError):
+            pid = (re.search(r'"pane_id"\s*:\s*"([\w:.-]+)"', out) or [None, None])[1]
+        if not pid:
+            print(f"FAILED  {name}: herdr could not open a pane ({out.splitlines()[-1] if out else 'no output'})")
+            failed += 1
+            continue
+        last = pid
+        ok, _, out = _herdr_json([HERDR, "pane", "run", pid, cmd])
+        if not ok:
+            print(f"FAILED  {name}: pane {pid} opened, but `herdr pane run` failed ({out[-120:]})")
+            failed += 1
+            continue
+        if model and not v.get("model_flag"):
+            print(f"NOTE    {name}: {kind} has no model option — switch pane {pid} to {model} inside {kind}")
+        if not v.get("herdr_detect", True):
+            _herdr_json([HERDR, "pane", "rename", pid, name])
+            print(f"OPENED  {name}: pane {pid} in {short(d)} — herdr can't watch {kind}: write it as "
+                  f"`{name} ({kind} @pane:{pid})` in plan.md, then `orch sync`")
+            continue
+        deadline, named = time.time() + TEAM_WAIT_S, False
+        while True:          # herdr names an agent only once it has detected it in the pane
+            ok, _, out = _herdr_json([HERDR, "agent", "rename", pid, name])
+            if ok or time.time() >= deadline:
+                named = ok
+                break
+            time.sleep(min(2.0, max(0.2, TEAM_WAIT_S / 30)))
+        if named:
+            print(f"OPENED  {name}: pane {pid} in {short(d)} running `{cmd}`")
+        else:
+            print(f"WAITING {name}: pane {pid} runs `{cmd}`, but herdr has not seen the agent start yet — if it "
+                  f"shows a first-run question (trust this folder, sign in), answer it, then: herdr agent rename {pid} {name}")
+            failed += 1
+    if dry:
+        return
+    print("TEAM UP: done — run `orch start` again; every agent should show herdr=found" if not failed else
+          f"TEAM UP: {failed} agent(s) not ready — see above, then `orch team up` again")
+    if failed:
+        sys.exit(3)
+
+
 COMMANDS = {
     "sync": cmd_sync, "start": cmd_start, "ready": cmd_ready, "pick": cmd_pick, "prepare": cmd_prepare,
     "setup-done": cmd_setup_done, "send": cmd_send, "review": cmd_review, "poll": cmd_poll, "bump": cmd_bump,
@@ -3386,16 +3595,19 @@ COMMANDS = {
     "send-job": cmd_send_job, "handoff": cmd_handoff, "needs-fix": cmd_needs_fix, "review-ok": cmd_review_ok,
     "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
     "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer,
-    "escalate": cmd_escalate, "fix": cmd_fix,
+    "escalate": cmd_escalate, "fix": cmd_fix, "team": cmd_team,
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
-UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "fix"}
+UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "fix", "team"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
   lead plan|run            print the lead playbook (any agent can lead: "Run `orch lead plan` and follow it")
   lead check               preflight: is this agent in a Herdr pane / can it reach herdr?
   lead whoami              show the lead's own herdr pane and how to name it `lead`
+  team <kind> [--coders N] [--models a,b] [--no-reviewer]
+                           the plan's team built from one installed tool: coders + reviewer on its catalog models
+  team up [--dry-run]      open a herdr pane for every agent in the plan herdr can't find, in its folder, and name it
   agents                   the agent registry: kinds, installed?, roles, herdr detection, launch commands
   agents launch <kind> [--model <id>]  print the command that starts <kind> in a pane (auto-approve edits)
   models                   the model catalog: tiers (small / medium / high), ratings, and what policy forbids
@@ -3626,20 +3838,7 @@ def cmd_agents(args):
         kind = rest[0] if rest else die("usage: orch agents launch <kind> [--model <id>]")
         v = reg.get(kind) or die(f"unknown agent kind {kind!r} — known: {', '.join(reg)} "
                                  f"(add it in {user_agents_file()})")
-        cmd = v.get("launch") or v.get("binary", kind)
-        if model:
-            cat = models_catalog()
-            why = model_denied(cat, model)
-            if why:
-                die(f"{model!r} is not allowed by the model policy (pattern {why!r}) — see `orch models`")
-            if not v.get("model_flag"):
-                die(f"the registry has no `model_flag` for {kind}, so orch can't build the command — choose the "
-                    f"model inside {kind}, or set model_flag for it in {user_agents_file()}")
-            kinds = ((cat or {}).get("models", {}).get(model.lower()) or {}).get("kinds")
-            if kinds and kind not in kinds:
-                print(f"WARN: the catalog lists {model} for {', '.join(kinds)}, not {kind}", file=sys.stderr)
-            cmd += f" {v['model_flag']} {shlex.quote(model)}"
-        print(cmd)
+        print(launch_cmd(kind, v, model))
         return
     if sub == "dirs":           # for install.sh: <kind>\t<skills|commands|invoke>\t<dir or text>[\t<commands_from>]
         for k, v in reg.items():
@@ -3771,8 +3970,10 @@ if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] in ("version", "--version", "-v"):
         print(f"herdr-orchestra {installed_version()}")
         sys.exit(0)
-    NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents, "doctor": cmd_doctor, "models": cmd_models}
-    if len(sys.argv) >= 2 and sys.argv[1] in NO_REPO_COMMANDS:   # work outside a git repo
+    NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents, "doctor": cmd_doctor, "models": cmd_models,
+                        "team": cmd_team}
+    if (len(sys.argv) >= 2 and sys.argv[1] in NO_REPO_COMMANDS      # work outside a git repo
+            and sys.argv[2:3] != ["up"]):                           # (`orch team up` reads the run's state)
         NO_REPO_COMMANDS[sys.argv[1]](sys.argv[2:])
         sys.exit(0)
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:

@@ -18,6 +18,8 @@ In Herdr, open one pane per agent in your repo. `orch agents launch <kind> --mod
 
 One coder is fine too. The lead then plans milestones one after another. Mixing kinds works the same way: a Codex coder next to a Claude one.
 
+**Only one tool, or you don't want to open panes yourself?** Open just the lead's pane and go to step 2. The lead sees it is alone, builds the team from its own tool with `orch team <kind>`, and when you say go, `orch team up` opens the other panes for you. See [One tool, whole team](/docs/agents/#one-tool-whole-team).
+
 ## 2. Ask the lead for a feature
 
 In the lead's pane, start the plan playbook. In Claude Code or OpenCode:

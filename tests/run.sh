@@ -661,5 +661,54 @@ check "orch agents hints to sync when skills go missing" 'HOME="$IH" PATH="$SAFE
 HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --uninstall > /dev/null 2>&1
 check "uninstall removes them all" '[ -z "$(find "$IH" -name "orch-*")" ] && [ ! -e "$IH/.local/bin/orch" ]'
 
+echo "12. one installed tool builds the whole team: orch team <kind>, orch team up"
+out=$("$ORCH" team codex 2>&1)
+check "team codex: 2 coders across the codex tiers + reviewer on the strongest" 'grep -q "^Workers: codex-1 (codex: gpt-6-luna), codex-2 (codex: gpt-6-sol)$" <<<"$out" && grep -q "^Reviewer: reviewer (codex: gpt-6-sol)$" <<<"$out"'
+check "team codex says no high-tier codex model is allowed" 'grep -q "strongest allowed codex model is gpt-6-sol (medium tier)" <<<"$out"'
+out=$("$ORCH" team claude --coders 1 --no-reviewer 2>&1)
+check "team claude --coders 1: one coder on the strongest model, no reviewer" 'grep -q "^Workers: claude-1 (claude: opus)$" <<<"$out" && grep -q "^Reviewer: none$" <<<"$out"'
+out=$("$ORCH" team codex --models gpt-6-astra 2>&1); code=$?
+check "team refuses a denied model" '[ $code -ne 0 ] && grep -q "not allowed by the model policy" <<<"$out"'
+check "team works outside a git repo" '(cd "$WORK" && "$ORCH" team codex >/dev/null 2>&1)'
+newrepo team
+cat > .orchestrate/plan.md <<'PLAN'
+# Plan: solo tool
+Branch: feature/solo
+Check command: true
+Isolation: worktree
+Max parallel: 2
+Lead: lead (codex: gpt-6-sol)
+Workers: codex-1 (codex: gpt-6-luna), codex-2 (codex: gpt-6-sol)
+Reviewer: reviewer (codex: gpt-6-sol)
+
+## [x] M1: a
+Depends on: none
+Open questions:
+- none
+PLAN
+"$ORCH" sync >/dev/null 2>&1
+check "a plan with only codex panes (lead, 2 coders, reviewer) passes sync" '"$ORCH" sync 2>&1 | grep -q "^OK: 1 tasks"'
+out=$("$ORCH" team up 2>&1); code=$?
+check "team up before orch start asks for orch start (worktrees first)" '[ $code -ne 0 ] && grep -q "run \`orch start\` first" <<<"$out"'
+touch "$FH/codex-2.missing" "$FH/reviewer.missing"
+"$ORCH" start >/dev/null 2>&1
+out=$("$ORCH" start 2>&1)
+check "orch start shows the missing codex panes" 'grep -q "WORKER codex-2 .*herdr=NOT FOUND" <<<"$out" && grep -q "REVIEWER reviewer .*herdr=NOT FOUND" <<<"$out"'
+out=$("$ORCH" team up --dry-run 2>&1)
+check "team up --dry-run only prints the commands" 'grep -q "^WOULD   codex-2: .*pane split --direction right --cwd .*app-wt/codex-2 --no-focus" <<<"$out" && [ ! -f "$FH/team.log" ]'
+out=$(ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1); code=$?
+check "team up skips the agent that already runs" 'grep -q "^ok      codex-1: already running" <<<"$out"'
+check "team up opens the coder in its own worktree, on its plan model" '[ $code -eq 0 ] && grep -q "^OPENED  codex-2: pane w1:p2 in .*app-wt/codex-2 running \`codex --approve-for-me --model gpt-6-sol\`" <<<"$out"'
+check "the reviewer opens in the repo, below the coder, and is named" 'grep -q "split w1:p2 --direction down --cwd $APP --no-focus" "$FH/team.log" && grep -q "rename w1:p3 reviewer" "$FH/team.log"'
+out=$("$ORCH" start 2>&1)
+check "after team up every agent is found" '! grep -q "NOT FOUND" <<<"$out"'
+out=$("$ORCH" team up 2>&1)
+check "team up again is a no-op" 'grep -q "^TEAM UP: every agent in the plan is running" <<<"$out"'
+touch "$FH/codex-2.missing" "$FH/nodetect"
+out=$(ORCH_TEAM_WAIT_S=1 "$ORCH" team up 2>&1); code=$?
+check "an agent herdr never detects is reported with the rename command (exit 3)" '[ $code -eq 3 ] && grep -q "^WAITING codex-2: .*herdr agent rename w1:p4 codex-2" <<<"$out"'
+rm -f "$FH/nodetect"
+check "playbook step 3 builds the team with orch team when the lead is alone" 'grep -q "orch team <your kind>" "$ROOT/playbooks/plan.md" && grep -q "orch team up" "$ROOT/playbooks/run.md"'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

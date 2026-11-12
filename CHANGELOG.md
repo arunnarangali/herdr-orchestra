@@ -2,6 +2,18 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [4.10.0] - 2026-11-12
+
+One installed tool is enough for a whole team. A developer with only Codex (or only Claude Code, or only OpenCode) opens one pane, and the lead builds and opens the rest from that same tool.
+
+### Added
+- **`orch team <kind> [--coders N] [--models a,b] [--no-reviewer]`**: the plan's team built from one tool. It picks coders spread over the tiers the model catalog allows for that tool (two by default: the weakest and the strongest) and a reviewer on the strongest, and prints the `Workers:` and `Reviewer:` lines. For Codex: `codex-1 (codex: gpt-6-luna)`, `codex-2 (codex: gpt-6-sol)`, `reviewer (codex: gpt-6-sol)`. It says when the tool has no allowed high-tier model. Read-only, and it works outside a repo.
+- **`orch team up [--dry-run]`**: after `orch start`, opens a herdr pane for every worker and the reviewer in the plan that herdr can't find. Each pane is split from the lead's pane, starts in the agent's folder (its worktree, or the repo), runs the tool on its plan model, and gets its plan name. Agents that already run are left alone, so it is safe to run again. It reports `WAITING` with the rename command when a new pane stops at a first-run question, and exits 3 while any agent is not ready.
+
+### Changed
+- **The plan playbook builds the team when the lead is alone.** When `herdr agent list` shows no agent pane besides the lead, the lead runs `orch team <its kind>`, writes the lines into the plan, and tells the developer how many windows will open. The run playbook runs `orch team up` when `orch start` shows a missing agent, then `orch start` again. Worktree setup no longer asks the lead to split panes by hand.
+- The reviewer can be another pane of the same tool as the coders (the playbook and README no longer point to AGY).
+
 ## [4.9.0] - 2026-11-12
 
 The feature decides how many milestones a plan has. Small features no longer get split because coders are free.
