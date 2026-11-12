@@ -61,17 +61,17 @@ norm() { local v="${1#v}"; echo "v$v"; }
 
 list_versions() {
   if command -v git >/dev/null; then
-    git ls-remote --tags --refs "https://gh.ali360.cloudns.ch/$REPO.git" 2>/dev/null \
+    git ls-remote --tags --refs "https://github.com/$REPO.git" 2>/dev/null \
       | sed -E 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V
   else
-    curl -fsSL "https://api-github-com.hhj520.top/repos/$REPO/tags?per_page=100" \
+    curl -fsSL "https://api.github.com/repos/$REPO/tags?per_page=100" \
       | grep -oE '"name": *"v[0-9]+\.[0-9]+\.[0-9]+"' | grep -oE 'v[0-9.]+' | sort -V
   fi
 }
 
 latest_version() {
   local v
-  v=$(curl -fsSL "https://api-github-com.hhj520.top/repos/$REPO/releases/latest" 2>/dev/null \
+  v=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
       | grep -oE '"tag_name": *"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/') || true
   [[ -n "$v" ]] || v=$(list_versions | tail -1)
   [[ -n "$v" ]] || die "could not find any released version of $REPO"
@@ -145,7 +145,7 @@ else
   else
     say "downloading $REPO $VER"
     TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-    curl -fsSL "https://gh.ali360.cloudns.ch/$REPO/archive/refs/tags/$VER.tar.gz" -o "$TMP/src.tgz" \
+    curl -fsSL "https://github.com/$REPO/archive/refs/tags/$VER.tar.gz" -o "$TMP/src.tgz" \
       || die "version $VER not found. Run with --list to see available versions."
     tar -xzf "$TMP/src.tgz" -C "$TMP"
     SRC=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)

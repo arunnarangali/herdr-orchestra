@@ -1,6 +1,6 @@
 ---
-title: Installation
-description: Install herdr-orchestra with npx, pick or pin a version, set up new agents, and uninstall.
+title: "Install herdr-orchestra with npx"
+description: "Install herdr-orchestra with npx herdr-orchestra@latest (or curl), pick or pin a version, set up new agents, and uninstall."
 ---
 
 ## Install

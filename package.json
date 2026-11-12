@@ -1,7 +1,7 @@
 {
   "name": "herdr-orchestra",
   "version": "4.11.1",
-  "description": "A lead agent plans, coders build, a reviewer checks, all in herdr panes. Install with: npx herdr-orchestra@latest",
+  "description": "Orchestrate AI coding agents (Claude Code, Codex, OpenCode, Amp) as one team in Herdr: a lead plans, coders build in parallel, a reviewer checks, you get one PR.",
   "license": "MIT",
   "bin": {
     "herdr-orchestra": "npm/cli.js"
@@ -27,11 +27,30 @@
   },
   "homepage": "https://herdr-orchestra.vercel.app/",
   "bugs": "https://github.com/arunnarangali/herdr-orchestra/issues",
-  "keywords": ["herdr", "agents", "orchestration", "claude-code", "codex", "opencode"],
+  "keywords": [
+    "herdr",
+    "herdr-orchestra",
+    "orchestration",
+    "agent-orchestration",
+    "ai-agents",
+    "multi-agent",
+    "agentic-workflow",
+    "agent-workflow",
+    "coding-agents",
+    "ai-coding",
+    "claude-code",
+    "codex",
+    "opencode",
+    "amp",
+    "llm",
+    "cli",
+    "developer-tools"
+  ],
   "engines": {
     "node": ">=16"
   },
   "publishConfig": {
     "access": "public"
-  }
+  },
+  "author": "arunnarangali (https://github.com/arunnarangali)"
 }

@@ -1,6 +1,6 @@
 ---
-title: How a run works
-description: Every step of a herdr-orchestra run, and the states a milestone goes through.
+title: "How a run works: the agent workflow step by step"
+description: "Every step of a herdr-orchestra agent workflow run, from plan to pull request, and the states a milestone goes through."
 ---
 
 A **run** builds one feature. It has 1 to 4 milestones, lives on one `feature/<name>` branch, and ends in one pull request.

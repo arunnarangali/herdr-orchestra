@@ -2,6 +2,14 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [4.11.2] - 2026-11-12
+
+### Fixed
+- **Links go to github.com again.** Some files pointed at mirror domains in place of github.com and api.github.com: the website's GitHub links (header, footer, docs header, "Star on GitHub"), the PR link `orch finish` prints, and the version lookup and source download in `install.sh` (used for `--version`, `--list` and the git-less fallback). All of them use github.com and api.github.com now.
+
+### Changed
+- **Easier to find.** The npm package has a clearer description, more search keywords (agent orchestration, multi-agent, agentic workflow, Claude Code, Codex, OpenCode) and an author. The README opens with one line on what herdr-orchestra is and the `npx herdr-orchestra@latest` command. The website has a canonical URL on every page, full Open Graph and Twitter cards (docs pages included), `robots.txt` pointing at the sitemap, and a SoftwareApplication JSON-LD block on the homepage. Page titles and a few docs titles use the words people search for, such as "Install herdr-orchestra with npx" and "What is herdr-orchestra?".
+
 ## [4.11.1] - 2026-11-12
 
 ### Fixed
@@ -184,7 +192,7 @@ Answers the architecture review: one driver, checked state transitions, nothing 
 - **Lead researches; coders own the how.** The planner has a research phase and writes milestones as issues: Goal, Why, Acceptance criteria, Constraints, Interfaces, Context (facts), Out of scope. Reviews report problems only (`BLOCKER: file:line — what — why`). Fix and conflict jobs describe the problem and leave the solution to the coder.
 - **Better dependency planning:** the "could B be built if A never existed?" test, a reason required for every dependency (`Depends on: M1 (what it needs)`), scaffold-first for hotspot files, contract-first for parallel milestones, integration last.
 - `orch sync` warnings: dependency without a reason; shared hotspot files (`package.json`, lockfiles, routes, `App.tsx`, `pubspec.yaml`, `go.mod`, `docker-compose.yml`…) in parallel milestones; code blocks or step-by-step "how" in a milestone; independent milestones in shared mode.
-- Curl install from the GitHub Release: `curl -fsSL https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash`. Each release attaches an `install.sh` that installs that version (`/releases/download/vX.Y.Z/install.sh`).
+- Curl install from the GitHub Release: `curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash`. Each release attaches an `install.sh` that installs that version (`/releases/download/vX.Y.Z/install.sh`).
 - Installing from a git checkout at a release tag installs as that version; other commits install as `vX.Y.Z-dev`.
 - Commands: `orch handoff`, `orch needs-fix`, `orch send-job`, `orch review-ok`. `orch ready` lists `FIX` jobs first.
 

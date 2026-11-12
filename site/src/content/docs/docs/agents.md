@@ -1,6 +1,6 @@
 ---
-title: Agents and roles
-description: The agent registry, choosing a lead and its model, and adding your own agent.
+title: "Agents and roles: Claude Code, Codex, OpenCode and more"
+description: "Which AI coding agents herdr-orchestra can orchestrate, choosing a lead and its model, and adding your own agent."
 ---
 
 Any installed agent can play any role: Claude Code, Codex, Amp, OpenCode, Hermes, Antigravity (`agy`), or anything else that can run shell commands. See the [Agents page](/agents) for every kind's launch command.

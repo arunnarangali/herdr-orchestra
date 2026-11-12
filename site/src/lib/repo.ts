@@ -6,7 +6,7 @@ import { parse } from 'smol-toml';
 const ROOT = resolve(process.cwd(), '..');
 const read = (name: string) => readFileSync(resolve(ROOT, name), 'utf8');
 
-export const REPO_URL = 'https://gh.ali360.cloudns.ch/arunnarangali/herdr-orchestra';
+export const REPO_URL = 'https://github.com/arunnarangali/herdr-orchestra';
 export const INSTALL_CMD = 'npx herdr-orchestra@latest';
 export const CURL_INSTALL_CMD =
   'curl -fsSL https://github.com/arunnarangali/herdr-orchestra/releases/latest/download/install.sh | bash';
