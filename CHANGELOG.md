@@ -2,6 +2,11 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [4.10.1] - 2026-11-12
+
+### Changed
+- **Releases are made by themselves.** When a merge to main carries a `VERSION` that has no release yet, the Release workflow runs the tests, tags `vX.Y.Z` on that commit and publishes the GitHub Release with its own `install.sh`. Nobody has to push a tag after merging. A tag pushed by hand still works and must match `VERSION`; a version whose tag already sits on another commit fails loudly. `scripts/release.sh` no longer tags.
+
 ## [4.10.0] - 2026-11-12
 
 One installed tool is enough for a whole team. A developer with only Codex (or only Claude Code, or only OpenCode) opens one pane, and the lead builds and opens the rest from that same tool.

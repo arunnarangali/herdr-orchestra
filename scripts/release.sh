@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bash scripts/release.sh 4.2.0
-# Bumps VERSION, checks CHANGELOG has a section for it, runs tests, commits and tags vX.Y.Z.
+# Bumps VERSION, checks CHANGELOG has a section for it, runs tests and commits. No tag needed: when this commit
+# reaches main (through a PR), the Release workflow tags vX.Y.Z and publishes the GitHub Release by itself.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 NEW="${1:?usage: scripts/release.sh X.Y.Z}"; NEW="${NEW#v}"
@@ -12,5 +13,4 @@ echo "$NEW" > VERSION
 bash tests/run.sh
 git add VERSION CHANGELOG.md
 git commit -m "Release v$NEW"
-git tag -a "v$NEW" -m "v$NEW"
-echo "Tagged v$NEW. Publish with: git push && git push origin v$NEW"
+echo "Committed v$NEW. Push it and merge the PR: the Release workflow tags v$NEW and publishes it."
