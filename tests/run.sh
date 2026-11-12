@@ -143,7 +143,14 @@ printf '# Plan: t\nBranch: orch/v\nCheck command: true\nWorkers: claude-1 (claud
 out=$("$ORCH" sync 2>&1); code=$?
 check "dependency cycle rejected" '[ $code -eq 2 ] && grep -q cycle <<<"$out"'
 { printf '# Plan: t\nBranch: orch/v\nCheck command: true\nWorkers: claude-1 (claude)\nReviewer: none\n'; for i in 1 2 3 4 5; do printf '\n## [x] M%s: t\nDepends on: none\nOpen questions:\n- none\n' $i; done; } > .orchestrate/plan.md
-check "more than 4 milestones warns" '"$ORCH" sync | grep -q "5 enabled milestones"'
+out=$("$ORCH" sync 2>&1)
+check "the number of milestones alone is not a warning" '! grep -q "enabled milestones" <<<"$out"'
+check "a split without a reason warns, per milestone" '[ "$(grep -c "has no .Why separate:" <<<"$out")" -eq 5 ]'
+check "ORCH_MAX_TASKS still warns when you set it" 'ORCH_MAX_TASKS=4 "$ORCH" sync | grep -q "5 enabled milestones"'
+{ printf '# Plan: t\nBranch: orch/v\nCheck command: true\nWorkers: claude-1 (claude)\nReviewer: none\n\n## Feature breakdown\n- api and ui\n'; for i in 1 2; do printf '\n## [x] M%s: t\nDepends on: none\nWhy separate: built in parallel by another coder\nOpen questions:\n- none\n' $i; done; } > .orchestrate/plan.md
+check "milestones that say why they are separate do not warn" '! "$ORCH" sync 2>&1 | grep -q "Why separate"'
+printf '# Plan: t\nBranch: orch/v\nCheck command: true\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M1: t\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+check "a one-milestone plan needs no reason" '! "$ORCH" sync 2>&1 | grep -q "Why separate"'
 cat > .orchestrate/plan.md <<'PLAN'
 # Plan: Insights
 Branch: orch/ins
@@ -590,6 +597,7 @@ check "every event was delivered and read" 'python3 -c "import json,sys;s=json.l
 echo "27. orch fix: a change after ALL_DONE goes straight to the coder who built it"
 out=$("$ORCH" fix M1 "the model must also say hello" 2>&1); code=$?
 check "fix adds a small follow-up milestone for the coder who built M1" '[ $code -eq 0 ] && grep -q "^FIX M5 .*-> claude-1" <<<"$out" && grep -q "^## \[x\] M5: Fix for M1: the model must also say hello" .orchestrate/plan.md'
+check "the fix milestone says why it is separate, so sync does not warn about it" 'grep -q "^Why separate: a change the developer asked for after M1 landed" .orchestrate/plan.md && ! "$ORCH" sync 2>&1 | grep -q "M5 has no .Why separate"'
 check "it is dispatched already and tied to that coder, with no new plan round" 'python3 -c "import json,sys;t=json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M5\"];sys.exit(not (t[\"go\"] and t[\"assign\"]==\"claude-1\" and t[\"fix_of\"]==\"M1\" and t[\"deps\"]==[\"M1\"] and t[\"tier\"]==\"medium\"))" && "$ORCH" ready | grep -q "^READY M5"'
 check "the plan with the fix in it still syncs, and keeps the dispatch" '"$ORCH" sync >/dev/null 2>&1 && "$ORCH" ready | grep -q "^READY M5"'
 out=$("$ORCH" fix M5 "x" 2>&1); code=$?

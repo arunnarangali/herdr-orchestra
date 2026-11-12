@@ -20,7 +20,7 @@ Most settings for a run live in the plan header: branch, base, commit style, che
 | `ORCH_HERDR_TIMEOUT_S` | 30 | Timeout for each Herdr call |
 | `ORCH_IDLE_GRACE_S` | 120 | How long an agent may sit idle before it counts as stopped |
 | `ORCH_POLL_STEP_S` | 10 | How often `poll` looks for events |
-| `ORCH_MAX_TASKS` | 4 | Milestone limit per run |
+| `ORCH_MAX_TASKS` | unset | Optional: `orch sync` warns above this many milestones. By default there is no limit; the feature decides |
 | `ORCH_MAX_LOST` | 4 | Attempts a milestone may lose to unreachable or rate-limited agents before it fails |
 | `ORCH_RISK_MAX_LINES` | 1500 | Diff size above which a milestone is held for approval |
 | `ORCH_LEAD_WAIT_MIN` | 15 | Ready milestones the lead has not dispatched start by themselves after this |

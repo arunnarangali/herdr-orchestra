@@ -37,19 +37,28 @@ Feature request = the user's message that asked you to run this playbook.
 - **Models.** Run `orch models`: the catalog of models with a tier (small / medium / high) and ratings for reasoning, coding, architecture, instruction following, tool use, planning, speed and context size, and the models policy keeps out of runs. Find out which model each pane runs (ask the developer if herdr or the pane doesn't show it) and write it in the plan as `name (kind: model)`. Use the models the installed agents already reach; nobody has to set up anything new. A pane on a model the policy denies cannot be used: ask the developer to restart it on another model (`orch agents launch <kind> --model <id>` prints the command). A model that is not in the catalog is allowed but has no tier; say so, and suggest adding it to `~/.config/herdr-orchestra/models.toml`.
 - **The team should cover the work.** If the plan will have high-tier milestones and no coder runs a high-tier model, say so and propose the pane to start (kind, model, launch command). Don't ask for more panes than the milestones need. You, the lead, should run a high-tier model; the reviewer should be at least as strong as the work it reviews.
 
-## 4. Milestones: as few as possible, never more than 4
-Count the coders you found in step 3 (N). Split for the team you actually have:
-- **N = 1**: never split for parallelism; there is nobody to run in parallel with. 1–2 milestones in order, `Isolation: shared`.
-- **N ≥ 2 and the feature spans backend and frontend** (two apps in a monorepo, or server + client folders): split it **by side** so each coder gets a comparable share, even when the feature is small. Backend and frontend run in parallel; neither waits for the other. Make that possible with the contract: write the exact API shape and shared types identically under **Interfaces** in both milestones. If both sides need the same shared type file (e.g. `packages/shared`), make a tiny contract milestone first that only adds the types (plus any new packages), and have both sides depend on it. Do not put the contract inside the backend milestone; that makes the frontend wait.
-  Default shape: `M1 contract (shared types) → M2 backend ∥ M3 frontend` (add `→ M4 integration` only if wiring or e2e is real work). If the shared types live in only one side, drop M1: `M1 backend ∥ M2 frontend`.
-- **N ≥ 3**: use a third parallel milestone only when there is a real independent slice (another app such as mobile or admin, a separate service, a big independent UI part). Never invent work to keep a coder busy; an idle coder is fine.
-- **Even split**: parallel milestones should be roughly the same size. If one side is much bigger, move a cohesive part of it into its own parallel milestone (when N allows) rather than leaving one coder with most of the work.
+## 4. Milestones: as many as the feature needs, and no more
+There is no target number. The feature decides, not the size of the team. Work in this order:
 
-Size, after the team rule above:
-- small feature (one area, a few files) → **1–2** milestones · medium (backend + UI, several modules) → **3–4**
-- bigger than 4 milestones' worth → tell the developer it should be split into separate runs (each its own plan and branch), propose the split, and plan only the first run.
-- Each milestone is a cohesive slice one coder can finish in one sitting. Keep tightly coupled work together (schema + queries + endpoint = one milestone).
-- Only split where it buys parallelism (independent work for another coder) or a checkpoint others build on (a contract or scaffold).
+**a. Understand the feature first.** From your research, list the real pieces of work: what has to change, where, and which piece needs which. Write it in the plan as `## Feature breakdown` (step 9): one line per piece, and one line on how they connect. If you cannot write it, you have not researched enough; go back to step 2.
+
+**b. Start from ONE milestone.** The whole feature is one milestone until a piece earns its own. Split a piece off only for one of these reasons:
+- **Parallel**: another coder you really have (step 3) can build it at the same time, without waiting for the rest, and it is real work for them, not a few lines.
+- **Foundation**: other pieces must build on it first, and they would otherwise wait or collide (a contract both sides code against, a scaffold for hotspot files).
+- **Too big**: the whole thing is more than one coder can finish in one sitting, and there is a clean seam to cut along.
+
+Nothing else is a reason. Not "there are free coders", not "backend and frontend are different folders", not "to be tidy". A small change that touches both the API and the UI (one field, one endpoint and its button) is ONE milestone, even with five coders: the split, the contract and the merge would cost more than the work. An idle coder is fine.
+
+**c. Every split says why.** In a plan with two or more milestones, each milestone has a `Why separate:` line: the reason from (b) in plain words a developer can check, e.g. `Why separate: the preview UI can be built in parallel once the API shape is fixed`. If you cannot write a real reason, merge the piece back. `orch sync` warns when the line is missing.
+
+**d. Then fit the split to the team** (N = the coders from step 3):
+- **N = 1**: nobody to run in parallel with, so "Parallel" is never a reason. One milestone, or a few in order when the work is too big for one sitting. `Isolation: shared`.
+- **N ≥ 2 and each side is real work** (a backend part and a frontend part that would each keep a coder busy): split **by side** so both run at once. Make that possible with the contract: write the exact API shape and shared types identically under **Interfaces** in both milestones. If both sides need the same shared type file (e.g. `packages/shared`), make a tiny contract milestone first that only adds the types (plus any new packages), and have both sides depend on it. Do not put the contract inside the backend milestone; that makes the frontend wait.
+- **A further parallel milestone** only when there is a real independent slice (another app such as mobile or admin, a separate service, a big independent UI part). Never invent work to keep a coder busy.
+- **Even split**: parallel milestones should be roughly the same size. If one is tiny next to the other, it did not earn a split: merge it back.
+- Keep tightly coupled work together (schema + queries + endpoint = one milestone). Contract, scaffold and integration milestones exist only when the feature needs them (step 5), never by default.
+
+**e. A very large feature**: when the breakdown shows several loosely connected parts, each a feature of its own, tell the developer it is better as separate runs (each its own plan and branch), propose the split, and plan the first run. That is a judgement about the feature, not a count.
 
 ## 5. Decide dependencies with a test, not a feeling
 For every pair of milestones A and B, ask: **"Could B be built and its checks pass if A never existed?"**
@@ -58,15 +67,16 @@ For every pair of milestones A and B, ask: **"Could B be built and its checks pa
 
 Then apply these rules:
 - **Contract first.** If parallel milestones must agree on an interface, define it in an earlier milestone they both depend on, or spell it out identically under **Interfaces** in both.
-- **Scaffold first for hotspot files.** If two or more milestones would edit the same hotspot files (routes, nav, `package.json`/lockfile, global store, shared types), create a small first milestone that makes all those shared edits (route + empty page + nav link + new packages + shared types). Later milestones only add their own files. Only the scaffold adds packages.
-- **Integration last.** Wiring parallel parts together (and end-to-end tests) is its own final milestone that depends on them.
+- **Scaffold first for hotspot files.** If two or more parallel milestones would edit the same hotspot files (routes, nav, `package.json`/lockfile, global store, shared types), create a small first milestone that makes all those shared edits (route + empty page + nav link + new packages + shared types). Later milestones only add their own files. Only the scaffold adds packages.
+- **Integration last, when it is real work.** Wiring parallel parts together (and end-to-end tests) is its own final milestone only when there is real wiring to do; otherwise it belongs to the parts.
 
-Typical shapes:
+Shapes that features often take (examples, not templates; use the one the feature needs):
 ```
-Backend + UI, 2+ coders:  M1 contract (API + types) → M2 backend ∥ M3 UI → M4 integration (optional)
-Backend + UI, 1 coder:    M1 backend → M2 UI   (shared mode)
-Frontend only:   M1 scaffold (route, nav, packages, types) → M2 component A ∥ M3 component B → M4 wire-up
-Small:           M1 the whole thing   (or M1 core → M2 polish)
+One field, one endpoint, one fix:    M1 the whole thing
+Backend + UI, each real work, 2+ coders:  M1 backend ∥ M2 UI   (contract under Interfaces in both)
+  ...and both need one shared types file: M1 contract (types) → M2 backend ∥ M3 UI
+Backend + UI, 1 coder:               M1 the whole thing   (or M1 backend → M2 UI when too big for one sitting)
+Big frontend, shared hotspot files:  M1 scaffold (route, nav, packages, types) → M2 part A ∥ M3 part B → M4 wire-up
 ```
 
 ## 6. Give every milestone a tier, from what it actually demands
@@ -110,8 +120,13 @@ Reviewer: reviewer (claude: opus) | none
 ## Global instructions
 <constraints for every milestone, e.g. the developer's "Must not" rules — or "none">
 
+## Feature breakdown
+- <one line per real piece of work: what changes and where>
+- <how the pieces connect, and why this number of milestones>
+
 ## [x] M1: <title>
 Depends on: none
+Why separate: <why this is its own milestone; leave the line out when the plan has one milestone>
 Prefer: any | <worker kind> | <worker name>
 Tier: small | medium | high
 Needs: <any of: reasoning, coding, architecture, long-context, tool-use, planning, speed>
@@ -143,6 +158,7 @@ Optional header lines: `Scope: strict` sends a milestone back when its coder cha
 Rules for every milestone:
 - **Acceptance criteria are observable**: "POST /upload returns 400 when the amount column is missing", not "handles errors well". One per line: orch numbers them AC1, AC2… in the milestone's `task.json`, the coder says for each whether it is met, and the reviewer checks each one. A milestone without any gets a warning.
 - **Likely files is the scope**: list every file or folder (`src/feature/`, globs work) the milestone should change, including dependency files (`package.json`, lockfiles) when it adds packages. orch compares the coder's real diff with it, runs milestones that share a listed file one after the other, and holds an unlisted dependency change for approval. `Parallel: allow` lets a milestone run next to one it shares files with (expect a merge conflict).
+- **Why separate**: from step 4, on every milestone when the plan has more than one. The reason is about the feature (parallel work, a foundation others build on, too big for one sitting), never about filling coders.
 - **No how**: no code blocks, no function names to create, no numbered implementation steps. `orch sync` warns if it sees them.
 - **Tier, Needs, Model why**: from step 6, on every milestone. The model in `Workers:` is what the pane really runs, never a wish. `orch sync` refuses a denied model and warns when no coder reaches a milestone's tier or the reviewer is weaker than the work.
 - **Prefer**: a worker kind or name from `Workers:` when a tool (not a model) suits the work better, otherwise `any`. A preference, not a lock; the tier comes first.
@@ -151,9 +167,9 @@ Rules for every milestone:
 - Each section must stand alone: autopilot hands it to the coder verbatim, together with the global instructions and the reports of merged dependencies.
 
 ## 10. Validate and show the plan
-- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, more than 4 milestones, independent milestones in shared mode, coders left idle by a fully sequential plan, a tier no coder reaches, a model outside the catalog.
+- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, a milestone without `Why separate`, independent milestones in shared mode, coders left idle by a fully sequential plan, a tier no coder reaches, a model outside the catalog.
 - Run `orch status`. Show the developer:
-  - the milestones and the parallel shape (which run together);
+  - the feature breakdown, the milestones with each one's `Why separate`, and the parallel shape (which run together);
   - **the team and model table**: each milestone, its tier, which coder and model it will go to, and the `Model why`;
   - the research facts that shaped the plan, and all open questions.
 - Then say: "Plan written to .orchestrate/plan.md. Edit it if you like: untick `[x]` to skip a milestone, change `Tier` / `Depends on` / `Prefer`, answer open questions under 'Notes from user' and set 'Open questions: - none'. Say **go** (or `/orch-run`, "use the orch-run skill", "Run `orch lead run` and follow it") and I will start the run: I dispatch the milestones, the event manager runs them, and I come back when one finishes, asks a question or needs a decision."

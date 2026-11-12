@@ -23,8 +23,14 @@ Reviewer: reviewer (agy)
 ## Global instructions
 Must not add packages. Reuse the 10 MB upload limit.
 
+## Feature breakdown
+- Shared ImportRow type in packages/shared, used by the API and the web app
+- Import endpoint in the API; preview screen in the web app
+- Both sides only meet at ImportRow, so they can be built in parallel once it exists
+
 ## [x] M1: Shared import types
 Depends on: none
+Why separate: both sides code against this type; without it first they would collide in packages/shared.
 Prefer: any
 Tier: high
 Needs: architecture, reasoning
@@ -75,6 +81,7 @@ Notes from user:
 |---|---|
 | `## [x] Mn: title` | Untick `[ ]` to skip the milestone |
 | `Depends on:` | `none`, or `M1 (what it needs from M1)`. The reason is required |
+| `Why separate:` | Why this is its own milestone: parallel work, a foundation others build on, or too big for one sitting. Needed when the plan has more than one milestone; `orch sync` warns without it |
 | `Prefer:` | `any`, a worker kind (`codex`) or a worker name. A preference, not a lock; the tier comes first |
 | `Tier:` | `small`, `medium` or `high`: the level of model the milestone needs. Leave it out and any coder may take it |
 | `Needs:` | What the work leans on: any of `reasoning`, `coding`, `architecture`, `long-context`, `tool-use`, `planning`, `speed` |

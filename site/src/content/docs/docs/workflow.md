@@ -19,7 +19,7 @@ The lead decides the **what** and **why**. It decides two more things: the inter
 
 ### 3. You approve the plan
 
-`.orchestrate/plan.md` is a normal Markdown file. Change what you like, then tell the lead to go. `orch sync` checks the plan after each edit: dependency cycles, missing reasons, hotspot files in parallel milestones, "how" written into a milestone, more than 4 milestones, a tier no coder can serve, a model the policy does not allow.
+`.orchestrate/plan.md` is a normal Markdown file. Change what you like, then tell the lead to go. `orch sync` checks the plan after each edit: dependency cycles, missing reasons, hotspot files in parallel milestones, "how" written into a milestone, a milestone that does not say why it is separate, a tier no coder can serve, a model the policy does not allow.
 
 ### 4. The orchestration run
 
