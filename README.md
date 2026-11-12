@@ -250,9 +250,9 @@ Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH
 bash tests/run.sh          # end-to-end tests with fake agents (no AI, no network)
 bash tests/live/run.sh claude codex   # opt-in: one tiny real run per agent kind (needs herdr and the agents; uses their credits)
 bash install.sh            # install your checkout (vX.Y.Z at a tag, vX.Y.Z-dev otherwise)
-bash scripts/release.sh 4.2.0   # bump VERSION, check the CHANGELOG, commit, tag
-git push && git push origin v4.2.0   # CI tests the tag and publishes the GitHub Release
 ```
+
+Releases are made by themselves. A PR that bumps `VERSION` and adds its `## [X.Y.Z]` section to `CHANGELOG.md` is released when it is merged: the Release workflow runs the tests, tags `vX.Y.Z` on main and publishes the GitHub Release with its own `install.sh`. Nobody pushes a tag. (`bash scripts/release.sh X.Y.Z` still bumps VERSION and checks the CHANGELOG for you; a tag pushed by hand still works, and must match VERSION.)
 
 Semantic versioning: **major** for breaking changes to the plan format or commands, **minor** for new features, **patch** for fixes.
 
