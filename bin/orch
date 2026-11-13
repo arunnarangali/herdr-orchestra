@@ -637,6 +637,20 @@ def parse_plan(text):
     return cfg, tasks
 
 
+DUR_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(hours?|hrs|hr|h|minutes?|mins|min|m)", re.I)
+
+
+def parse_dur(s):
+    """`45m`, `1h30m`, `1.5h`, `90 min`, `2 hours` -> seconds; None when empty or not a duration."""
+    s = (s or "").strip().lower()
+    if not s or s in ("none", "-", "n/a", "unknown"):
+        return None
+    parts = DUR_RE.findall(s)
+    if not parts or DUR_RE.sub("", s).strip(" ,+and") != "":
+        return None
+    return int(sum(float(n) * (3600 if u.startswith("h") else 60) for n, u in parts))
+
+
 def field(t, key, default=""):
     vals = t["fields"].get(key)
     return " ".join(vals).strip() if vals else default
@@ -889,6 +903,23 @@ def cmd_sync(args):
         warns.append(f"the lead runs {models[lead[0]]!r} ({tier_of(lead[0])} tier) — planning and coordination are "
                      f"high-tier work")
 
+    # time estimates: the lead's guess per milestone and for the feature, held against the time orch measures
+    estimates = {}
+    for t in tasks:
+        raw = field(t, "estimate")
+        estimates[t["id"]] = parse_dur(raw)
+        if raw and estimates[t["id"]] is None and raw.lower() not in ("none", "-", "n/a", "unknown"):
+            errors.append(f"{t['id']}: Estimate must look like `40m`, `1h30m` or `2h`, got {raw!r}")
+        elif not raw and t["enabled"]:
+            warns.append(f"{t['id']} has no `Estimate:` — say how long it should take from dispatch to landed "
+                         f"(e.g. `Estimate: 40m`), so the summary can compare it with the real time")
+    feature_est = parse_dur(get("estimate"))
+    if get("estimate") and feature_est is None:
+        errors.append(f"Estimate must look like `2h` or `1h30m`, got {get('estimate')!r}")
+    elif not get("estimate"):
+        warns.append("plan header has no `Estimate:` — how long the whole feature should take, with parallel "
+                     "milestones counted once (e.g. `Estimate: 2h`)")
+
     # the feature decides how many milestones there are: every split has to say what it buys
     if len(enabled) > 1:
         for tid in enabled:
@@ -933,6 +964,7 @@ def cmd_sync(args):
         "scope": scope,
         "risk_hold": risk_hold,
         "budget_s": budget_s,
+        "estimate_s": feature_est,
         "check": get("check command"),
         "setup": get("setup command", "none"),
         "reviewer": reviewer,
@@ -990,6 +1022,7 @@ def cmd_sync(args):
             "files": sorted(files[tid]),
             "parallel": field(t, "parallel", "").lower().startswith("allow"),
             "tier": tiers[tid], "needs": needs[tid], "model_why": field(t, "model why"),
+            "estimate_s": estimates[tid],
         }
         if status != st["tasks"][tid]["status"]:
             move(st, tid, status, {"skipped": "unticked in plan.md", "needs-answer": "open questions in plan.md"}
@@ -1536,6 +1569,9 @@ def record_attempt(t, outcome, usage=None):
          "secs": max(0, now() - start), "nudges": w.get("nudges", 0), "outcome": outcome}
     if w.get("model"):
         a["model"], a["tier"] = w["model"], w.get("tier")
+    blocked = w.get("blocked_s", 0) + (now() - w["blocked_since"] if w.get("blocked_since") else 0)
+    if blocked:
+        a["blocked_s"] = min(blocked, a["secs"])      # time herdr showed the agent stopped at a prompt in its pane
     if usage:
         a["usage"] = usage
     t.setdefault("attempts", []).append(a)
@@ -1912,6 +1948,11 @@ def cmd_poll(args):
                         events.append(f"TIMEOUT {tid} agent={agent} after {age // 60} min")
                     continue
                 s = herdr_state(agent)
+                if s is not None and word(s, "blocked") and not w.get("blocked_since"):
+                    w["blocked_since"], changed = now(), True       # stopped at a permission prompt / question
+                elif w.get("blocked_since") and not (s is not None and word(s, "blocked")):
+                    w["blocked_s"] = w.get("blocked_s", 0) + now() - w.pop("blocked_since")
+                    changed = True
                 if s is None:
                     events.append(f"GONE {tid} agent={agent}")
                 elif word(s, "blocked"):
@@ -2595,7 +2636,8 @@ def cmd_fix(args):
         title = f"Fix for {tid}: {text[:60]}" + ("..." if len(text) > 60 else "")
         review = field(src, "review", "no")
         sec = [f"## [x] {new}: {title}", f"Depends on: {tid} (a fix to what {tid} built)",
-               f"Why separate: a change the developer asked for after {tid} landed.", f"Review: {review}"]
+               f"Why separate: a change the developer asked for after {tid} landed.", f"Review: {review}",
+               "Estimate: none"]
         if field(src, "likely files"):
             sec.append(f"Likely files: {field(src, 'likely files')}")
         if t.get("tier"):
@@ -3221,7 +3263,8 @@ def cmd_autopilot(args):
                     sugg += [f"- {k}: {s}" for s in review_findings(k, rnd)[1]]
                 if v.get("out_of_scope"):
                     scope.append(f"- {k}: {', '.join(v['out_of_scope'])}")
-            _, report = run("report", ok=(0, 1, 2))
+            _, report = run("report", "--no-time", ok=(0, 1, 2))
+            timing = "\n".join(time_lines(time_account(load())))
             models = []
             for k, v in tasks.items():
                 used = [a for a in v.get("attempts") or [] if a.get("kind") == "coder" and a.get("model")]
@@ -3243,6 +3286,7 @@ def cmd_autopilot(args):
                 "## Reviewer suggestions not applied\n" + ("\n".join(sugg) or "none") + "\n\n"
                 + ("## Models: planned and actual\n| Milestone | Planned tier | Ran on | Escalated | Why this tier |\n"
                    "|---|---|---|---|---|\n" + "\n".join(models) + "\n\n" if models else "") +
+                f"## Time: estimate vs actual\n{timing}\n\n"
                 f"## Run report\n```\n{report}\n```\n\n"
                 + ("## Still to write (the lead was woken to write these)\n" if lead_ else
                    "## Still to write (ask the lead: 'use the orch-run skill' to finish the summary)\n") +
@@ -3370,12 +3414,241 @@ def run_report(st):
     return {"branch": st["branch"], "tasks": rows, "totals": tot, "models": list(by_model.values())}
 
 
+# ---------------------------------------------------------------- estimate vs actual time
+CODER_JOBS = [   # prompt file -> what the coder was doing (anything but task.md is extra work)
+    ("review-fix", "fixing the reviewer's blockers"),
+    ("integration-fix", "fixing the check that failed once merged onto the branch"),
+    ("criteria-fix", "fix rounds: acceptance criteria not met"),
+    ("scope-fix", "fix rounds: changed files outside Likely files"),
+    ("result-fix", "rewriting a result file orch could not read"),
+    ("conflict", "resolving merge conflicts"),
+    ("fix", "fix rounds: the check command failed"),
+]
+
+
+def _transitions(st):
+    """Every status change of every milestone in this run, oldest first: events.jsonl, or the history in
+    state.json when the log is missing."""
+    since = (st.get("run") or {}).get("started") or 0
+    by = {tid: [] for tid in st["tasks"]}
+    p = ORCH / "events.jsonl"
+    if p.exists():
+        for line in p.read_text().splitlines():
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("task") in by and ev.get("ts", 0) >= since:
+                by[ev["task"]].append(ev)
+    for tid, t in st["tasks"].items():
+        if not by[tid]:
+            by[tid] = [dict(h, task=tid) for h in t.get("history") or []]
+        by[tid].sort(key=lambda e: e.get("ts", 0))
+    return by
+
+
+def _wait_part(st, status, why, agent):
+    """A milestone sat in `status` after it had started: what it was waiting for and on whom. None = busy."""
+    why = why or ""
+    if status == "awaiting-review":
+        return "waiting for the reviewer (busy with other work or unreachable)", st.get("reviewer") or "reviewer"
+    if status == "needs-fix":
+        return "waiting for a free coder to take its fix job", "the coders (all busy)"
+    if status == "paused":
+        return f"paused, waiting for the lead or the developer ({why[:80]})" if why else \
+            "paused, waiting for the lead or the developer", "developer / lead"
+    if status == "needs-answer":
+        return "open questions waiting for the developer's answer", "developer"
+    if status == "held":
+        return "risky change waiting for the developer's `orch approve`", "developer"
+    if status == "failed":
+        return "failed, waiting for the lead to dispatch it again", "lead / developer"
+    if status == "pending":
+        if RATE_RE.search(why):
+            return "agent hit a usage limit: benched, work waited for another coder", agent or "agent"
+        if "disappeared" in why or "gone" in why:
+            return "agent disappeared from herdr: work waited for another coder", agent or "agent"
+        if why.startswith("escalated"):
+            return "waiting for a stronger coder after escalation", "the coders (all busy)"
+        if why.startswith("answered"):
+            return "waiting for the coder to pick up the answer", agent or "coder"
+        return "waiting for a free coder" + (f" ({why[:60]})" if why else ""), "the coders (all busy)"
+    return None
+
+
+def _who(a):
+    return f"{a.get('agent') or '?'} ({a['model']})" if a.get("model") else (a.get("agent") or "?")
+
+
+def time_account(st, at=None):
+    """Estimated vs actual time per milestone and for the feature, from what orch recorded: status changes,
+    attempts (who, which model, which job), check times and time agents sat at a prompt. Nothing is guessed:
+    time orch can't place is shown as orch's own steps, and a missing estimate stays missing."""
+    at = at or now()
+    trans, rows = _transitions(st), []
+    for tid in st["order"]:
+        t = st["tasks"][tid]
+        if t["status"] == "skipped":
+            continue
+        evs = trans.get(tid, [])
+        first = next((i for i, e in enumerate(evs) if e.get("to") == "coding"), None)
+        row = {"task": tid, "title": t.get("title", ""), "estimate_s": t.get("estimate_s"), "actual_s": None,
+               "landed": t["status"] == "merged", "start": None, "end": None, "parts": [], "over_s": None}
+        rows.append(row)
+        if first is None:
+            continue
+        start = evs[first]["ts"]
+        end = next((e["ts"] for e in evs[first:] if e.get("to") == "merged"), None)
+        if end is None:
+            end = at
+        parts = {}
+
+        def add(what, who, secs, extra):
+            if secs <= 0:
+                return
+            p = parts.setdefault((what, who), {"what": what, "who": who, "secs": 0, "extra": extra})
+            p["secs"] += secs
+        # waiting: from the status changes
+        for i in range(first, len(evs)):
+            a_, b_ = max(evs[i]["ts"], start), min(evs[i + 1]["ts"] if i + 1 < len(evs) else end, end)
+            w = _wait_part(st, evs[i].get("to"), evs[i].get("why"), evs[i].get("agent"))
+            if w and b_ > a_:
+                add(w[0], w[1], b_ - a_, True)
+        # working: from the attempts
+        esc = next((e["ts"] for e in evs[first:] if (e.get("why") or "").startswith("escalated")), None)
+        built = reviewed = False
+        for a in t.get("attempts") or []:
+            if a.get("start", 0) < start or a.get("start", 0) >= end:
+                continue
+            secs, blocked = a.get("secs", 0), a.get("blocked_s", 0)
+            if blocked:
+                add("stopped at a permission prompt or question in its pane", a.get("agent") or "?", blocked, True)
+            secs -= blocked
+            if a.get("outcome") != "done":
+                why = re.sub(r"^parked as \w[\w-]*:?\s*", "", a.get("outcome") or "")
+                add(f"work cut short ({why[:60] or 'stopped'}); the next attempt carried on from it", _who(a), secs, True)
+            elif a.get("kind") == "reviewer":
+                add("review" if not reviewed else "review again after fixes", _who(a), secs, reviewed)
+                reviewed = True
+            else:
+                f = a.get("file") or "task.md"
+                job = next((d for k, d in CODER_JOBS if f.startswith(k + "-")), None)
+                if job:
+                    add(job, _who(a), secs, True)
+                elif esc and a["start"] >= esc:
+                    add("building again on a stronger model (escalated)", _who(a), secs, True)
+                else:
+                    add("building it", _who(a), secs, False)
+                    built = True
+        seen = set()
+        for c in t.get("checks") or []:
+            if start <= c.get("ts", 0) <= end:
+                again = c.get("where") in seen
+                seen.add(c.get("where"))
+                add("checks run again after fixes" if again else "checks", "check command", c.get("secs", 0), again)
+        total = end - start
+        placed = sum(p["secs"] for p in parts.values())
+        add("orch's own steps (setup, prompts, merge)", "orch", max(0, total - placed), False)
+        row.update(start=start, end=end, actual_s=total,
+                   parts=sorted(parts.values(), key=lambda p: (p["extra"], -p["secs"])))
+        if row["estimate_s"]:
+            row["over_s"] = total - row["estimate_s"]
+    # the feature: from the first milestone starting to the last one landing; time after every milestone had
+    # landed and before a fix asked with `orch fix` is not counted, time with nothing running is
+    started = sorted((r for r in rows if r["start"]), key=lambda r: r["start"])
+    feat = {"estimate_s": st.get("estimate_s"), "actual_s": None, "over_s": None, "idle_s": 0, "after_done_s": 0,
+            "landed": bool(rows) and all(r["landed"] for r in rows), "why": []}
+    if started:
+        fstart = started[0]["start"]
+        fend = max(r["end"] for r in started)
+        reach, idle, after = started[0]["end"], 0, 0
+        for r in started[1:]:
+            if r["start"] > reach:
+                gap = r["start"] - reach
+                if st["tasks"][r["task"]].get("fix_of") and all(x["landed"] and x["end"] <= reach
+                                                                for x in started if x["start"] < r["start"]):
+                    after += gap
+                else:
+                    idle += gap
+            reach = max(reach, r["end"])
+        feat.update(actual_s=fend - fstart - after, idle_s=idle, after_done_s=after)
+        if feat["estimate_s"]:
+            feat["over_s"] = feat["actual_s"] - feat["estimate_s"]
+        agg = {}
+        for r in started:
+            for p in r["parts"]:
+                if p["extra"]:
+                    k = (p["what"], p["who"])
+                    g = agg.setdefault(k, {"what": p["what"], "who": p["who"], "secs": 0, "tasks": []})
+                    g["secs"] += p["secs"]
+                    g["tasks"].append(r["task"])
+        if idle:
+            agg[("idle", "")] = {"what": "no milestone was running (waiting for the lead's `orch dispatch`, or the "
+                                         "event manager was stopped)", "who": "lead / event manager", "secs": idle,
+                                 "tasks": []}
+        feat["why"] = sorted(agg.values(), key=lambda g: -g["secs"])
+    return {"feature": feat, "tasks": rows}
+
+
+def _dur(s):
+    """Short and readable: 45s, 40m, 1h05m."""
+    if s is None:
+        return "-"
+    s = abs(int(s))
+    if s < 60:
+        return f"{s}s"
+    h, m = divmod(round(s / 60), 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m"
+
+
+def time_lines(acct):
+    """Estimate vs actual as markdown: a table, then, for whatever took longer than planned, why and who."""
+    f, out = acct["feature"], []
+    est, act = f["estimate_s"], f["actual_s"]
+    head = (f"Whole feature: estimated {_dur(est) if est else 'not given'}, actual "
+            f"{_dur(act) if act is not None else 'not started'}" + ("" if f["landed"] else " so far (not all landed)"))
+    if est and act is not None:
+        head += (f", {_dur(f['over_s'])} longer than estimated" if f["over_s"] > 0 else
+                 f", {_dur(f['over_s'])} quicker than estimated" if f["over_s"] < 0 else ", on time")
+    out += [head, "", "| Milestone | Estimate | Actual | Difference | Built by |", "|---|---|---|---|---|"]
+    for r in acct["tasks"]:
+        diff = "-" if r["over_s"] is None else ("on time" if r["over_s"] == 0 else
+                                                f"{'+' if r['over_s'] > 0 else '-'}{_dur(r['over_s'])}")
+        who = ", ".join(dict.fromkeys(p["who"] for p in r["parts"] if p["what"] == "building it")) or "-"
+        act_ = "not started" if r["actual_s"] is None else _dur(r["actual_s"]) + ("" if r["landed"] else " so far")
+        out.append(f"| {r['task']} | {_dur(r['estimate_s']) if r['estimate_s'] else 'none'} | {act_} | {diff} | {who} |")
+    late = [r for r in acct["tasks"] if r["over_s"] and r["over_s"] > 0]
+    if est and f["over_s"] and f["over_s"] > 0 and f["why"]:
+        out += ["", f"Why the feature took {_dur(f['over_s'])} longer (time added up per milestone; milestones that "
+                    "ran side by side overlap, so this can add up to more):"]
+        out += [f"- {_dur(g['secs'])} {g['who']}: {g['what']}"
+                + (f" ({', '.join(dict.fromkeys(g['tasks']))})" if g["tasks"] else "") for g in f["why"]]
+    for r in late:
+        out += ["", f"Why {r['task']} took {_dur(r['over_s'])} longer than its {_dur(r['estimate_s'])} estimate:"]
+        extra = [p for p in r["parts"] if p["extra"]]
+        planned = sum(p["secs"] for p in r["parts"] if not p["extra"])
+        out += [f"- {_dur(p['secs'])} {p['who']}: {p['what']}" for p in extra]
+        if planned > r["estimate_s"]:
+            out.append(f"- the planned work alone took {_dur(planned)}: " + ", ".join(
+                f"{p['what']} {_dur(p['secs'])} ({p['who']})" for p in r["parts"] if not p["extra"])
+                + " (the estimate itself was too low for this work)")
+    if not est and not any(r["estimate_s"] for r in acct["tasks"]):
+        out += ["", "No estimates in plan.md (`Estimate:` in the header and in each milestone), so only the actual "
+                    "time is shown."]
+    return out
+
+
 def cmd_report(args):
-    """orch report [--json] -> time, rounds, first-pass rate and wasted work for this run."""
-    rep_ = run_report(load())
+    """orch report [--json] [--no-time] -> estimated vs actual time (and why it took longer), rounds, first-pass
+    rate and wasted work for this run."""
+    st = load()
+    rep_ = run_report(st)
     if "--json" in args:
+        rep_["time"] = time_account(st)
         print(json.dumps(rep_, indent=2))
         return
+    if "--no-time" not in args:
+        print("Estimate vs actual\n" + "\n".join(time_lines(time_account(st))) + "\n")
     tot = rep_["totals"]
     print(f"{'task':<5} {'status':<15} {'tries':>5} {'fix':>4} {'review':>6} {'confl':>5} {'lost':>4} "
           f"{'agent time':>10} {'wasted':>8} {'checks':>8}  first pass")
@@ -3648,7 +3921,7 @@ USAGE = """usage: orch <command> [args]
   sync                     parse .orchestrate/plan.md -> state.json (validates deps, cycles, overlaps)
   start                    create/switch to the feature branch (plan `Branch:`); create worker worktrees (worktree mode)
   status                   table of workers + tasks; prints ALL_DONE or STUCK when relevant
-  report [--json]          time, rounds, first-pass rate, wasted work (and tokens/cost when agents report them)
+  report [--json]          estimate vs actual time (why longer, who), rounds, first-pass rate, wasted work, tokens/cost
   ready                    free coder slots, FIX jobs (do these first), then READY milestones
   pick <Mn>                first available worker for the task (respects Tier, then Prefer), or NONE (exit 3)
   escalate <Mn> [reason]   out of rounds: one more go on a stronger model, if the team has one (exit 3 if not)

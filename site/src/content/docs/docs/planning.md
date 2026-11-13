@@ -60,9 +60,32 @@ The lead judges the milestone, not the model's name:
 
 It writes `Tier`, `Needs` (what the work leans on) and `Model why` (one line you can check) into each milestone, and shows you a table of milestone, tier, coder and model before you say go. It also checks the team: if a milestone needs a high-tier model and no coder runs one, it proposes the pane to start. See [Models and tiers](/docs/models/).
 
+## Estimate vs actual time
+
+The lead also says how long each milestone should take, and the whole feature. A milestone's `Estimate:` is the time from dispatch until it has landed if nothing goes wrong: the coder building it on the model the lead picked, the checks, and one review. The header's `Estimate:` is for the whole feature: milestones that run side by side count once, milestones that wait for another add up. For example M1 30m, then M2 40m and M3 30m side by side, makes `Estimate: 1h10m`.
+
+orch records the real time of every step while the run goes, and the summary (and `orch report`) puts the two side by side:
+
+```
+Whole feature: estimated 1h30m, actual 1h40m, 10m longer than estimated
+
+| Milestone | Estimate | Actual | Difference | Built by |
+| M1        | 40m      | 1h40m  | +1h00m     | claude-1 (sonnet), codex-1 (gpt-6-sol) |
+| M2        | 30m      | 25m    | -5m        | codex-1 (gpt-6-sol) |
+
+Why M1 took 1h00m longer than its 40m estimate:
+- 24m claude-1 (sonnet): work cut short (claude-1 hit a usage/rate limit); the next attempt carried on from it
+- 20m developer / lead: paused, waiting for the lead or the developer (which currency?)
+- 10m claude-1: agent hit a usage limit: benched, work waited for another coder
+- 10m claude-1 (sonnet): fix rounds: the check command failed
+- 5m claude-1: stopped at a permission prompt or question in its pane
+```
+
+Every reason comes from something orch measured: a coder's fix rounds (failed checks, unmet acceptance criteria, reviewer blockers, merge conflicts), a second review, waiting for the reviewer or a free coder, a question or a held change waiting for you, a permission prompt in an agent's pane, a usage limit, an agent that disappeared, an escalation to a stronger model, and time when no milestone was running. Nothing is guessed: time orch can't place shows as orch's own steps (setup, prompts, merge). When the planned work alone took longer than the estimate, it says so: the estimate was too low for that work.
+
 ## What `orch sync` checks
 
-It warns about a milestone without `Why separate` (in a plan with more than one), dependencies without a reason, hotspot files in parallel milestones, "how" written into a milestone, independent milestones left in shared mode, plans that would leave coders idle, a tier no coder reaches, a reviewer weaker than the work, and a model that is not in the catalog. It rejects a lead that is also a worker or the reviewer, and any model the policy does not allow.
+It warns about a milestone without `Why separate` (in a plan with more than one) or without `Estimate`, dependencies without a reason, hotspot files in parallel milestones, "how" written into a milestone, independent milestones left in shared mode, plans that would leave coders idle, a tier no coder reaches, a reviewer weaker than the work, and a model that is not in the catalog. It rejects a lead that is also a worker or the reviewer, and any model the policy does not allow.
 
 ## Open questions
 

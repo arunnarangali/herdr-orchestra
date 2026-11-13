@@ -36,7 +36,7 @@ The loop is run by a plain script, `orch autopilot`; the decisions in it are the
 
 ### 5. Finish
 
-When every milestone has landed, the summary in `.orchestrate/summary.md` lists the commits, files, which agent and model did what against the tier that was planned, design notes and a manual test checklist. The lead is woken to write the last two. `orch finish` pushes the branch and opens the PR. See [Git, commits and the PR](/docs/git/).
+When every milestone has landed, the summary in `.orchestrate/summary.md` lists the commits, files, which agent and model did what against the tier that was planned, the lead's time estimates against the real time (and why anything took longer), design notes and a manual test checklist. The lead is woken to write the last two. `orch finish` pushes the branch and opens the PR. See [Git, commits and the PR](/docs/git/).
 
 ## Milestone states
 
