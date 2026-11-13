@@ -13,7 +13,7 @@ Run `orch` with no arguments for the full help.
 | `orch ready` | Free coder slots, fix jobs, then ready milestones |
 | `orch autopilot` | The event manager: runs the plan as a script and wakes the lead; exits 0 when done, 3 when it needs you |
 | `orch approve <Mn>` | Let a milestone held for risky changes land |
-| `orch report [--json]` | Time, rounds, first-pass rate and wasted work for the run, and how each model did |
+| `orch report [--json]` | Estimated vs actual time per milestone and for the feature (and, when it took longer, where the time went and who it waited on), rounds, first-pass rate and wasted work, and how each model did |
 | `orch finish [--no-push]` | Final check, clean up, push the feature branch, open a PR |
 | `orch set <Mn> <status> [reason]` | Manual override; accepts `pending`, `paused`, `failed` and `skipped` |
 | `orch park <Mn> paused\|failed\|pending [reason]` | Free the worker and keep its work in a hidden ref |

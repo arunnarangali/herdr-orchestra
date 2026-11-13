@@ -40,6 +40,7 @@ import Modes from '../components/Modes.astro';
 Branch: feature/csv-import
 Check command: npm test
 Isolation: worktree
+Estimate: 1h10m
 Lead: lead (claude: opus)
 Workers: claude-1 (claude: sonnet), claude-2 (claude: haiku)
 Reviewer: reviewer (agy)
@@ -50,6 +51,7 @@ Reviewer: reviewer (agy)
 <span class="t-dim">Needs:</span> coding, tool-use
 <span class="t-dim">Model why:</span> one module, a clear contract,
   an endpoint to copy; no design decisions
+<span class="t-dim">Estimate:</span> 40m
 <span class="t-dim">Review:</span> yes
 <span class="t-dim">Goal:</span> users upload a bank CSV and get rows back
 <span class="t-dim">Acceptance criteria:</span>
@@ -97,7 +99,7 @@ Reviewer: reviewer (agy)
     <div class="wrap">
       <p class="eyebrow">Step 5</p>
       <h2>One branch, one pull request.</h2>
-      <p class="lede" style="margin-bottom:36px">The run never adds bookkeeping branches or commits to your repo. You get a <code>feature/&lt;name&gt;</code> branch with a real commit per milestone and a summary in <code>.orchestrate/summary.md</code>, including the tier planned for each milestone next to the model that really did it. Run <code>orch finish</code> and it re-checks the branch, pushes it and opens the pull request.</p>
+      <p class="lede" style="margin-bottom:36px">The run never adds bookkeeping branches or commits to your repo. You get a <code>feature/&lt;name&gt;</code> branch with a real commit per milestone and a summary in <code>.orchestrate/summary.md</code>, including the tier planned for each milestone next to the model that really did it, and the estimated time next to the real time, with the reasons when something took longer. Run <code>orch finish</code> and it re-checks the branch, pushes it and opens the pull request.</p>
       <div class="diagram reveal"><BranchFlow /></div>
     </div>
   </section>

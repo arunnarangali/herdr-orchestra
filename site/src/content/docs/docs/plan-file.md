@@ -16,6 +16,7 @@ Check command: npm test
 Setup command: npm ci
 Isolation: worktree
 Max parallel: 2
+Estimate: 1h10m
 Lead: lead (claude: opus)
 Workers: claude-1 (claude: sonnet), claude-2 (claude: haiku)
 Reviewer: reviewer (agy)
@@ -35,6 +36,7 @@ Prefer: any
 Tier: high
 Needs: architecture, reasoning
 Model why: the contract both sides build on; a wrong shape costs two milestones.
+Estimate: 15m
 Review: no
 Likely files: packages/shared/src/imports.ts
 Goal: one ImportRow type both sides use
@@ -73,6 +75,7 @@ Notes from user:
 | `Parallel:` | Optional. `allow` lets milestones with overlapping Likely files run at once |
 | `Risk hold:` | Optional. `off` stops risky changes being held for `orch approve` |
 | `Budget:` | Optional. A time limit for the whole run, e.g. `4h`; the event manager stops when it is used up. Time spent waiting for your answer does not count |
+| `Estimate:` | How long the whole feature should take, e.g. `1h30m`. Milestones that run side by side count once. The summary compares it with the real time |
 | `Setup inputs:` | Optional. Extra files that make the setup command run again when they change, besides lockfiles |
 
 ## Milestone sections
@@ -86,6 +89,7 @@ Notes from user:
 | `Tier:` | `small`, `medium` or `high`: the level of model the milestone needs. Leave it out and any coder may take it |
 | `Needs:` | What the work leans on: any of `reasoning`, `coding`, `architecture`, `long-context`, `tool-use`, `planning`, `speed` |
 | `Model why:` | One line: what in this milestone makes it that tier |
+| `Estimate:` | How long from dispatch to landed if nothing goes wrong, e.g. `40m` or `1h30m`. `orch sync` refuses anything that is not a time and warns when it is missing. See [Estimate vs actual time](/docs/planning/#estimate-vs-actual-time) |
 | `Review:` | `yes` or `no` |
 | `Likely files:` | Where the work probably lands; used for the scope check and to run overlapping milestones one after the other |
 | `Goal`, `Why` | The outcome and the reason |

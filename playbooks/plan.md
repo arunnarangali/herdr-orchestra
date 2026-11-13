@@ -8,7 +8,7 @@ Load the `herdr` skill for exact CLI syntax if you have it (otherwise `herdr --s
 - Research findings go in as **facts**, not instructions:
   - ✅ "Uploads are handled in `server/routes/upload.ts`; categories live in the `categories` table."
   - ❌ "Add a `matchCategory()` function to upload.ts that loops over rows."
-- You also decide **which level of model each milestone needs** (small, medium or high) and say why (step 6).
+- You also decide **which level of model each milestone needs** (small, medium or high) and say why (step 6), and **how long each milestone and the whole feature should take** (step 6, Estimate).
 - You never edit application code, and you never prompt worker agents: you hand out work with `orch dispatch`, and the event manager (`orch autopilot`, a plain script) prompts the agents, watches them and wakes you when something needs a decision.
 
 Feature request = the user's message that asked you to run this playbook.
@@ -92,6 +92,8 @@ Then:
 - Don't put everything on `high`: a small model on small work is faster and cheaper, and that is the point. Don't put design work on `small` to save money either: a milestone that runs out of fix rounds is moved up to a stronger model once, and that costs more than starting right.
 - orch gives a milestone to a free coder of its tier, or a stronger one when none is free; never to a weaker one while a suitable coder exists.
 
+**Estimate the time.** Every milestone gets `Estimate:` (e.g. `Estimate: 40m`, `Estimate: 1h30m`): how long from dispatch until it has landed if nothing goes wrong, which is the coder building it on the model you picked, the checks, and one review when it has `Review: yes`. Don't add time for fix rounds, questions or waiting: those are exactly what the summary measures against your estimate. The header gets `Estimate:` for the whole feature: milestones that run side by side count once, milestones that wait for another add up (M1 30m, then M2 40m ∥ M3 30m, makes `Estimate: 1h10m`). orch records the real time of every step, and the summary shows estimate vs actual; when a milestone or the feature took longer, it lists where the extra time went and who it was waiting on (a coder's fix rounds, the reviewer, a question waiting for the developer, a permission prompt, a usage limit, a lost agent), using only what orch measured.
+
 ## 7. Choose the isolation mode (ask if the user hasn't said)
 - **worktree**: needed whenever 2+ milestones are independent. Each coder gets its own folder `../<repo>-wt/<worker>` (on a detached HEAD, no extra branch), so they can't overwrite each other. A coder whose milestone is under review is freed to take other work. Needs a **Setup command** for fresh folders (`npm ci`, `pnpm install`, `flutter pub get`, `go mod download`…). Keep the check command free of fixed ports (no dev server); run e2e after merging.
 - **shared**: one folder, so one milestone at a time (two agents in one folder would overwrite each other's files and mix their changes). Fine when every milestone depends on the previous one.
@@ -114,6 +116,7 @@ Isolation: worktree | shared
 Max parallel: <number of coders>
 Scope: warn | strict
 Budget: <e.g. 3h — optional>
+Estimate: <how long the whole feature should take, e.g. 1h30m>
 Lead: lead (<your kind>: <your model>)
 Workers: claude-1 (claude: sonnet), claude-2 (claude: haiku), codex-1 (codex: gpt-6-sol)
 Reviewer: reviewer (claude: opus) | none
@@ -132,6 +135,7 @@ Prefer: any | <worker kind> | <worker name>
 Tier: small | medium | high
 Needs: <any of: reasoning, coding, architecture, long-context, tool-use, planning, speed>
 Model why: <one line: what in this milestone makes it that tier>
+Estimate: <e.g. 40m: dispatch to landed if nothing goes wrong>
 Review: yes | no
 Likely files: src/a.ts, src/b.ts, src/feature/
 Parallel: <leave this line out | allow>
@@ -161,6 +165,7 @@ Rules for every milestone:
 - **Likely files is the scope**: list every file or folder (`src/feature/`, globs work) the milestone should change, including dependency files (`package.json`, lockfiles) when it adds packages. orch compares the coder's real diff with it, runs milestones that share a listed file one after the other, and holds an unlisted dependency change for approval. `Parallel: allow` lets a milestone run next to one it shares files with (expect a merge conflict).
 - **Why separate**: from step 4, on every milestone when the plan has more than one. The reason is about the feature (parallel work, a foundation others build on, too big for one sitting), never about filling coders.
 - **No how**: no code blocks, no function names to create, no numbered implementation steps. `orch sync` warns if it sees them.
+- **Estimate**: from step 6, on every milestone and in the header. `orch sync` refuses a value that is not a time (`40m`, `1h30m`, `2h`) and warns when one is missing.
 - **Tier, Needs, Model why**: from step 6, on every milestone. The model in `Workers:` is what the pane really runs, never a wish. `orch sync` refuses a denied model and warns when no coder reaches a milestone's tier or the reviewer is weaker than the work.
 - **Prefer**: a worker kind or name from `Workers:` when a tool (not a model) suits the work better, otherwise `any`. A preference, not a lock; the tier comes first.
 - **Review**: `yes` for UI, API contracts, auth, payments and schema; `no` for mechanical milestones.
@@ -168,10 +173,10 @@ Rules for every milestone:
 - Each section must stand alone: autopilot hands it to the coder verbatim, together with the global instructions and the reports of merged dependencies.
 
 ## 10. Validate and show the plan
-- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, a milestone without `Why separate`, independent milestones in shared mode, coders left idle by a fully sequential plan, a tier no coder reaches, a model outside the catalog.
+- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, a milestone without `Why separate` or `Estimate`, independent milestones in shared mode, coders left idle by a fully sequential plan, a tier no coder reaches, a model outside the catalog.
 - Run `orch status`. Show the developer:
   - the feature breakdown, the milestones with each one's `Why separate`, and the parallel shape (which run together);
-  - **the team and model table**: each milestone, its tier, which coder and model it will go to, and the `Model why`;
+  - **the team and model table**: each milestone, its tier, which coder and model it will go to, the `Model why`, and its estimate, plus the estimate for the whole feature;
   - the research facts that shaped the plan, and all open questions.
 - Then say: "Plan written to .orchestrate/plan.md. Edit it if you like: untick `[x]` to skip a milestone, change `Tier` / `Depends on` / `Prefer`, answer open questions under 'Notes from user' and set 'Open questions: - none'. Say **go** (or `/orch-run`, "use the orch-run skill", "Run `orch lead run` and follow it") and I will start the run: I dispatch the milestones, the event manager runs them, and I come back when one finishes, asks a question or needs a decision."
 - STOP and wait for the developer. Do not dispatch before they say so.

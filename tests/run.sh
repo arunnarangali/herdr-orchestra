@@ -483,6 +483,7 @@ out=$("$ORCH" report 2>&1); code=$?
 check "orch report: per-task rows, first-pass rate, usage the agents reported" '[ $code -eq 0 ] && grep -qE "^M14 +merged" <<<"$out" && grep -q "first pass 0/2" <<<"$out" && grep -q "input tokens" <<<"$out"'
 check "orch report --json is machine-readable" '"$ORCH" report --json | python3 -c "import json,sys; r=json.load(sys.stdin); assert r[\"totals\"][\"merged\"] == 2 and r[\"totals\"][\"fix_rounds\"] >= 1"'
 check "the summary includes the run report" 'grep -q "## Run report" .orchestrate/summary.md && grep -q "first pass" .orchestrate/summary.md'
+check "the summary has the estimate vs actual section once, not again inside the run report" '[ "$(grep -c "Whole feature: estimated" .orchestrate/summary.md)" -eq 1 ] && grep -q "## Time: estimate vs actual" .orchestrate/summary.md && grep -q "| M14 | none |" .orchestrate/summary.md'
 
 newrepo bg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
 printf '# Plan: t\nBranch: feature/bg\nBudget: 0.01m\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M8: Slow\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
@@ -729,6 +730,51 @@ out=$(ORCH_TEAM_WAIT_S=1 "$ORCH" team up 2>&1); code=$?
 check "an agent herdr never detects is reported with the rename command (exit 3)" '[ $code -eq 3 ] && grep -q "^WAITING codex-2: .*herdr agent rename w1:p4 codex-2" <<<"$out"'
 rm -f "$FH/nodetect"
 check "playbook step 3 builds the team with orch team when the lead is alone" 'grep -q "orch team <your kind>" "$ROOT/playbooks/plan.md" && grep -q "orch team up" "$ROOT/playbooks/run.md"'
+
+echo "29. estimate vs actual time, and why it took longer"
+newrepo est
+printf '# Plan: t\nBranch: feature/est\nEstimate: 1h30x\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M1: a\nDepends on: none\nEstimate: 40m\nOpen questions:\n- none\n\n## [x] M2: b\nDepends on: none\nWhy separate: parallel\nOpen questions:\n- none\n' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "a feature Estimate that is not a duration is an ERROR" '[ $code -eq 2 ] && grep -q "Estimate must look like" <<<"$out"'
+sed -i 's/^Estimate: 1h30x/Estimate: 1h30m/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "a milestone without Estimate warns; estimates are stored" '[ $code -eq 0 ] && grep -q "M2 has no \`Estimate:\`" <<<"$out" && python3 -c "
+import json; st = json.load(open(\".orchestrate/state.json\")); assert st[\"estimate_s\"] == 5400 and st[\"tasks\"][\"M1\"][\"estimate_s\"] == 2400 and st[\"tasks\"][\"M2\"][\"estimate_s\"] is None"'
+check "durations: 45m, 1h30m, 1.5h, 90 min, 2 hours; junk is refused" 'python3 -c "
+import importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader(\"orch\", \"$ROOT/bin/orch\"); m = importlib.util.module_from_spec(importlib.util.spec_from_loader(\"orch\", l)); l.exec_module(m)
+assert [m.parse_dur(x) for x in (\"45m\", \"1h30m\", \"1.5h\", \"90 min\", \"2 hours\", \"soon\", \"\", \"3\")] == [2700, 5400, 5400, 5400, 7200, None, None, None]"'
+# a finished run with known times: M1 (estimate 40m) took 1h40m, M2 (estimate 30m) took 25m
+python3 - <<'PY'
+import json; p = ".orchestrate/state.json"; st = json.load(open(p)); T = 1_000_000
+st["run"] = {"started": T, "ended": T + 7200}
+m1, m2 = st["tasks"]["M1"], st["tasks"]["M2"]
+m2["estimate_s"] = 1800
+ev = lambda tid, ts, frm, to, why="", agent="claude-1": {"ts": T + ts, "task": tid, "from": frm, "to": to, "why": why, "agent": agent}
+evs = [ev("M1", 0, "pending", "coding"), ev("M1", 1200, "coding", "verifying"), ev("M1", 1260, "verifying", "coding"),
+       ev("M1", 2160, "coding", "paused", "which currency?"), ev("M1", 3360, "paused", "pending", "answered: INR"),
+       ev("M1", 3360, "pending", "coding"), ev("M1", 4800, "coding", "pending", "claude-1 hit a usage/rate limit"),
+       ev("M1", 5400, "pending", "coding", agent="codex-1"), ev("M1", 5940, "coding", "verifying", agent="codex-1"),
+       ev("M1", 6000, "verifying", "merged", agent="codex-1"),
+       ev("M2", 0, "pending", "coding", agent="codex-1"), ev("M2", 1500, "coding", "merged", agent="codex-1")]
+open(".orchestrate/events.jsonl", "w").write("".join(json.dumps(e) + "\n" for e in evs))
+a = lambda s, e, agent, f, out="done", model=None, **k: dict(kind="coder", agent=agent, file=f, start=T + s, end=T + e, secs=e - s, outcome=out, **({"model": model} if model else {}), **k)
+m1["attempts"] = [a(0, 1200, "claude-1", "task.md", model="sonnet"), a(1260, 2160, "claude-1", "fix-1.md", model="sonnet", blocked_s=300),
+                  a(3360, 4800, "claude-1", "task.md", "parked as pending: claude-1 hit a usage/rate limit", model="sonnet"),
+                  a(5400, 5940, "codex-1", "task.md", model="gpt-6-sol")]
+m1["checks"] = [{"where": "worktree", "ok": False, "secs": 60, "ts": T + 1260}, {"where": "worktree", "ok": True, "secs": 60, "ts": T + 6000}]
+m2["attempts"] = [a(0, 1500, "codex-1", "task.md", model="gpt-6-sol")]
+for t in (m1, m2):
+    t["status"] = "merged"
+json.dump(st, open(p, "w"))
+PY
+out=$("$ORCH" report 2>&1); code=$?
+check "report: feature estimate vs actual, and how much longer" '[ $code -eq 0 ] && grep -q "Whole feature: estimated 1h30m, actual 1h40m, 10m longer than estimated" <<<"$out"'
+check "report: one row per milestone with estimate, actual, difference and who built it" 'grep -q "| M1 | 40m | 1h40m | +1h00m | claude-1 (sonnet), codex-1 (gpt-6-sol) |" <<<"$out" && grep -q "| M2 | 30m | 25m | -5m | codex-1 (gpt-6-sol) |" <<<"$out"'
+check "why M1 was late: fix round by its coder, the developer answer, the usage limit, the permission prompt" 'grep -q "Why M1 took 1h00m longer than its 40m estimate" <<<"$out" && grep -qF "20m developer / lead: paused, waiting for the lead or the developer (which currency?)" <<<"$out" && grep -qF "10m claude-1 (sonnet): fix rounds: the check command failed" <<<"$out" && grep -qF "5m claude-1: stopped at a permission prompt or question in its pane" <<<"$out" && grep -qF "24m claude-1 (sonnet): work cut short (claude-1 hit a usage/rate limit)" <<<"$out" && grep -qF "10m claude-1: agent hit a usage limit: benched, work waited for another coder" <<<"$out" && grep -qF "1m check command: checks run again after fixes" <<<"$out" && grep -qF "(M1)" <<<"$out"'
+check "a milestone quicker than its estimate gets no why" '! grep -q "Why M2" <<<"$out"'
+check "report --json carries the time account" '"$ORCH" report --json | python3 -c "import json,sys; t=json.load(sys.stdin)[\"time\"]; assert t[\"feature\"][\"actual_s\"] == 6000 and t[\"feature\"][\"over_s\"] == 600 and t[\"tasks\"][0][\"over_s\"] == 3600"'
+check "the plan playbook asks for estimates and the summary has the time section" 'grep -q "^Estimate:" "$ROOT/playbooks/plan.md" && grep -q "Time: estimate vs actual" "$ROOT/bin/orch"'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

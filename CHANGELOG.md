@@ -2,6 +2,11 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.2.0] - 2026-11-13
+
+### Added
+- **Estimated vs actual time.** The lead now gives a time estimate when it plans: `Estimate:` on each milestone (dispatch to landed if nothing goes wrong: building on the model it picked, the checks, one review) and `Estimate:` in the plan header for the whole feature (milestones that run side by side count once). `orch sync` refuses a value that is not a time (`40m`, `1h30m`, `2h`) and warns when one is missing. orch measures the real time from what it already records (status changes, every coder and reviewer attempt with its model and job, check times), and now also the time an agent sits at a permission prompt or question in its pane (from herdr's `blocked` state). The summary has a new "Time: estimate vs actual" section, and `orch report` prints it first (`--json` adds it as `time`): the feature's estimate and real time, and one row per milestone with estimate, actual, difference and who built it. When a milestone or the feature took longer, it lists where the extra time went and who or what it waited on, e.g. `10m claude-1 (sonnet): fix rounds: the check command failed`, `20m developer / lead: paused, waiting for the lead or the developer (which currency?)`, `5m claude-1: stopped at a permission prompt or question in its pane`, a usage limit, a lost agent, the reviewer, a second review, merge conflicts, an escalation, or time when no milestone was running. Nothing is guessed: time orch can't place is shown as orch's own steps, and when the planned work alone took longer it says the estimate was too low. Time after every milestone landed and before an `orch fix` is not counted against the feature.
+
 ## [5.1.0] - 2026-11-13
 
 ### Changed
