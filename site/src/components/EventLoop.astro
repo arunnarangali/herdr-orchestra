@@ -5,17 +5,18 @@
 const agents = [
   { y: 92, name: 'claude-1', work: 'building M1', event: 'M1 checked and merged', cls: 'coder' },
   { y: 134, name: 'codex-1', work: 'building M2', event: 'M2 paused: a question', cls: 'coder' },
-  { y: 176, name: 'opencode-1', work: 'building M3', event: 'M3 failed checks 3 times', cls: 'coder' },
+  { y: 176, name: 'opencode-1', work: 'building M3', event: 'M3 still failing after its rounds', cls: 'coder' },
 ];
 const queue = [
-  { x: 186, kind: 'merged', task: 'M1', cls: 'good' },
-  { x: 336, kind: 'paused', task: 'M2', cls: 'lead' },
-  { x: 486, kind: 'failed', task: 'M3', cls: 'bad' },
+  { x: 180, kind: 'merged', task: 'M1', cls: 'good' },
+  { x: 312, kind: 'ready', task: 'M4', cls: 'auto' },
+  { x: 444, kind: 'paused', task: 'M2', cls: 'lead' },
+  { x: 576, kind: 'failed', task: 'M3', cls: 'bad' },
 ];
 // The lead's frames after it is woken, bottom first.
-const frames = ['orch events   → 3 events', 'orch dispatch M4', 'orch answer M2 "skip empty rows"', 'orch dispatch M3 --tier high'];
+const frames = ['orch events   → 4 events', 'orch dispatch M4', 'orch answer M2 "skip empty rows"', 'orch dispatch M3 --tier high'];
 const label =
-  'How the lead is woken, like a browser event loop. Agents work in the background like Web APIs: claude-1 finishes M1, codex-1 pauses M2 with a question, opencode-1 fails M3. ' +
+  'How the lead is woken, like a browser event loop. Agents work in the background like Web APIs: claude-1 finishes M1, codex-1 pauses M2 with a question, opencode-1 is still failing M3 after its fix rounds, and M1 landing makes M4 ready. ' +
   'Each event is stored in the event queue. While the lead is busy the events wait. When the lead is idle, the event manager, orch autopilot, wakes it once with the whole batch, ' +
   'like the event loop pushing a callback onto an empty call stack. The lead reads its events, dispatches M4 that M1 unlocked, answers M2 (the answer goes back to codex-1), and sends M3 to a stronger model.';
 ---
@@ -73,9 +74,9 @@ const label =
     <text class="quiet" x="270" y="288" font-size="11.5">like the callback queue · kept in state.json, so none is missed</text>
     {queue.map((q, i) => (
       <g class={`ev-card ev-c${i}`}>
-        <rect class={`card-ev ${q.cls}`} x={q.x} y="302" width="136" height="36" rx="8" />
+        <rect class={`card-ev ${q.cls}`} x={q.x} y="302" width="120" height="36" rx="8" />
         <text x={q.x + 14} y="325" font-size="12" style="font-family:var(--font-mono)" font-weight="600">{q.kind}</text>
-        <text class="quiet" x={q.x + 122} y="325" font-size="12" text-anchor="end" style="font-family:var(--font-mono)">{q.task}</text>
+        <text class="quiet" x={q.x + 106} y="325" font-size="12" text-anchor="end" style="font-family:var(--font-mono)">{q.task}</text>
       </g>
     ))}
 
@@ -135,6 +136,7 @@ const label =
   .evloop .card-ev.good { stroke: var(--good); }
   .evloop .card-ev.lead { stroke: var(--lead); }
   .evloop .card-ev.bad { stroke: var(--bad); }
+  .evloop .card-ev.auto { stroke: var(--auto); }
   .evloop .loop-ring { fill: color-mix(in srgb, var(--lead) 10%, var(--surface-2)); stroke: var(--lead); stroke-width: 1.25; }
   .evloop .ev-loop-arrow { fill: none; stroke: var(--lead); stroke-width: 2.5; }
   .evloop .ev-idle-note { fill: var(--lead); }
@@ -168,6 +170,7 @@ const label =
   .evloop.anim .ev-c0 { animation-name: ev-card-0; }
   .evloop.anim .ev-c1 { animation-name: ev-card-1; }
   .evloop.anim .ev-c2 { animation-name: ev-card-2; }
+  .evloop.anim .ev-c3 { animation-name: ev-card-3; }
   .evloop.anim .ev-busy, .evloop.anim .ev-busy-note { animation-name: ev-busy; }
   .evloop.anim .ev-idle-note { animation-name: ev-in-60; }
   .evloop.anim .ev-loop-arrow { animation-name: ev-spin; }
@@ -186,9 +189,10 @@ const label =
   @keyframes ev-in-12 { 0%, 13% { opacity: 0; } 16%, 100% { opacity: 1; } }
   @keyframes ev-in-22-out { 0%, 23% { opacity: 0; } 26%, 82% { opacity: 1; } 84%, 100% { opacity: 0; } }
   @keyframes ev-in-32 { 0%, 33% { opacity: 0; } 36%, 100% { opacity: 1; } }
-  @keyframes ev-card-0 { 0%, 14% { opacity: 0; transform: translateY(-24px); } 19%, 52% { opacity: 1; transform: none; } 60%, 100% { opacity: 0; transform: translateX(-90px); } }
-  @keyframes ev-card-1 { 0%, 24% { opacity: 0; transform: translateY(-24px); } 29%, 54% { opacity: 1; transform: none; } 62%, 100% { opacity: 0; transform: translateX(-240px); } }
-  @keyframes ev-card-2 { 0%, 34% { opacity: 0; transform: translateY(-24px); } 39%, 56% { opacity: 1; transform: none; } 64%, 100% { opacity: 0; transform: translateX(-390px); } }
+  @keyframes ev-card-0 { 0%, 14% { opacity: 0; transform: translateY(-24px); } 18%, 52% { opacity: 1; transform: none; } 60%, 100% { opacity: 0; transform: translateX(-80px); } }
+  @keyframes ev-card-1 { 0%, 17% { opacity: 0; transform: translateY(-24px); } 21%, 53% { opacity: 1; transform: none; } 61%, 100% { opacity: 0; transform: translateX(-212px); } }
+  @keyframes ev-card-2 { 0%, 24% { opacity: 0; transform: translateY(-24px); } 28%, 54% { opacity: 1; transform: none; } 62%, 100% { opacity: 0; transform: translateX(-344px); } }
+  @keyframes ev-card-3 { 0%, 34% { opacity: 0; transform: translateY(-24px); } 38%, 56% { opacity: 1; transform: none; } 64%, 100% { opacity: 0; transform: translateX(-476px); } }
   @keyframes ev-busy { 0%, 44% { opacity: 1; } 49%, 100% { opacity: 0; } }
   @keyframes ev-spin { 0%, 50% { transform: rotate(0); } 64%, 100% { transform: rotate(720deg); } }
   @keyframes ev-flash-60 { 0%, 58% { stroke: var(--line-strong); } 62%, 70% { stroke: var(--lead); stroke-width: 2.5; } 76%, 100% { stroke: var(--line-strong); } }
