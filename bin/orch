@@ -28,7 +28,9 @@ CONFIRM_S = int(os.environ.get("ORCH_CONFIRM_S", "30"))           # a prompt not
 MAX_LOST = int(os.environ.get("ORCH_MAX_LOST", "4"))               # lost attempts (unreachable, gone, rate limit)
 UNREACHABLE_AFTER = int(os.environ.get("ORCH_UNREACHABLE_AFTER", "3"))   # failed prompts in a row before a long bench
 UNREACHABLE_MIN = int(os.environ.get("ORCH_UNREACHABLE_MIN", "30"))
-LEAD_REWAKE_S = int(os.environ.get("ORCH_LEAD_REWAKE_S", "300"))     # wake the lead again if it never read its events
+LEAD_REWAKE_S = int(os.environ.get("ORCH_LEAD_REWAKE_S", "300"))     # longest wait before a wake-up is sent again
+LEAD_CONFIRM_S = int(os.environ.get("ORCH_LEAD_CONFIRM_S", "30"))    # a wake-up the lead did not pick up is sent again after this (doubling)
+LEAD_SETTLE_S = int(os.environ.get("ORCH_LEAD_SETTLE_S", "300"))     # at ALL_DONE, stay up this long for the lead to pick up its events
 LEAD_MAX_WAKES = int(os.environ.get("ORCH_LEAD_MAX_WAKES", "3"))     # ...this many times, then tell the developer
 LEAD_WAIT_S = int(os.environ.get("ORCH_LEAD_WAIT_MIN", "15")) * 60   # ready work the lead never dispatched starts by itself
 LEAD_IDLE_MAX_S = int(os.environ.get("ORCH_LEAD_IDLE_MAX_MIN", "720")) * 60   # give up waiting for answers after this
@@ -1021,7 +1023,7 @@ def cmd_sync(args):
             "wait": o.get("wait"),
             "files": sorted(files[tid]),
             "parallel": field(t, "parallel", "").lower().startswith("allow"),
-            "tier": tiers[tid], "needs": needs[tid], "model_why": field(t, "model why"),
+            "tier": tiers[tid], "needs": needs[tid], "model_why": field(t, "model why"), "role": field(t, "role"),
             "estimate_s": estimates[tid],
         }
         if status != st["tasks"][tid]["status"]:
@@ -2292,6 +2294,8 @@ def cmd_status(args):
         hold = undispatched(st)
         print(f"  lead {st['lead']['name']}: {len(unread_events(st))} unread event(s), {len(ev)} open"
               + (f"; waiting for `orch dispatch`: {', '.join(hold)}" if hold else "")
+              + (f"; wake-up sent {lw['n']}x (last {_fmt_secs(now() - lw.get('ts', now()))} ago), not picked up yet"
+                 if unread_events(st) and (lw := st.get("lead_wake") or {}).get("n") else "")
               + ("" if driver_alive() else "; the event manager is NOT running (`orch autopilot`)"))
     if all(t["status"] in ("merged", "skipped") for t in st["tasks"].values()):
         print(f"ALL_DONE — run `orch finish` to push {st['branch']} and open a PR into {st.get('base')}")
@@ -2437,7 +2441,14 @@ def cmd_write_task(args):
     secs, glob = plan_sections()
     if tid not in secs:
         die(f"{tid} not found in plan.md")
-    parts = [f"# Task {tid}: {t['title']}", "", secs[tid].replace(f"## [x] {tid}:", "Title:", 1), ""]
+    parts = [f"# Task {tid}: {t['title']}", ""]
+    if t.get("role"):
+        parts += ["## Your role", f"For this task you are: **{t['role']}**.",
+                  "Work the way that person would. Before you write anything, read the code around the change and "
+                  "the patterns it already follows. Then build it to the standard that specialist would put their "
+                  "name on: \"the check passes\" is the floor, not the goal. Before you finish, look at your own "
+                  "result as that specialist reviewing someone else's work, and fix what they would send back.", ""]
+    parts += [secs[tid].replace(f"## [x] {tid}:", "Title:", 1), ""]
     if glob and glob.lower() not in ("none", "<empty — user may fill in>"):
         parts += ["## Global instructions", glob, ""]
     ctx = []
@@ -2486,7 +2497,7 @@ def task_contract(st, tid):
         "goal": field(pt, "goal"), "why": field(pt, "why"),
         "acceptance_criteria": [{"id": f"AC{i}", "text": c} for i, c in enumerate(items("acceptance criteria"), 1)],
         "files_allowed": t.get("files") or [], "scope": st.get("scope", "warn"),
-        "tier": t.get("tier"), "needs": t.get("needs") or [],
+        "tier": t.get("tier"), "needs": t.get("needs") or [], "role": t.get("role") or None,
         "interfaces": items("interfaces"), "constraints": items("constraints"), "out_of_scope": items("out of scope"),
         "depends_on": deps, "check": st["check"], "attempt": t.get("attempt", 0) + 1, "lost_attempts": t.get("lost", 0),
         "previous_work": {"by": t.get("last_worker")} if work_ref(st, tid) else None,
@@ -2638,6 +2649,8 @@ def cmd_fix(args):
         sec = [f"## [x] {new}: {title}", f"Depends on: {tid} (a fix to what {tid} built)",
                f"Why separate: a change the developer asked for after {tid} landed.", f"Review: {review}",
                "Estimate: none"]
+        if field(src, "role"):
+            sec.append(f"Role: {field(src, 'role')}")
         if field(src, "likely files"):
             sec.append(f"Likely files: {field(src, 'likely files')}")
         if t.get("tier"):
@@ -2654,7 +2667,7 @@ def cmd_fix(args):
             "status": "pending", "reason": f"fix for {tid}", "worker": None, "dir": None, "attempt": 0, "fix": 0,
             "review_round": 0, "wait": None, "files": list(t.get("files") or []), "parallel": False,
             "tier": t.get("tier"), "needs": [], "model_why": f"a fix to {tid}, for the coder who built it." if t.get("tier") else "",
-            "go": True, "fix_of": tid,
+            "go": True, "fix_of": tid, "role": field(src, "role"),
         }
         if who:
             st["tasks"][new]["assign"] = who
@@ -2776,6 +2789,43 @@ def cmd_nudge(args):
     print(f"NUDGED {tid} -> {w['agent']}")
 
 
+def auto_checked(st, final_ok):
+    """What the run already verified without a person, for the summary: the check command, the reviews, and each
+    acceptance criterion with the coder's and the reviewer's evidence. The lead builds on this, so the manual
+    checklist holds only what a person must look at. Only recorded facts; a criterion nobody gave evidence for says so."""
+    try:
+        _, ptasks = parse_plan((ORCH / "plan.md").read_text())
+    except OSError:
+        ptasks = []
+    out = [f"- Check command `{st['check']}` on the finished branch: {'PASS' if final_ok else 'FAIL'}"]
+    for tid in st["order"]:
+        t = st["tasks"][tid]
+        if t["status"] != "merged":
+            continue
+        pt = next((x for x in ptasks if x["id"] == tid), {"fields": {}})
+        crit = [v.lstrip("- ").strip() for v in pt["fields"].get("acceptance criteria", [])]
+        crit = [v for v in crit if v and v.lower() != "none"]
+        res, _ = read_result(t.get("last_result"))
+        coder = {str(c.get("id")): c for c in (res or {}).get("criteria", []) if isinstance(c, dict)}
+        k = t.get("review_round", 0)
+        rev, _ = read_json(ORCH / "review" / tid / f"review-{k}.json") if k else (None, None)
+        rcrit = rev.get("criteria", []) if isinstance(rev, dict) and isinstance(rev.get("criteria", []), list) else []
+        reviewer = {str(c.get("id")): c for c in rcrit if isinstance(c, dict)}
+        passed = sum(1 for c in t.get("checks") or [] if c.get("ok"))
+        out.append(f"- {tid} \"{t['title']}\": check command passed" + (f" {passed}x" if passed > 1 else "")
+                   + (f"; review passed (round {k})" if t.get("review") and k else "; no review planned"))
+        for i, text in enumerate(crit, 1):
+            cid, ev = f"AC{i}", []
+            c, r = coder.get(cid), reviewer.get(cid)
+            if c and c.get("met") is not None:
+                ev.append(f"coder: {'met' if c['met'] else 'NOT met'}" + (f" ({c['evidence']})" if c.get("evidence") else ""))
+            if r and r.get("met") is not None:
+                ev.append(f"reviewer: {'met' if r['met'] else 'NOT met'}" + (f" ({r['note']})" if r.get("note") else ""))
+            out.append(f"  - {cid} {text} — " + ("; ".join(ev) if ev else "no evidence recorded: the lead checks it, "
+                                                 "or it goes on the manual list"))
+    return "\n".join(out)
+
+
 RATE_RE = re.compile(r"usage limit|rate.?limit|quota|too many requests|\b429\b|limit reached|try again (in|at)|out of credits",
                      re.I)
 
@@ -2834,25 +2884,31 @@ def cmd_autopilot(args):
             park(tid, "failed", reason)
 
     def wake_lead(force=False):
-        """Tell the lead it has unread events: only when it is idle, once per batch, again after LEAD_REWAKE_S if it
-        never read them (up to LEAD_MAX_WAKES). The events themselves are already safe in state.json."""
+        """Tell the lead it has unread events, and make sure the wake-up became a turn. Sending the prompt proves
+        nothing: it can sit in the pane's input box or collide with what the developer is typing. Only the lead
+        reading its events (`orch events`) counts. A lead that is idle again with the events still unread did not
+        pick the wake-up up, so it is sent again: after LEAD_CONFIRM_S, then twice that, and so on (never longer
+        than LEAD_REWAKE_S), up to LEAD_MAX_WAKES; then the developer is told. A lead herdr can't watch is woken
+        again every LEAD_REWAKE_S. The events themselves are already safe in state.json."""
         s_ = load()
         if not lead_on(s_):
             return
         un = unread_events(s_)
-        if not un:
-            return
-        lead, newest = s_["lead"]["name"], max(e["id"] for e in un)
         lw = s_.get("lead_wake") or {}
+        lead = s_["lead"]["name"]
+        if not un:
+            if lw.get("n") and not lw.get("ack"):
+                patch_state(lambda s2: s2.update(lead_wake={**(s2.get("lead_wake") or {}), "ack": True}))
+                say(f"the lead ({lead}) picked up its events")
+            return
+        newest = max(e["id"] for e in un)
         # a wake the lead has not acted on yet covers newer events too: it reads the whole queue when it comes
         same = any(e["id"] <= lw.get("upto", 0) for e in un)
-        if same and (now() - lw.get("ts", 0) < LEAD_REWAKE_S or lw.get("n", 0) >= LEAD_MAX_WAKES):
-            if lw.get("n", 0) >= LEAD_MAX_WAKES and now() - lw.get("ts", 0) >= LEAD_REWAKE_S and not lw.get("told"):
-                patch_state(lambda s2: s2["lead_wake"].update(told=True))
-                say(f"the lead ({lead}) has not read its events after {LEAD_MAX_WAKES} wake-ups — look at its pane, "
-                    f"or run `orch events --peek` yourself", True)
+        n = lw.get("n", 0) if same else 0
+        if same and now() - lw.get("ts", 0) < lw.get("wait", LEAD_REWAKE_S):
             return
-        if watched(s_, lead) and not force:
+        watch = watched(s_, lead)
+        if watch and not force:
             hs = herdr_state(lead)
             if hs is None:
                 if not lw.get("gone"):
@@ -2861,19 +2917,31 @@ def cmd_autopilot(args):
                         f"for it (`orch events --peek` shows them)", True)
                 return
             if word(hs, "working", "blocked"):
-                return                                # busy: the events wait in the queue, one wake when it is idle
+                return                                # in a turn: the events wait in the queue, one wake when it is idle
+        if n >= LEAD_MAX_WAKES:
+            if not lw.get("told"):
+                patch_state(lambda s2: s2["lead_wake"].update(told=True))
+                say(f"the lead ({lead}) has not read its events after {LEAD_MAX_WAKES} wake-ups — look at its pane "
+                    f"(if the wake-up text sits in its input box, press Enter), or tell it: run `orch events`. "
+                    f"{len(un)} event(s) wait for it (`orch events --peek` shows them)", True)
+            return
         text = (f"orch: {len(un)} new event(s) in the run on {s_['branch']} need the lead. Run `orch events` and "
                 f"handle what it prints, then stop.")
         try:
             deliver(s_, lead, text)
         except DeliveryError as e:
             say(f"could not wake the lead ({lead}): {e} — will retry; the events are kept")
-            patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now() - LEAD_REWAKE_S + SEND_RETRY_S,
-                                                        "n": lw.get("n", 0) if same else 0}))
+            patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now(), "n": n, "wait": SEND_RETRY_S}))
             return
-        patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now(), "n": (lw.get("n", 0) if same else 0) + 1}))
-        say(f"woke the lead ({lead}): {len(un)} event(s) — " + ", ".join(
-            f"{e['kind']}{' ' + e['task'] if e.get('task') else ''}" for e in un[:6]))
+        wait = min(LEAD_REWAKE_S, LEAD_CONFIRM_S * 2 ** n) if watch else LEAD_REWAKE_S
+        patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now(), "n": n + 1, "wait": wait}))
+        what = ", ".join(f"{e['kind']}{' ' + e['task'] if e.get('task') else ''}" for e in un[:6])
+        if n:
+            say(f"the lead ({lead}) did not pick up its wake-up (" + ("idle again, " if watch else "")
+                + f"events still unread after {now() - lw.get('ts', now())}s) -> sent it again "
+                f"({n + 1} of {LEAD_MAX_WAKES}): {len(un)} event(s) — {what}")
+        else:
+            say(f"woke the lead ({lead}): {len(un)} event(s) — {what} (sent; it counts once the lead reads them)")
 
     def lead_ready():
         """Ready milestones the lead has not dispatched: tell it once per set; start them ourselves after LEAD_WAIT_S."""
@@ -3287,10 +3355,16 @@ def cmd_autopilot(args):
                 + ("## Models: planned and actual\n| Milestone | Planned tier | Ran on | Escalated | Why this tier |\n"
                    "|---|---|---|---|---|\n" + "\n".join(models) + "\n\n" if models else "") +
                 f"## Time: estimate vs actual\n{timing}\n\n"
+                f"## Checked automatically\nAlready verified by the run; nobody needs to redo these by hand.\n"
+                f"{auto_checked(st, ok)}\n\n"
                 f"## Run report\n```\n{report}\n```\n\n"
                 + ("## Still to write (the lead was woken to write these)\n" if lead_ else
                    "## Still to write (ask the lead: 'use the orch-run skill' to finish the summary)\n") +
-                "- Design decisions & study notes\n- Manual verification checklist\n"
+                "- Design decisions & study notes\n"
+                "- Checked by the lead: what you verified yourself by running a command or reading the code, with the "
+                "evidence\n"
+                "- Manual verification checklist: only what a person must see or do (how the UI looks and behaves, a "
+                "real device, an outside account). Nothing a command or a look at the code can settle.\n"
                 + ("\nThe summary before this one is in `.orchestrate/summary.prev.md`: carry its notes and checklist "
                    "over, and add what the new work changed.\n" if prev.exists() else ""))
             if lead_:
@@ -3304,6 +3378,20 @@ def cmd_autopilot(args):
                 wake_lead(force=True)
             say(f"ALL_DONE on {st['branch']} — final check {'PASS' if ok else 'FAIL'}. See .orchestrate/summary.md, "
                 f"then run `orch finish` to push {st['branch']} and open a PR into {base}", True)
+            if lead_:
+                # don't leave with a wake-up nobody confirmed: after this exit nothing would send it again
+                end = time.time() + LEAD_SETTLE_S
+                while True:
+                    wake_lead()
+                    s_ = load()
+                    lw_ = s_.get("lead_wake") or {}
+                    if not unread_events(s_) or lw_.get("told") or lw_.get("gone"):
+                        break
+                    if time.time() > end:
+                        say(f"the lead ({st['lead']['name']}) still has not read ALL_DONE — tell it: run `orch events`",
+                            True)
+                        break
+                    time.sleep(POLL_STEP_S)
             sys.exit(0 if ok else 3)
         active = [k for k, v in tasks.items() if v["status"] in ACTIVE and v["status"] != "held"]
         ready = [k for k, v in tasks.items() if v["status"] == "pending" and deps_met(st, v)]

@@ -5,7 +5,7 @@
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ORCH="$ROOT/bin/orch"
-export HERDR="$ROOT/tests/sim/herdr" ORCH_POLL_STEP_S=1 ORCH_IDLE_GRACE_S=4 ORCH_BIN="$ORCH"
+export HERDR="$ROOT/tests/sim/herdr" ORCH_POLL_STEP_S=1 ORCH_IDLE_GRACE_S=4 ORCH_BIN="$ORCH" ORCH_LEAD_CONFIRM_S=3
 WORK=$(mktemp -d); trap 'pkill -f -- "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 export ORCH_AGENTS_FILE="$WORK/user-agents.toml"   # keep the developer's own agents.toml out of the tests
 export ORCH_MODELS_FILE="$WORK/user-models.toml" ORCH_NO_AUTOSTART=1   # ...and their models.toml; no stray managers
@@ -621,6 +621,19 @@ printf '# Plan: t\nBranch: feature/ls\nCheck command: true\nIsolation: worktree\
 ORCH_LEAD_WAIT_MIN=0 ORCH_LEAD_REWAKE_S=2 timeout 120 "$ORCH" autopilot > "$WORK/lsil.log" 2>&1; code=$?
 check "a lead that never answers: ready work starts by itself" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && grep -q "M5: the lead did not dispatch it" "$WORK/lsil.log"'
 check "its events are still in the queue, unread" '"$ORCH" events --peek | grep -q "AUTO-DISPATCHED M5" && "$ORCH" events --peek | grep -q "ALL_DONE"'
+check "a wake-up nobody picked up is sent again, then the developer is told" 'grep -q "did not pick up its wake-up .*-> sent it again (2 of 3)" "$WORK/lsil.log" && grep -q "has not read its events after 3 wake-ups" "$WORK/lsil.log"'
+check "status says the wake-up was not picked up" '"$ORCH" status | grep -q "wake-up sent 3x .*not picked up yet"'
+# the bug report: the last wake-up of a run is lost in the lead's pane, and the event manager used to exit right after
+newrepo llost; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead-deaf-once"
+printf '# Plan: t\nBranch: feature/ll\nCheck command: true\nIsolation: worktree\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nRole: senior backend engineer who cares about clear error messages\nAcceptance criteria:\n- e.txt exists\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" dispatch M5 >/dev/null
+timeout 120 "$ORCH" autopilot > "$WORK/llost.log" 2>&1; code=$?
+check "a lost wake-up at the end of a run is noticed and sent again before the event manager leaves" '[ $code -eq 0 ] && grep -q "did not pick up its wake-up" "$WORK/llost.log" && [ "$(wc -l < "$FH/lead-wakes.log")" -eq 2 ]'
+check "the second wake-up became a turn: ALL_DONE was read and the log says so" 'grep -q "ALL_DONE" "$FH/lead-events.log" && grep -q "the lead (lead) picked up its events" "$WORK/llost.log" && "$ORCH" events --peek | grep -q "0 new"'
+check "the summary lists what the run already checked, per acceptance criterion" 'grep -q "^## Checked automatically" .orchestrate/summary.md && grep -q "Check command \`true\` on the finished branch: PASS" .orchestrate/summary.md && grep -q "AC1 e.txt exists" .orchestrate/summary.md'
+check "the summary asks for a manual checklist of only what a person must see or do" 'grep -q "Manual verification checklist: only what a person must see or do" .orchestrate/summary.md && grep -q "Checked by the lead" .orchestrate/summary.md'
+check "the coder is given the role the lead wrote, in task.md and task.json" 'grep -q "For this task you are: \*\*senior backend engineer who cares about clear error messages\*\*" ../app-wt/claude-1/.orch-task/M5/task.md && grep -q "\"role\": \"senior backend engineer" ../app-wt/claude-1/.orch-task/M5/task.json'
+check "the playbooks ask for a role per milestone and a by-hand-only checklist" 'grep -q "^Role:" "$ROOT/playbooks/plan.md" && grep -q "Checked by the lead" "$ROOT/playbooks/run.md"'
 newrepo lgone; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead.gone"
 printf '# Plan: t\nBranch: feature/lg\nCheck command: true\nIsolation: worktree\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 ORCH_LEAD_WAIT_MIN=0 timeout 120 "$ORCH" autopilot > "$WORK/lgone.log" 2>&1; code=$?

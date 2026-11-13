@@ -116,8 +116,11 @@ With a `Lead:` line in the plan (and not `Lead mode: off`), every change the lea
 | `all_done` | every milestone has landed | read |
 
 `orch events` prints the unread and still-open events and marks the unread ones read (`--peek` does not). The
-event manager wakes the lead with one prompt per batch, only when the lead is idle, and again after
-`ORCH_LEAD_REWAKE_S` if the batch was never read. The lead's requests are fields on the task, set under the state
+event manager wakes the lead with one prompt per batch, only when the lead is idle. A sent prompt is not a
+delivered one: only the lead reading its events counts. If the lead is idle again with the batch unread, the prompt
+is sent again after `ORCH_LEAD_CONFIRM_S` (30s, doubling, at most `ORCH_LEAD_REWAKE_S`), up to `ORCH_LEAD_MAX_WAKES`
+times; then the developer is notified. At ALL_DONE the event manager stays up (at most `ORCH_LEAD_SETTLE_S`) until
+the last batch is read. `lead_wake` in state.json holds `upto`, `ts`, `n`, `wait`. The lead's requests are fields on the task, set under the state
 lock and carried out by the event manager: `go` (dispatched), `assign` (one coder, for the next dispatch),
 `min_tier` (a stronger model than the plan asked for).
 

@@ -8,6 +8,7 @@ Load the `herdr` skill for exact CLI syntax if you have it (otherwise `herdr --s
 - Research findings go in as **facts**, not instructions:
   - ✅ "Uploads are handled in `server/routes/upload.ts`; categories live in the `categories` table."
   - ❌ "Add a `matchCategory()` function to upload.ts that loops over rows."
+- You give every milestone a **role**: the specialist the coder should work as, and what that specialist cares about here (step 6, Role). That sets the standard, not the method.
 - You also decide **which level of model each milestone needs** (small, medium or high) and say why (step 6), and **how long each milestone and the whole feature should take** (step 6, Estimate).
 - You never edit application code, and you never prompt worker agents: you hand out work with `orch dispatch`, and the event manager (`orch autopilot`, a plain script) prompts the agents, watches them and wakes you when something needs a decision.
 
@@ -92,6 +93,14 @@ Then:
 - Don't put everything on `high`: a small model on small work is faster and cheaper, and that is the point. Don't put design work on `small` to save money either: a milestone that runs out of fix rounds is moved up to a stronger model once, and that costs more than starting right.
 - orch gives a milestone to a free coder of its tier, or a stronger one when none is free; never to a weaker one while a suitable coder exists.
 
+**Give the coder a role.** Every milestone gets `Role:`: one line naming the specialist this work needs and the two or three things that specialist would care about in THIS milestone. orch puts it at the top of the coder's task file ("For this task you are: …"), so the coder aims at that standard instead of at "the check passes". It says who and how good, never how: no steps, no function names.
+- UI work: `Role: senior frontend engineer with a designer's eye: matches the app's existing components and spacing, works on a small screen, has loading, empty and error states, usable by keyboard`
+- An API: `Role: backend engineer who designs APIs other teams depend on: clear error responses, input validated at the edge, every acceptance criterion covered by a test`
+- A schema change: `Role: database engineer who has been burned by migrations: reversible, safe on a table with real data, no long locks`
+- A bug nobody has diagnosed: `Role: debugging specialist: finds and proves the root cause before changing anything, and leaves a test that fails without the fix`
+- Docs: `Role: technical writer for developers new to this project: short sentences, every command copy-pasteable and tested`
+Write the role from what you learned in research (the design system the app uses, the test style of the module), not a generic title: "senior engineer" alone tells the coder nothing.
+
 **Estimate the time.** Every milestone gets `Estimate:` (e.g. `Estimate: 40m`, `Estimate: 1h30m`): how long from dispatch until it has landed if nothing goes wrong, which is the coder building it on the model you picked, the checks, and one review when it has `Review: yes`. Don't add time for fix rounds, questions or waiting: those are exactly what the summary measures against your estimate. The header gets `Estimate:` for the whole feature: milestones that run side by side count once, milestones that wait for another add up (M1 30m, then M2 40m ∥ M3 30m, makes `Estimate: 1h10m`). orch records the real time of every step, and the summary shows estimate vs actual; when a milestone or the feature took longer, it lists where the extra time went and who it was waiting on (a coder's fix rounds, the reviewer, a question waiting for the developer, a permission prompt, a usage limit, a lost agent), using only what orch measured.
 
 ## 7. Choose the isolation mode (ask if the user hasn't said)
@@ -136,6 +145,7 @@ Tier: small | medium | high
 Needs: <any of: reasoning, coding, architecture, long-context, tool-use, planning, speed>
 Model why: <one line: what in this milestone makes it that tier>
 Estimate: <e.g. 40m: dispatch to landed if nothing goes wrong>
+Role: <the specialist the coder works as, and what they care about in this milestone>
 Review: yes | no
 Likely files: src/a.ts, src/b.ts, src/feature/
 Parallel: <leave this line out | allow>
@@ -161,7 +171,8 @@ Git: the run makes ONE branch, `Branch:` (use `feature/<slug>`, or `fix/<slug>` 
 Optional header lines: `Scope: strict` sends a milestone back when its coder changes files outside `Likely files` (default `warn`: listed in the summary); `Budget: 3h` stops autopilot when its running time is used up; `Risk hold: off` lets risky changes (deleted files, migrations, CI config, secrets files, unlisted dependency changes, very large diffs) land without `orch approve`; `Setup inputs: <globs>` names the files that mean "run the setup command again" (default: lockfiles and manifests); `Lead mode: off` makes the event manager dispatch by itself and stop for the developer instead of waking you (default with a `Lead:` line: `events`).
 
 Rules for every milestone:
-- **Acceptance criteria are observable**: "POST /upload returns 400 when the amount column is missing", not "handles errors well". One per line: orch numbers them AC1, AC2… in the milestone's `task.json`, the coder says for each whether it is met, and the reviewer checks each one. A milestone without any gets a warning.
+- **Role**: from step 6, on every milestone. The standard to work to, never a how-to.
+- **Acceptance criteria are observable**: "POST /upload returns 400 when the amount column is missing", not "handles errors well". Prefer criteria a test or a command can prove; say so plainly when one needs a person's eyes ("the upload button matches the other primary buttons, seen in the browser"), because at the end only those go on the developer's manual checklist. One per line: orch numbers them AC1, AC2… in the milestone's `task.json`, the coder says for each whether it is met, and the reviewer checks each one. A milestone without any gets a warning.
 - **Likely files is the scope**: list every file or folder (`src/feature/`, globs work) the milestone should change, including dependency files (`package.json`, lockfiles) when it adds packages. orch compares the coder's real diff with it, runs milestones that share a listed file one after the other, and holds an unlisted dependency change for approval. `Parallel: allow` lets a milestone run next to one it shares files with (expect a merge conflict).
 - **Why separate**: from step 4, on every milestone when the plan has more than one. The reason is about the feature (parallel work, a foundation others build on, too big for one sitting), never about filling coders.
 - **No how**: no code blocks, no function names to create, no numbered implementation steps. `orch sync` warns if it sees them.

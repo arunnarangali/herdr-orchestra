@@ -60,6 +60,16 @@ The lead judges the milestone, not the model's name:
 
 It writes `Tier`, `Needs` (what the work leans on) and `Model why` (one line you can check) into each milestone, and shows you a table of milestone, tier, coder and model before you say go. It also checks the team: if a milestone needs a high-tier model and no coder runs one, it proposes the pane to start. See [Models and tiers](/docs/models/).
 
+## A role for every coder
+
+The lead also writes `Role:` on each milestone: the specialist that work needs, and the two or three things that specialist would care about here. The coder's task file starts with it ("For this task you are: …"), so the coder works to that standard instead of stopping at "the check passes".
+
+```
+Role: senior frontend engineer with a designer's eye: matches the app's existing components and spacing, works on a small screen, has loading, empty and error states, usable by keyboard
+```
+
+A bare title such as "senior engineer" changes little. What helps is the standard in it, written from what the lead found in the code. It still never says how to build the thing: that stays with the coder.
+
 ## Estimate vs actual time
 
 The lead also says how long each milestone should take, and the whole feature. A milestone's `Estimate:` is the time from dispatch until it has landed if nothing goes wrong: the coder building it on the model the lead picked, the checks, and one review. The header's `Estimate:` is for the whole feature: milestones that run side by side count once, milestones that wait for another add up. For example M1 30m, then M2 40m and M3 30m side by side, makes `Estimate: 1h10m`.

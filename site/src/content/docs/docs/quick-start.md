@@ -52,7 +52,7 @@ Prefer to start the script yourself? Run `orch autopilot` in a spare terminal at
 
 ## 5. Finish
 
-Read `.orchestrate/summary.md` and test the feature. Then:
+Read `.orchestrate/summary.md` and do its manual checklist: it lists only what needs your eyes or hands (how the UI looks and behaves, a real device). What a command or a look at the code can settle is already checked, with the evidence. Then:
 
 ```bash
 orch finish

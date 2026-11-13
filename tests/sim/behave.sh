@@ -5,6 +5,8 @@ cd "$dir" || exit 1
 if [[ $prompt == orch:* ]]; then                        # the lead being woken by the event manager
   echo "$prompt" >> "$FH/lead-wakes.log"
   [ -f "$FH/lead-deaf" ] && { echo idle > "$FH/$agent.status"; exit 0; }
+  # the wake-up that never became a turn: the first prompt is lost in the pane, later ones arrive
+  [ -f "$FH/lead-deaf-once" ] && { rm "$FH/lead-deaf-once"; echo idle > "$FH/$agent.status"; exit 0; }
   sleep 1
   out=$(ORCH_NO_AUTOSTART=1 "$ORCH_BIN" events 2>&1); printf '%s\n' "$out" >> "$FH/lead-events.log"
   # a scripted lead: answer a coder's question with what the developer said, dispatch what is ready
