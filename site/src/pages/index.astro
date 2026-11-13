@@ -3,6 +3,7 @@ import Base from '../layouts/Base.astro';
 import Install from '../components/Install.astro';
 import HerdrMock from '../components/HerdrMock.astro';
 import RunFlow from '../components/RunFlow.astro';
+import EventLoop from '../components/EventLoop.astro';
 import BranchFlow from '../components/BranchFlow.astro';
 import AgentStrip from '../components/AgentStrip.astro';
 import Modes from '../components/Modes.astro';
@@ -199,8 +200,9 @@ const handles = [
       <div class="section-head">
         <p class="eyebrow">The lead decides, a script does</p>
         <h2>Dispatch, pause, wake, decide.</h2>
-        <p class="lede">The run works like a call stack. The lead hands out work and pauses. A plain script does the work in between and resumes the lead with an event. No AI is spent on waiting or scheduling.</p>
+        <p class="lede">The run works like a browser's event loop. The lead hands out work and pauses. A plain script does the work in between, queues what happened, and wakes the lead only when it is idle. No AI is spent on waiting or scheduling.</p>
       </div>
+      <div class="diagram" style="margin-bottom:16px"><EventLoop /></div>
       <div class="grid cols-2" style="align-items:start">
         <div class="grid" style="gap:16px">
           <div class="card">

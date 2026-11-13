@@ -2,6 +2,14 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.1.0] - 2026-11-13
+
+### Changed
+- **New run graph on the website.** The homepage and the How it works page show one run as a loop instead of a grid of boxes. Steps 1 to 3 (you ask, the lead plans, you say go) are a row of small pills. The orchestration run is a ring of five stops in role colours: the lead dispatches and pauses, a coder builds, checks run (a failure goes back to the coder, up to 3 rounds), the reviewer reads the diff, and the event manager queues it and wakes the lead. Two milestone dots go round the ring once when the graph scrolls into view and drop onto the `feature/csv-import` branch as commits, which ends in "You review the PR". Narrow screens get a tall version of the same graph. With reduced motion the dots don't move.
+
+### Added
+- **Event loop picture on the website.** A new diagram explains how the lead is woken, using a browser's event loop as the comparison: agents are like Web APIs, the event queue is like the callback queue, the event manager (`orch autopilot`) is like the event loop, and the lead is like the call stack. It plays once: three agents finish, pause with a question, or fail; the events wait in the queue while the lead is busy; the lead is woken once with the batch, runs `orch events`, `orch dispatch M4`, `orch answer M2 "..."` (the answer goes back to the same coder) and `orch dispatch M3 --tier high`. Below it, a side-by-side list maps each browser part to its part in a run. It is on the How it works page and in the homepage's "Dispatch, pause, wake, decide" section.
+
 ## [5.0.0] - 2026-11-12
 
 ### Fixed
