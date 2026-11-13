@@ -37,6 +37,7 @@ Tier: high
 Needs: architecture, reasoning
 Model why: the contract both sides build on; a wrong shape costs two milestones.
 Estimate: 15m
+Role: API designer whose types other teams build on: names that match the domain, nothing optional that is always present
 Review: no
 Likely files: packages/shared/src/imports.ts
 Goal: one ImportRow type both sides use
@@ -90,6 +91,7 @@ Notes from user:
 | `Needs:` | What the work leans on: any of `reasoning`, `coding`, `architecture`, `long-context`, `tool-use`, `planning`, `speed` |
 | `Model why:` | One line: what in this milestone makes it that tier |
 | `Estimate:` | How long from dispatch to landed if nothing goes wrong, e.g. `40m` or `1h30m`. `orch sync` refuses anything that is not a time and warns when it is missing. See [Estimate vs actual time](/docs/planning/#estimate-vs-actual-time) |
+| `Role:` | The specialist the coder works as, and what they care about in this milestone. orch puts it at the top of the coder's task file. It sets the standard, never the method |
 | `Review:` | `yes` or `no` |
 | `Likely files:` | Where the work probably lands; used for the scope check and to run overlapping milestones one after the other |
 | `Goal`, `Why` | The outcome and the reason |

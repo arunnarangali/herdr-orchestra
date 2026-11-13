@@ -28,7 +28,7 @@ The lead never watches or polls the agents. It works like a function on a call s
 | A milestone **failed** after its rounds | Reads the report, adds the missing fact to the plan, dispatches it again (with a stronger model if the work was harder than planned) |
 | A milestone is **held** for a risky change | Shows you the reasons. Only you can run `orch approve Mn` |
 | An agent **stopped**, timed out or is blocked | Tells you what to look at, then dispatches the milestone again |
-| **All done** | Writes the design notes and the manual test checklist into the summary |
+| **All done** | Finishes the summary: design notes, what it checked itself (by running commands and reading the code, with the evidence), and a manual checklist of only what a person must see or do |
 
 Routine recovery does not wake the lead: a failed check goes back to its coder, a rate-limited or vanished agent is benched and its work moves on, and a milestone out of fix rounds gets one fresh round on a stronger model.
 
@@ -68,11 +68,28 @@ You can run `orch fix` yourself as well. Add `--to <worker>` to give it to a dif
 - **Only one process changes the run.** The event manager holds the run's lease. `orch dispatch` and `orch answer` are requests it carries out, so the lead and the script never send a prompt or merge at the same time.
 - **Everything resumes.** The state is on disk. If the event manager is killed, the next start confirms or re-sends an unconfirmed prompt and finishes or undoes a half-done merge. If the lead's session is new, it runs `orch events` and carries on.
 
+## The manual checklist is only for your eyes and hands
+
+At the end, the summary separates three things:
+
+- **Checked automatically**: what the run already proved. The check command on the finished branch, each review, and every acceptance criterion with the coder's and the reviewer's evidence.
+- **Checked by the lead**: anything else a command or a look at the code can settle. The lead does it and writes the evidence, for example `the 400 for a missing amount column is covered by upload.test.ts:42, which passes`.
+- **Manual verification checklist**: only what needs a person. How the UI looks, how it behaves in a real browser or on a real device, and anything that needs an outside account or hardware.
+
+```
+- [ ] Open /imports on a phone-sized window and upload sample.csv → the preview table scrolls sideways, the Save button stays visible
+- [ ] Upload a file with a missing amount column → the red message appears under the file field, in the same style as other form errors
+```
+
+You will not find "read the code", "check the comments" or "confirm the tests pass" there: that is the lead's job. A change with nothing to look at (a backend, CLI or docs change) says `Nothing to check by hand` and why.
+
 ## If the lead does not answer
 
 A run never stalls on the lead.
 
-- An unread batch is sent again after 5 minutes, up to 3 times. Then you get a desktop notification.
+- **A wake-up only counts when the lead reads its events.** Sending the prompt proves nothing: it can sit in the pane's input box, or collide with something you were typing there. So if the lead is idle again and the events are still unread, the wake-up is sent again after 30 seconds, then after 1 minute. After 3 wake-ups you get a desktop notification. `orch status` shows it too: `wake-up sent 2x (last 0m40s ago), not picked up yet`.
+- The event manager does not leave at the end of a run until the lead has picked up the last events (or you have been told it did not).
+- A lead herdr can't watch gets the wake-up again every 5 minutes instead.
 - Ready milestones the lead has not dispatched after 15 minutes start by themselves.
 - If the lead's pane is gone, you are told once. `orch events --peek` shows you what is waiting without acknowledging it.
 - While a question or a hold waits for you, the event manager stays up (12 hours by default) and that time does not count against the run's `Budget:`.
