@@ -1,6 +1,7 @@
 ---
 import Base from '../layouts/Base.astro';
 import RunFlow from '../components/RunFlow.astro';
+import EventLoop from '../components/EventLoop.astro';
 import BranchFlow from '../components/BranchFlow.astro';
 import AutopilotLog from '../components/AutopilotLog.astro';
 import Modes from '../components/Modes.astro';
@@ -79,6 +80,16 @@ Reviewer: reviewer (agy)
         <p class="diagram-note">A plain script, the event manager (<code>orch autopilot</code>), runs this loop; the lead makes its decisions. <a href="/docs/driving/">The orchestration run →</a></p>
       </div>
       <AutopilotLog />
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <p class="eyebrow">Inside step 4 · the event manager</p>
+      <h2>The lead is woken like a browser's event loop.</h2>
+      <p class="lede" style="margin-bottom:36px">In a browser, a click doesn't run straight away: its callback waits in a queue, and the event loop runs it only when the call stack is empty. A run works the same way. Agents finish work or ask questions in the background, each event is stored in a queue, and the event manager wakes the lead once with the whole batch when it is idle. The lead decides, and an answer goes back to the coder that asked.</p>
+      <div class="diagram"><EventLoop /></div>
+      <p class="diagram-note">The event kinds and commands are the real ones. <a href="/docs/lead/">The lead and the event manager →</a></p>
     </div>
   </section>
 

@@ -1,42 +1,213 @@
 ---
-// One run end to end: the orchestration plan, then the orchestration run as a loop the lead is woken into.
-const box = (cx: number, cy: number, w: number) => ({ x: cx - w / 2, y: cy - 28, width: w, height: 56, rx: 8 });
+// One run end to end. Steps 1-3 are small pills; the orchestration run is a loop of five stops the
+// milestones travel round; approved milestones drop onto the feature branch, which ends in the PR.
+// Two drawings: a wide one, and a tall one for narrow screens (CSS picks one).
+
+// ---- Wide drawing -------------------------------------------------------------------------
+const C = { x: 380, y: 262 }; // ring centre
+const R = { x: 236, y: 124 }; // ring radii
+const at = (deg: number) => {
+  const a = (deg * Math.PI) / 180;
+  return { x: C.x + R.x * Math.cos(a), y: C.y + R.y * Math.sin(a) };
+};
+const W = 196, H = 54;
+type Stop = { deg: number; title: string; sub: string; cls: string };
+const stops: Stop[] = [
+  { deg: -90, title: 'Lead dispatches, pauses', sub: 'orch dispatch M1 M2', cls: 'lead' },
+  { deg: -14, title: 'Coder builds', sub: "A model of the milestone's tier", cls: 'coder' },
+  { deg: 52, title: 'Checks run', sub: 'Your test command', cls: 'auto' },
+  { deg: 128, title: 'Reviewer reads the diff', sub: 'Blocker: a fix job, 2 rounds', cls: 'reviewer' },
+  { deg: 194, title: 'Event manager queues it', sub: 'Wakes the lead when idle', cls: 'auto' },
+].map((s) => ({ ...s, ...at(s.deg) }));
+
+const inCard = (p: { x: number; y: number }, pad = 7) =>
+  stops.some((s) => Math.abs(p.x - s.x) < W / 2 + pad && Math.abs(p.y - s.y) < H / 2 + pad);
+
+// Ring segment between two stops: sample the ellipse and keep the part outside both cards.
+const segment = (from: number, to: number) => {
+  const pts: string[] = [];
+  for (let d = from; d <= to; d += 0.5) {
+    const p = at(d);
+    if (!inCard(p)) pts.push(`${p.x.toFixed(1)} ${p.y.toFixed(1)}`);
+  }
+  return 'M' + pts.join('L');
+};
+const ring = stops.map((s, i) => segment(s.deg, i + 1 < stops.length ? stops[i + 1].deg : stops[0].deg + 360));
+
+// Path a milestone dot travels: lead -> ... -> reviewer, then down to its commit on the branch.
+const reviewer = stops[3];
+const branchY = 470;
+const travel = (commitX: number) => {
+  const pts: string[] = [];
+  for (let d = -90; d <= reviewer.deg; d += 2) {
+    const p = at(d);
+    pts.push(`${p.x.toFixed(1)} ${p.y.toFixed(1)}`);
+  }
+  return `M${pts.join('L')}L${reviewer.x.toFixed(1)} ${branchY}L${commitX} ${branchY}`;
+};
+const commits = [
+  { x: 120, label: 'M1' },
+  { x: 330, label: 'M3' },
+  { x: 430, label: 'M2' },
+];
+
+const pills = [
+  { cx: 146, title: '1. You ask for a feature', cls: 'you' },
+  { cx: 380, title: '2. Lead writes the plan', cls: 'lead' },
+  { cx: 614, title: '3. You say go', cls: 'you' },
+];
+
+// ---- Tall drawing ---------------------------------------------------------------------------
+const tallStops = stops.map((s, i) => ({ ...s, y: 252 + i * 76 }));
+const label =
+  'One run: you ask for a feature, the lead writes the orchestration plan with a model tier for each milestone, and you say go. ' +
+  'In the orchestration run each milestone goes round a loop: the lead dispatches it and pauses, a coder builds it on a model of its tier, ' +
+  'checks run (a failure goes back to the coder, up to 3 rounds), the reviewer reads the diff, and the event manager queues what happened and wakes the lead, ' +
+  'which decides and dispatches again. Each approved milestone becomes one commit on the feature branch, and you review one pull request.';
 ---
-<svg class="dg" viewBox="0 0 760 500" role="img" aria-label="One run: you request a feature, the lead writes the orchestration plan with a model tier for each milestone, and you say go. In the orchestration run the lead dispatches and pauses, a coder builds on a model of the milestone's tier, checks run, the reviewer reads the diff, and the event manager queues what happened and wakes the lead, which decides and dispatches again. Each approved milestone is committed on the feature branch, and you review one pull request.">
+<svg class="dg dg-wide runflow" viewBox="0 0 760 506" role="img" aria-label={label}>
   <defs>
     <marker id="rf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z" /></marker>
+    <marker id="rf-arrow-lead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--lead)" /></marker>
+    <marker id="rf-arrow-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--bad)" /></marker>
   </defs>
+
+  <!-- 1-3: the orchestration plan -->
+  <g data-step="1">
+    <text class="quiet" x="24" y="18" font-size="11" letter-spacing="1.2">THE ORCHESTRATION PLAN</text>
+    {pills.map((p) => (
+      <g>
+        <rect class={`pill ${p.cls}`} x={p.cx - 104} y="28" width="208" height="34" rx="17" />
+        <text x={p.cx} y="50" text-anchor="middle" font-size="13" font-weight="600">{p.title}</text>
+      </g>
+    ))}
+    <g class="edge" marker-end="url(#rf-arrow)">
+      <path d="M250 45H272" />
+      <path d="M484 45H506" />
+      <path d={`M614 62V84H380V${stops[0].y - H / 2 - 2}`} />
+    </g>
+  </g>
+
+  <!-- 4: the orchestration run -->
+  <g data-step="2">
+    <rect class="zone" x="24" y="96" width="712" height="318" rx="14" />
+    <text x="40" y="120" font-size="13" font-weight="600">4. Orchestration run</text>
+    <text class="quiet" x="40" y="137" font-size="11.5">Every milestone goes round this loop</text>
+  </g>
+  <g data-step="3">
+    <g class="edge ring" marker-end="url(#rf-arrow)">
+      {ring.map((d) => <path d={d} />)}
+    </g>
+    <path class="edge fix" d={`M${stops[2].x - 20} ${stops[2].y - H / 2 - 2}C${stops[2].x - 30} 290 ${stops[1].x - 70} 300 ${stops[1].x - 48} ${stops[1].y + H / 2 + 3}`} marker-end="url(#rf-arrow-bad)" />
+    <text class="fix-label" x={stops[2].x - 34} y="302" text-anchor="end" font-size="11.5">check failed: back to</text>
+    <text class="fix-label" x={stops[2].x - 34} y="317" text-anchor="end" font-size="11.5">the coder, up to 3 rounds</text>
+    <text x={C.x - 40} y={C.y - 34} text-anchor="middle" font-size="12.5" style="font-family:var(--font-mono)" class="quiet">orch autopilot</text>
+    <text x={C.x - 40} y={C.y - 16} text-anchor="middle" font-size="11.5" class="quiet">a plain script drives the loop;</text>
+    <text x={C.x - 40} y={C.y} text-anchor="middle" font-size="11.5" class="quiet">the lead only decides</text>
+  </g>
+  {stops.map((s) => (
+    <g data-step="3">
+      <rect class={`box stop ${s.cls}`} x={s.x - W / 2} y={s.y - H / 2} width={W} height={H} rx="10" />
+      <circle class={`node ${s.cls}`} cx={s.x - W / 2 + 16} cy={s.y - 7} r="4" />
+      <text x={s.x - W / 2 + 28} y={s.y - 3} font-size="13" font-weight="600">{s.title}</text>
+      <text class="quiet" x={s.x - W / 2 + 28} y={s.y + 14} font-size="11.5" style={s.sub.startsWith('orch') ? 'font-family:var(--font-mono)' : undefined}>{s.sub}</text>
+    </g>
+  ))}
+
+  <!-- 5: the feature branch and the PR -->
   <g data-step="4">
-    <rect class="zone" x="24" y="156" width="712" height="232" rx="10" />
-    <text x="720" y="182" text-anchor="end" font-size="13" font-weight="600">4. Orchestration run</text>
+    <path class="edge" d={`M${reviewer.x} ${reviewer.y + H / 2 + 2}V${branchY - 12}`} marker-end="url(#rf-arrow)" />
+    <text class="quiet" x={reviewer.x + 10} y="438" font-size="11.5">approved</text>
+    <line class="branch" x1="40" y1={branchY} x2="508" y2={branchY} marker-end="url(#rf-arrow-lead)" />
+    <text x="40" y={branchY + 26} font-size="12" style="font-family:var(--font-mono)" class="quiet">feature/csv-import</text>
+    <text x="508" y={branchY + 26} font-size="11.5" text-anchor="end" class="quiet">one commit per milestone</text>
+    {commits.map((c) => (
+      <g>
+        <circle class="commit" cx={c.x} cy={branchY} r="7" />
+        <text x={c.x} y={branchY - 13} text-anchor="middle" font-size="11.5" font-weight="600">{c.label}</text>
+      </g>
+    ))}
   </g>
-  <g class="edge" marker-end="url(#rf-arrow)">
-    <path data-step="1" d="M244 100H270" />
-    <path data-step="2" d="M490 100H516" />
-    <path data-step="3" d="M626 128V142H146V198" />
-    <path data-step="4" d="M252 226H274" />
-    <path data-step="4" d="M486 226H508" />
-    <path data-step="4" d="M614 254V302" />
-    <path data-step="4" d="M508 330H486" />
-    <path data-step="4" d="M274 330H252" />
-    <path data-step="4" d="M146 302V254" />
-    <path data-step="5" d="M660 358V412" />
-    <path data-step="5" d="M508 440H252" />
+  <g data-step="5">
+    <rect class="accent" x="524" y={branchY - 30} width="212" height="60" rx="12" />
+    <text x="630" y={branchY - 4} text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text>
+    <text x="630" y={branchY + 14} text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text>
   </g>
-  <g data-step="1"><rect class="box you" {...box(134, 100, 220)} /><text x="134" y="96" text-anchor="middle" font-size="13" font-weight="600">1. You request a feature</text><text class="quiet" x="134" y="112" text-anchor="middle" font-size="11.5">Feature, why, must, done when</text></g>
-  <g data-step="2"><rect class="box lead" {...box(380, 100, 220)} /><text x="380" y="96" text-anchor="middle" font-size="13" font-weight="600">2. Lead writes the plan</text><text class="quiet" x="380" y="112" text-anchor="middle" font-size="11.5">Milestones, a model tier for each</text></g>
-  <g data-step="3"><rect class="box you" {...box(626, 100, 220)} /><text x="626" y="96" text-anchor="middle" font-size="13" font-weight="600">3. You say go</text><text class="quiet" x="626" y="112" text-anchor="middle" font-size="11.5">Edit plan.md first if you like</text></g>
 
-  <g data-step="4"><rect class="box lead" {...box(146, 226, 212)} /><text x="146" y="222" text-anchor="middle" font-size="13" font-weight="600">Lead dispatches, then pauses</text><text class="quiet" x="146" y="238" text-anchor="middle" font-size="11.5">orch dispatch M1 M2</text></g>
-  <g data-step="4"><rect class="box coder" {...box(380, 226, 212)} /><text x="380" y="222" text-anchor="middle" font-size="13" font-weight="600">Coder builds</text><text class="quiet" x="380" y="238" text-anchor="middle" font-size="11.5">On a model of the milestone's tier</text></g>
-  <g data-step="4"><rect class="box" {...box(614, 226, 212)} /><text x="614" y="222" text-anchor="middle" font-size="13" font-weight="600">Checks run</text><text class="quiet" x="614" y="238" text-anchor="middle" font-size="11.5">Fail: back to coder, 3 rounds</text></g>
-  <text data-step="4" class="quiet" x="380" y="282" text-anchor="middle" font-size="11.5">retries go straight back to a coder</text>
-  <g data-step="4"><rect class="box reviewer" {...box(614, 330, 212)} /><text x="614" y="326" text-anchor="middle" font-size="13" font-weight="600">Reviewer reads the diff</text><text class="quiet" x="614" y="342" text-anchor="middle" font-size="11.5">Reports BLOCKER file:line</text></g>
-  <g data-step="4"><rect class="box" {...box(380, 330, 212)} /><text x="380" y="326" text-anchor="middle" font-size="13" font-weight="600">Event manager queues it</text><text class="quiet" x="380" y="342" text-anchor="middle" font-size="11.5">Landed, question, failed, held</text></g>
-  <g data-step="4"><rect class="box lead" {...box(146, 330, 212)} /><text x="146" y="326" text-anchor="middle" font-size="13" font-weight="600">Lead is woken, decides</text><text class="quiet" x="146" y="342" text-anchor="middle" font-size="11.5">Asks you only when it must</text></g>
-
-  <text data-step="5" class="quiet" x="670" y="404" font-size="11.5">approved</text>
-  <g data-step="5"><rect class="box" {...box(614, 440, 212)} /><text x="614" y="436" text-anchor="middle" font-size="13" font-weight="600">Commit on feature/&lt;name&gt;</text><text class="quiet" x="614" y="452" text-anchor="middle" font-size="11.5">One per milestone</text></g>
-  <text data-step="5" class="quiet" x="380" y="430" text-anchor="middle" font-size="11.5">when every milestone is in</text>
-  <g data-step="5"><rect class="accent" {...box(146, 440, 212)} /><text x="146" y="436" text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text><text x="146" y="452" text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text></g>
+  <!-- Milestone dots: still until the drawing scrolls into view, then go round once. -->
+  <g class="travellers" aria-hidden="true">
+    <circle class="traveller" r="6"><animateMotion data-play dur="5.5s" begin="indefinite" fill="freeze" path={travel(commits[0].x)} /></circle>
+    <circle class="traveller t2" r="6"><animateMotion data-play dur="5.5s" begin="indefinite" fill="freeze" path={travel(commits[2].x)} data-delay="1400" /></circle>
+  </g>
 </svg>
+
+<svg class="dg dg-tall runflow" viewBox="0 0 360 830" role="img" aria-label={label}>
+  <defs>
+    <marker id="rft-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z" /></marker>
+    <marker id="rft-arrow-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--bad)" /></marker>
+  </defs>
+  {pills.map((p, i) => (
+    <g data-step="1">
+      <rect class={`pill ${p.cls}`} x="60" y={20 + i * 52} width="240" height="34" rx="17" />
+      <text x="180" y={42 + i * 52} text-anchor="middle" font-size="13" font-weight="600">{p.title}</text>
+    </g>
+  ))}
+  <g class="edge" marker-end="url(#rft-arrow)" data-step="1">
+    <path d="M180 54V70" /><path d="M180 106V122" /><path d={`M180 158V${tallStops[0].y - H / 2 - 2}`} />
+  </g>
+  <g data-step="2">
+    <rect class="zone" x="12" y="172" width="336" height="430" rx="14" />
+    <text x="28" y="196" font-size="13" font-weight="600">4. Orchestration run</text>
+  </g>
+  {tallStops.map((s, i) => (
+    <g data-step="3">
+      <rect class={`box stop ${s.cls}`} x="60" y={s.y - H / 2} width="240" height={H} rx="10" />
+      <circle class={`node ${s.cls}`} cx="76" cy={s.y - 7} r="4" />
+      <text x="88" y={s.y - 3} font-size="13" font-weight="600">{s.title}</text>
+      <text class="quiet" x="88" y={s.y + 14} font-size="11.5">{s.sub}</text>
+      {i < tallStops.length - 1 && <path class="edge" d={`M180 ${s.y + H / 2 + 1}V${s.y + 76 - H / 2 - 2}`} marker-end="url(#rft-arrow)" />}
+    </g>
+  ))}
+  <g data-step="3">
+    <path class="edge ring" d={`M60 ${tallStops[4].y}H34V${tallStops[0].y}H57`} marker-end="url(#rft-arrow)" />
+    <path class="edge fix" d={`M300 ${tallStops[2].y}H326V${tallStops[1].y}H303`} marker-end="url(#rft-arrow-bad)" />
+    <text class="fix-label" x="334" y={(tallStops[1].y + tallStops[2].y) / 2 + 4} font-size="11" text-anchor="middle" transform={`rotate(90 334 ${(tallStops[1].y + tallStops[2].y) / 2})`}>fix ×3</text>
+  </g>
+  <g data-step="4">
+    <path class="edge" d={`M300 ${tallStops[3].y + 10}H340V650H300`} marker-end="url(#rft-arrow)" />
+    <text class="quiet" x="290" y="626" font-size="11.5" text-anchor="end">approved</text>
+    <rect class="box" x="60" y="626" width="240" height="54" rx="10" />
+    <text x="180" y="650" text-anchor="middle" font-size="13" font-weight="600">Commit on feature/csv-import</text>
+    <text class="quiet" x="180" y="667" text-anchor="middle" font-size="11.5">One per milestone</text>
+    <path class="edge" d="M180 681V720" marker-end="url(#rft-arrow)" />
+    <text class="quiet" x="190" y="706" font-size="11.5">when every milestone is in</text>
+  </g>
+  <g data-step="5">
+    <rect class="accent" x="60" y="724" width="240" height="60" rx="12" />
+    <text x="180" y="750" text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text>
+    <text x="180" y="768" text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text>
+  </g>
+</svg>
+
+<script>
+  // Start the milestone dots once, when the wide drawing is on screen. Skipped for reduced motion.
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  document.querySelectorAll<SVGSVGElement>('svg.runflow.dg-wide').forEach((svg) => {
+    if (reduce) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        io.disconnect();
+        svg.querySelectorAll<SVGAnimationElement>('animateMotion[data-play]').forEach((a) => {
+          const go = () => {
+            (a.parentElement as Element).classList.add('moving');
+            a.beginElement();
+          };
+          setTimeout(go, 1500 + Number(a.dataset.delay || 0));
+        });
+      },
+      { threshold: 0.35 },
+    );
+    io.observe(svg);
+  });
+</script>

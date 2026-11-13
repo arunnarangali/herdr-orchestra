@@ -167,6 +167,26 @@ h3 { font-size: 19px; font-weight: 640; }
 .dg .main { stroke: var(--line-strong); stroke-width: 2.5; }
 .dg .dot { fill: var(--lead); }
 .dg .arrowhead { fill: var(--line-strong); }
+.dg .auto { stroke: var(--auto); }
+.dg .pill { fill: var(--surface-2); stroke: var(--line-strong); stroke-width: 1.25; }
+.dg .pill.you { stroke: var(--text); }
+.dg .pill.lead { stroke: var(--lead); }
+.dg .stop { stroke-width: 1.5; }
+.dg .node { fill: var(--line-strong); stroke: none; }
+.dg .node.lead { fill: var(--lead); }
+.dg .node.coder { fill: var(--coder); }
+.dg .node.reviewer { fill: var(--reviewer); }
+.dg .node.auto { fill: var(--auto); }
+.dg .fix { stroke: var(--bad); stroke-dasharray: 4 4; opacity: 0.85; }
+.dg .fix-label { fill: var(--bad); }
+.dg .commit { fill: var(--lead); stroke: var(--surface); stroke-width: 3; }
+.dg .traveller { fill: var(--lead); stroke: var(--surface); stroke-width: 2; opacity: 0; }
+.dg .traveller.moving { opacity: 1; }
+.diagram svg.dg-tall { display: none; min-width: 0; max-width: 420px; margin: 0 auto; }
+@media (max-width: 640px) {
+  .diagram svg.dg-wide { display: none; }
+  .diagram svg.dg-tall { display: block; }
+}
 
 /* Scroll-driven step highlight (progressive enhancement) */
 .js .reveal [data-step] { opacity: 0.28; transition: opacity 0.5s ease; }
