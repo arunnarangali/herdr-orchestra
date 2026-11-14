@@ -710,17 +710,31 @@ echo "the developer's own skill" > "$IH/.agents/skills/orch-mine/SKILL.md"
 echo "not ours" > "$IH/.agents/skills/my-skill/SKILL.md"
 echo "$IH/.agents/skills/orch-old" > "$IH/.local/share/herdr-orchestra/manifest.txt"
 out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check 2>&1); code=$?
-check "agents check finds a skill a tool would list twice" '[ $code -ne 0 ] && grep -q "DUPLICATE codex .*orch-plan  twice: ~/.codex/skills and ~/.agents/skills" <<<"$out" && grep -q "DUPLICATE opencode .*orch-plan.md  twice" <<<"$out"'
+check "agents check finds a skill a tool would list twice" '[ $code -ne 0 ] && grep -q "DUPLICATE codex .*orch-plan  twice: ~/.agents/skills and ~/.codex/skills" <<<"$out" && grep -q "DUPLICATE opencode .*orch-plan.md  twice" <<<"$out"'
+check "…but not for a tool whose docs say one copy wins (opencode skills)" '! grep -q "DUPLICATE opencode .*skill " <<<"$out"'
 count() { find "$IH" -path "$IH/.local" -prune -o \( -name "orch-plan" -o -name "orch-plan.md" \) -print | sort; }
 for i in 1 2 3; do HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --no-herdr-skill > "$WORK/install$i.log" 2>&1 || break; count > "$WORK/copies$i"; done
-check "update: claude, codex, opencode each read exactly one copy" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check >/dev/null 2>&1'
-check "the extra copies were removed" '[ ! -e "$IH/.agents/skills/orch-plan" ] && [ ! -e "$IH/.config/opencode/command/orch-plan.md" ] && [ ! -e "$IH/.claude/commands/orch-plan.md" ] && grep -q "removed  old copy ~/.agents/skills/orch-plan" "$WORK/install1.log"'
+check "update: no tool lists a skill twice (codex reads exactly one copy)" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check >/dev/null 2>&1'
+check "codex keeps the copy in its documented folder, the extra copies were removed" '[ -f "$IH/.agents/skills/orch-plan/SKILL.md" ] && [ ! -e "$IH/.codex/skills/orch-plan" ] && [ ! -e "$IH/.config/opencode/command/orch-plan.md" ] && [ ! -e "$IH/.claude/commands/orch-plan.md" ] && grep -q "removed  old copy ~/.codex/skills/orch-plan" "$WORK/install1.log"'
 check "a skill an older version shipped (in the manifest) is removed" '[ ! -e "$IH/.agents/skills/orch-old" ]'
 check "the developer's own skills are left alone" '[ -f "$IH/.agents/skills/orch-mine/SKILL.md" ] && [ -f "$IH/.agents/skills/my-skill/SKILL.md" ]'
 check "installing 3 times leaves the same files (one copy per tool)" 'cmp -s "$WORK/copies1" "$WORK/copies3" && [ "$(wc -l < "$WORK/copies3")" -eq 4 ] && grep -q "0 old copies removed" "$WORK/install3.log"'
 HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --uninstall > /dev/null 2>&1
 check "uninstall still removes every orch copy, not the developer's" '[ -z "$(find "$IH" -name "orch-p*" -o -name "orch-r*")" ] && [ -f "$IH/.agents/skills/orch-mine/SKILL.md" ]'
-rm -f "$FAKEBIN/opencode"
+# a skills folder that is a symlink to another one is one folder: no copy is deleted from under the other name
+IH="$WORK/home3"; mkdir -p "$IH/.agents/skills"; ln -s "$IH/.agents/skills" "$IH/.claude"; mkdir -p "$IH/.claude"
+rm -f "$IH/.claude"; mkdir -p "$IH/.claude"; ln -s "$IH/.agents/skills" "$IH/.claude/skills"
+out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents sync 2>&1); code=$?
+check "~/.claude/skills -> ~/.agents/skills: sync keeps one copy and deletes nothing" '[ $code -eq 0 ] && [ -f "$IH/.agents/skills/orch-plan/SKILL.md" ] && grep -q "0 old copies removed" <<<"$out"'
+check "…and opencode, which reads both names, is not flagged as a duplicate" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check >/dev/null 2>&1'
+# an agent that is only missing from PATH right now keeps its copy
+IH="$WORK/home4"; mkdir -p "$IH"
+printf '#!/bin/sh\n' > "$FAKEBIN/amp"; chmod +x "$FAKEBIN/amp"
+HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents sync >/dev/null 2>&1
+rm -f "$FAKEBIN/amp" "$FAKEBIN/opencode" "$FAKEBIN/codex"
+out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents sync 2>&1)
+check "a copy no installed agent reads is left alone (its agent may be off PATH)" '[ -f "$IH/.agents/skills/orch-plan/SKILL.md" ] && grep -q "0 old copies removed" <<<"$out"'
+printf '#!/bin/sh\n' > "$FAKEBIN/codex"; chmod +x "$FAKEBIN/codex"
 
 echo "12. one installed tool builds the whole team: orch team <kind>, orch team up"
 out=$("$ORCH" team codex 2>&1)

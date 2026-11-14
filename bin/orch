@@ -4167,47 +4167,56 @@ def _dirs(v, key):
     return [expand(d) for d in v.get(key, []) or []]
 
 
+def _same(d):
+    """A folder's identity: two paths that are one folder (a symlinked skills folder) count once."""
+    return os.path.realpath(d)
+
+
 def agent_reads(v, what):
     """Every global folder the tool reads skills (or slash commands) from: `skills_reads` / `commands_reads`
-    plus the folders the registry installs into. Order kept, no repeats."""
-    out = []
+    plus the folders the registry installs into. Order kept, no repeats (a symlink to a listed folder is the
+    same folder)."""
+    out, seen = [], set()
     for d in _dirs(v, f"{what}_reads") + _dirs(v, f"{what}_dirs"):
-        if d not in out:
+        if _same(d) not in seen:
+            seen.add(_same(d))
             out.append(d)
     return out
 
 
 def pick_dirs(agents, shared=None):
-    """agents: [(kind, reads, candidates)]. Pick the fewest folders to write so every agent reads exactly one copy.
+    """agents: [(kind, reads, candidates, one_wins)]. Pick the fewest folders to write so every agent reads exactly
+    one copy (an agent with one_wins shows a skill once even when two folders have it, so two copies are fine).
     Returns (chosen folders, {kind: [folders it reads a copy from]}). Prefers the shared folder, then the folders
     each agent lists first. When no exact choice exists, the fewest agents with two copies."""
     import itertools
     pool = []
-    for _, reads, cands in agents:
+    for _, reads, cands, _ in agents:
         for d in cands:
-            if d not in pool:
+            if _same(d) not in {_same(p) for p in pool}:
                 pool.append(d)
-    if shared is not None and shared not in pool:
+    if shared is not None and _same(shared) not in {_same(p) for p in pool}:
         pool.append(shared)
     if not agents:
         return ([shared] if shared is not None else []), {}
 
     def rank(d):
-        return min((c.index(d) for _, _, c in agents if d in c), default=9)
+        return min((c.index(d) for _, _, c, _ in agents if d in c), default=9)
 
     best = None
     for n in range(1, len(pool) + 1):
         for combo in itertools.combinations(pool, n):
-            s = set(combo)
-            seen = [len(s & set(reads)) for _, reads, _ in agents]
-            cost = (sum(c == 0 for c in seen), sum(c > 1 for c in seen), n,
-                    0 if shared in s else 1, sum(rank(d) for d in combo))
+            s = {_same(d) for d in combo}
+            seen = [(len(s & {_same(d) for d in reads}), ow) for _, reads, _, ow in agents]
+            cost = (sum(c == 0 for c, _ in seen), sum(c > 1 and not ow for c, ow in seen), n,
+                    0 if shared is not None and _same(shared) in s else 1, sum(rank(d) for d in combo))
             if best is None or cost < best[0]:
                 best = (cost, combo)
         if best and best[0][:2] == (0, 0):
             break                                   # bigger sets only cost more
-    chosen = [d for d in pool if d in best[1]]
-    return chosen, {k: [d for d in reads if d in chosen] for k, reads, _ in agents}
+    chosen = list(best[1])
+    ids = {_same(d) for d in chosen}
+    return chosen, {k: [d for d in reads if _same(d) in ids] for k, reads, _, _ in agents}
 
 
 def _ours(p):
@@ -4228,7 +4237,8 @@ def _remove(p):
 
 def sync_plan(reg, installed):
     """What `orch agents sync` writes: {(kind of item, folder): flavor}, plus the per-agent view."""
-    agents = [(k, agent_reads(v, "skills"), _dirs(v, "skills_dirs") or agent_reads(v, "skills"))
+    agents = [(k, agent_reads(v, "skills"), _dirs(v, "skills_dirs") or agent_reads(v, "skills"),
+               bool(v.get("skills_one_wins")))
               for k, v in reg.items() if installed[k]]
     agents = [a for a in agents if a[1]]
     sdirs, sview = pick_dirs(agents, expand(SHARED_SKILLS))
@@ -4239,12 +4249,12 @@ def sync_plan(reg, installed):
         cands = _dirs(v, "commands_dirs") or agent_reads(v, "commands")
         for d in cands:
             flavor.setdefault(d, v.get("commands_from", "claude-commands"))
-        cagents.append((k, agent_reads(v, "commands"), cands))
+        cagents.append((k, agent_reads(v, "commands"), cands, False))
     cdirs, cview = pick_dirs(cagents)
     return sdirs, sview, [(d, flavor[d]) for d in cdirs], cview
 
 
-def agents_sync(reg, installed, want=None, quiet=False):
+def agents_sync(reg, installed, want=None):
     """Copy the orch skills/commands so that every installed agent reads exactly one copy, and remove orch's
     copies from every other folder (old folders, renamed or dropped skills). Idempotent; keeps the uninstall
     manifest in step. Prints a status table."""
@@ -4269,24 +4279,32 @@ def agents_sync(reg, installed, want=None, quiet=False):
                 changed_dirs.add(d)
             keep.add(d / name)
 
-    # remove every other copy: what an earlier install recorded, and stray copies in folders an agent reads
+    # Remove the copies that make a tool list a skill twice: orch's copies in any folder an installed agent
+    # reads (or used to read: old_dirs) that is not a chosen one, and skills orch no longer ships (renamed or
+    # dropped) wherever an earlier install put them. A copy in a folder no installed agent reads is left: it
+    # shows up nowhere, and it may belong to an agent that is only missing from PATH right now.
     removed = []
     lines = manifest_lines()
+    keep_ids = {_same(p) for p in keep}
+    read_ids = {_same(d) for k, v in reg.items() if installed[k]
+                for d in agent_reads(v, "skills") + agent_reads(v, "commands") + _dirs(v, "old_dirs")}
+    current = set(skills) | {n for fl in ("claude-commands", "opencode-commands") for n in shipped_commands(fl)}
     candidates = [Path(p) for p in lines if Path(p).name.startswith("orch-")]
     for k, v in reg.items():
         if installed[k]:
-            for what in ("skills", "commands"):
-                for d in agent_reads(v, what) + _dirs(v, "old_dirs"):
-                    if d.is_dir():
-                        candidates += [p for p in d.iterdir() if p.name.startswith("orch-")]
+            for d in agent_reads(v, "skills") + agent_reads(v, "commands") + _dirs(v, "old_dirs"):
+                if d.is_dir():
+                    candidates += [p for p in sorted(d.iterdir()) if p.name.startswith("orch-")]
     for p in candidates:
-        if p in keep or not (p.exists() or p.is_symlink()):
+        if not (p.exists() or p.is_symlink()) or _same(p) in keep_ids or p in removed:
             continue
-        if str(p) in lines or _ours(p):
-            _remove(p)
-            removed.append(p)
-    manifest_write([p for p in lines if Path(p) in keep or not Path(p).name.startswith("orch-")]
-                   + [str(p) for p in sorted(keep)])
+        if not (str(p) in lines or _ours(p)):
+            continue                                # the developer's own orch-... skill
+        if p.name in current and _same(p.parent) not in read_ids:
+            continue
+        _remove(p)
+        removed.append(p)
+    manifest_write([p for p in lines if Path(p) not in removed] + [str(p) for p in sorted(keep)])
 
     new = same = 0
     for k, v in reg.items():
@@ -4301,7 +4319,7 @@ def agents_sync(reg, installed, want=None, quiet=False):
             parts.append("skills: " + (", ".join(short(d) for d in sview[k]) or "NONE"))
         if k in cview:
             parts.append("commands: " + (", ".join(short(d) for d in cview[k]) or "NONE"))
-        dup = any(len(x.get(k, [])) > 1 for x in (sview, cview))
+        dup = len(cview.get(k, [])) > 1 or (len(sview.get(k, [])) > 1 and not v.get("skills_one_wins"))
         status = "DUP " if dup else ("NEW " if changed else "ok  ")
         print(f"  {status} {k:<8} {'  '.join(parts)}  {v.get('invoke', 'Run `orch lead plan` and follow it. Feature: <feature>')}")
     if expand(SHARED_SKILLS) in sdirs and not any(expand(SHARED_SKILLS) in x for x in sview.values()):
@@ -4320,7 +4338,7 @@ def agent_assets(v):
     reads = agent_reads(v, "skills")
     for s in shipped_skills() if reads else []:
         copies = [d for d in reads if (d / s / "SKILL.md").exists()]
-        out.append(_asset_state(f"skill    {s}", copies, reads))
+        out.append(_asset_state(f"skill    {s}", copies[:1] if v.get("skills_one_wins") else copies, reads))
     reads = agent_reads(v, "commands")
     for name in shipped_commands(v.get("commands_from", "claude-commands")) if reads else []:
         copies = [d for d in reads if (d / name).exists()]

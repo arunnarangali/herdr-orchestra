@@ -14,6 +14,8 @@
 #                 of each skill (a skill in two folders it reads is listed twice), and removes orch's copies
 #                 from every other folder
 #   commands_dirs slash-command folders the installer may put orch-plan.md / orch-run.md into
+#   skills_one_wins true when the tool shows a skill once even if two folders it reads have it (its docs
+#                 say one copy wins); false or unset: it lists both, so orch keeps exactly one copy
 #   commands_reads every slash-command folder the tool reads (same one-copy rule)
 #   old_dirs      folders older versions installed into and no longer use: sync removes orch's copies there
 #   commands_from which command flavour to install there: "claude-commands" or "opencode-commands"
@@ -31,10 +33,11 @@ model_flag = "--model"
 herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.claude/skills"]
+skills_one_wins = true
 old_dirs = ["~/.claude/commands"]
 invoke = "/orch-plan <feature>"
 verified = true
-notes = "Claude Code 2.1: --permission-mode acceptEdits in --help; ~/.claude/skills present; herdr kind 'claude'. A skill is also a slash command (/orch-plan), so no ~/.claude/commands copy: it would be a second /orch-plan."
+notes = "Claude Code 2.1: --permission-mode acceptEdits in --help; ~/.claude/skills present; herdr kind 'claude'. A skill is also a slash command (/orch-plan) and its docs say a skill beats a ~/.claude/commands file of the same name, so no commands copy is installed."
 
 [codex]
 binary = "codex"
@@ -42,11 +45,11 @@ launch = "codex --approve-for-me"
 model_flag = "--model"
 herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
-skills_dirs = ["~/.codex/skills"]
-skills_reads = ["~/.codex/skills", "~/.agents/skills"]
+skills_dirs = ["~/.agents/skills", "~/.codex/skills"]
+skills_reads = ["~/.agents/skills", "~/.codex/skills"]
 invoke = "$orch-plan <feature>   (or: use the orch-plan skill: <feature>)"
 verified = true
-notes = "codex-cli 0.167: --full-auto is gone; --approve-for-me routes approvals to automatic review in the workspace-write sandbox. Reads ~/.codex/skills and ~/.agents/skills."
+notes = "codex-cli 0.167: --full-auto is gone; --approve-for-me routes approvals to automatic review in the workspace-write sandbox. Reads ~/.codex/skills and ~/.agents/skills (its docs name ~/.agents/skills as the user folder, and say two skills with the same name both show up, so orch keeps one copy)."
 
 [amp]
 binary = "amp"
@@ -55,6 +58,7 @@ herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.config/agents/skills", "~/.agents/skills"]
 skills_reads = ["~/.config/agents/skills", "~/.agents/skills"]
+skills_one_wins = true
 invoke = "use the orch-plan skill: <feature>"
 verified = true
 notes = "No auto-approve CLI flag; set amp.dangerouslyAllowAll or `amp permissions add` rules in its settings. `amp skill list` lists skills."
@@ -67,6 +71,7 @@ herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = []
 skills_reads = ["~/.agents/skills", "~/.claude/skills"]
+skills_one_wins = true
 commands_dirs = ["~/.config/opencode/commands"]
 commands_reads = ["~/.config/opencode/commands", "~/.config/opencode/command"]
 commands_from = "opencode-commands"
