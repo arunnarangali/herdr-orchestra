@@ -221,7 +221,7 @@ check "lead that is also a worker is an ERROR" '[ $code -eq 2 ] && grep -q "also
 sed -i 's/^Lead: .*/Lead: reviewer (agy)/' .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1); code=$?
 check "lead that is also the reviewer is an ERROR" '[ $code -eq 2 ] && grep -q "also the Reviewer" <<<"$out"'
-check "registry defaults load" '"$ORCH" agents | grep -q "^hermes" && [ "$("$ORCH" agents launch claude)" = "claude --permission-mode acceptEdits" ]'
+check "registry defaults load" 'grep -q "^hermes" <<<"$("$ORCH" agents)" && [ "$("$ORCH" agents launch claude)" = "claude --permission-mode acceptEdits" ]'
 printf '[claude]\nlaunch = "claude --model opus"\n\n[mystery]\nbinary = "mystery"\nlaunch = "mystery --yolo"\n' > "$ORCH_AGENTS_FILE"
 check "user agents.toml overrides and adds kinds" '[ "$("$ORCH" agents launch claude)" = "claude --model opus" ] && [ "$("$ORCH" agents launch mystery)" = "mystery --yolo" ]'
 rm -f "$ORCH_AGENTS_FILE"
@@ -674,26 +674,53 @@ for b in claude codex hermes agy; do printf '#!/bin/sh\n' > "$FAKEBIN/$b"; chmod
 SAFE_PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin"
 HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --no-herdr-skill > "$WORK/install.log" 2>&1; code=$?
 check "installer ran" '[ $code -eq 0 ]'
-check "skills in each installed agent's folder" '(for d in .claude/skills .codex/skills .hermes/skills .gemini/config/skills .agents/skills; do [ -f "$IH/$d/orch-plan/SKILL.md" ] && [ -f "$IH/$d/orch-run/SKILL.md" ] || exit 1; done)'
-check "claude slash commands installed" '[ -f "$IH/.claude/commands/orch-plan.md" ] && grep -q "orch lead plan" "$IH/.claude/commands/orch-plan.md"'
+check "skills in each installed agent's folder" '(for d in .claude/skills .hermes/skills .gemini/config/skills .agents/skills; do [ -f "$IH/$d/orch-plan/SKILL.md" ] && [ -f "$IH/$d/orch-run/SKILL.md" ] || exit 1; done)'
+check "codex gets one copy (from the shared ~/.agents/skills), not a second in ~/.codex/skills" '[ ! -e "$IH/.codex/skills/orch-plan" ]'
+check "no claude slash command next to the skill of the same name" '[ ! -e "$IH/.claude/commands/orch-plan.md" ]'
 check "agents that aren't installed are skipped" '[ ! -e "$IH/.config/agents/skills" ]'
 check "installed skills are thin wrappers" 'grep -q "Run \`orch lead plan\`" "$IH/.hermes/skills/orch-plan/SKILL.md"'
 check "playbooks installed" '[ -f "$IH/.local/share/herdr-orchestra/current/playbooks/plan.md" ]'
-check "installer ran orch agents sync" 'grep -q "synced .* row" "$WORK/install.log"'
+check "installer ran orch agents sync" 'grep -q "synced .* agent(s)" "$WORK/install.log"'
 
 # a new agent installed later — no need to re-run the installer
 printf '#!/bin/sh\n' > "$FAKEBIN/amp"; chmod +x "$FAKEBIN/amp"
 out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents sync 2>&1); code=$?
-check "orch agents sync picks up a newly installed agent" '[ $code -eq 0 ] && grep -qE "^ +NEW +amp" <<<"$out"'
-check "it installs that agent's skills" '[ -f "$IH/.config/agents/skills/orch-plan/SKILL.md" ] && [ -f "$IH/.config/agents/skills/orch-run/SKILL.md" ]'
-check "manifest records them for --uninstall" 'grep -q ".config/agents/skills/orch-plan" "$IH/.local/share/herdr-orchestra/manifest.txt"'
+check "orch agents sync picks up a newly installed agent" '[ $code -eq 0 ] && grep -qE "^ +(NEW|ok) +amp" <<<"$out"'
+check "amp reads the shared copy, so no second copy in its own folder" '[ -f "$IH/.agents/skills/orch-plan/SKILL.md" ] && [ ! -e "$IH/.config/agents/skills/orch-plan" ] && grep -qE "^ +(NEW|ok) +amp +skills: ~/.agents/skills" <<<"$out"'
+check "manifest records them for --uninstall" 'grep -q ".agents/skills/orch-plan" "$IH/.local/share/herdr-orchestra/manifest.txt"'
 check "agents check passes after sync" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check >/dev/null 2>&1'
 out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents sync 2>&1)
 check "second sync is idempotent (ok, nothing NEW)" '[ -z "$(grep NEW <<<"$out")" ] && grep -qE "^ +ok +amp" <<<"$out"'
-rm -rf "$IH/.config/agents/skills"
+rm -rf "$IH/.agents/skills"
 check "orch agents hints to sync when skills go missing" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents 2>&1 | grep -q "orch agents sync"'
 HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --uninstall > /dev/null 2>&1
 check "uninstall removes them all" '[ -z "$(find "$IH" -name "orch-*")" ] && [ ! -e "$IH/.local/bin/orch" ]'
+
+echo "11b. updates replace the skills, never add a second copy"
+IH="$WORK/home2"; mkdir -p "$IH"
+for b in amp opencode hermes; do rm -f "$FAKEBIN/$b"; done           # claude, codex, agy installed
+printf '#!/bin/sh\n' > "$FAKEBIN/opencode"; chmod +x "$FAKEBIN/opencode"
+# the layout an older version left behind: the same skill in every folder, slash commands in both OpenCode folders
+for d in .claude/skills .codex/skills .agents/skills; do for s in orch-plan orch-run; do mkdir -p "$IH/$d/$s"; cp "$ROOT/skills/$s/SKILL.md" "$IH/$d/$s/"; done; done
+mkdir -p "$IH/.claude/commands" "$IH/.config/opencode/commands" "$IH/.config/opencode/command" "$IH/.agents/skills/orch-old" "$IH/.agents/skills/orch-mine" "$IH/.agents/skills/my-skill" "$IH/.local/share/herdr-orchestra"
+cp "$ROOT"/claude-commands/orch-*.md "$IH/.claude/commands/"
+cp "$ROOT"/opencode-commands/orch-*.md "$IH/.config/opencode/commands/"; cp "$ROOT"/opencode-commands/orch-*.md "$IH/.config/opencode/command/"
+echo "Run \`orch lead old\`" > "$IH/.agents/skills/orch-old/SKILL.md"      # a skill an older version shipped, since renamed
+echo "the developer's own skill" > "$IH/.agents/skills/orch-mine/SKILL.md"
+echo "not ours" > "$IH/.agents/skills/my-skill/SKILL.md"
+echo "$IH/.agents/skills/orch-old" > "$IH/.local/share/herdr-orchestra/manifest.txt"
+out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check 2>&1); code=$?
+check "agents check finds a skill a tool would list twice" '[ $code -ne 0 ] && grep -q "DUPLICATE codex .*orch-plan  twice: ~/.codex/skills and ~/.agents/skills" <<<"$out" && grep -q "DUPLICATE opencode .*orch-plan.md  twice" <<<"$out"'
+count() { find "$IH" -path "$IH/.local" -prune -o \( -name "orch-plan" -o -name "orch-plan.md" \) -print | sort; }
+for i in 1 2 3; do HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --no-herdr-skill > "$WORK/install$i.log" 2>&1 || break; count > "$WORK/copies$i"; done
+check "update: claude, codex, opencode each read exactly one copy" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check >/dev/null 2>&1'
+check "the extra copies were removed" '[ ! -e "$IH/.agents/skills/orch-plan" ] && [ ! -e "$IH/.config/opencode/command/orch-plan.md" ] && [ ! -e "$IH/.claude/commands/orch-plan.md" ] && grep -q "removed  old copy ~/.agents/skills/orch-plan" "$WORK/install1.log"'
+check "a skill an older version shipped (in the manifest) is removed" '[ ! -e "$IH/.agents/skills/orch-old" ]'
+check "the developer's own skills are left alone" '[ -f "$IH/.agents/skills/orch-mine/SKILL.md" ] && [ -f "$IH/.agents/skills/my-skill/SKILL.md" ]'
+check "installing 3 times leaves the same files (one copy per tool)" 'cmp -s "$WORK/copies1" "$WORK/copies3" && [ "$(wc -l < "$WORK/copies3")" -eq 4 ] && grep -q "0 old copies removed" "$WORK/install3.log"'
+HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --uninstall > /dev/null 2>&1
+check "uninstall still removes every orch copy, not the developer's" '[ -z "$(find "$IH" -name "orch-p*" -o -name "orch-r*")" ] && [ -f "$IH/.agents/skills/orch-mine/SKILL.md" ]'
+rm -f "$FAKEBIN/opencode"
 
 echo "12. one installed tool builds the whole team: orch team <kind>, orch team up"
 out=$("$ORCH" team codex 2>&1)

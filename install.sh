@@ -89,7 +89,7 @@ case "$ACTION" in
   uninstall)
     if [[ -f "$MANIFEST" ]]; then         # everything the installer put into agents' folders
       while IFS= read -r p; do
-        case "$(basename "$p")" in orch-plan|orch-run|orch-plan.md|orch-run.md) rm -rf "$p";; esac
+        case "$(basename "$p")" in orch-*) rm -rf "$p";; esac
       done < "$MANIFEST"
     fi
     rm -f "$BIN/orch"
@@ -184,7 +184,8 @@ if ! "$CUR/bin/orch" agents sync; then
   # Python < 3.11 (no agent registry): fall back to the shared dirs only, as in 4.2
   warn "per-agent skills skipped (orch agents sync failed — Python >= 3.11 needed for the agent registry)"
   install_skills "$SKILLS"                               # ~/.agents/skills: Amp, OpenCode and Codex read it
-  for d in "${OC_CMDS[@]}"; do install_commands "$d" opencode-commands; done
+  install_commands "${OC_CMDS[0]}" opencode-commands     # one folder only: OpenCode reads both, two = listed twice
+  rm -f "${OC_CMDS[1]}/orch-plan.md" "${OC_CMDS[1]}/orch-run.md"
 fi
 
 # clean up files from pre-repo kit versions

@@ -59,8 +59,10 @@ It installs:
 | What | Where |
 |---|---|
 | `orch` CLI (scheduler + autopilot) | `~/.local/bin/orch` |
-| `orch-plan`, `orch-run` skills (read by Amp and OpenCode) | `~/.agents/skills/` |
+| `orch-plan`, `orch-run` skills, one copy per agent (an agent never lists them twice) | `~/.agents/skills/` or the agent's own skills folder |
 | `/orch-plan`, `/orch-run` OpenCode commands | `~/.config/opencode/commands/` |
+
+Updating replaces the skills, it never adds a second copy: the installer picks one folder per agent and removes orch's older copies from the rest (your own skills are left alone). `orch agents check` says `DUPLICATE` if an agent would still see a skill twice.
 | every installed version, side by side | `~/.local/share/herdr-orchestra/` |
 
 Install once — you don't need to run the installer again when you add an agent. After installing Claude, Hermes, Amp or anything else, run:
@@ -192,7 +194,7 @@ roles = ["coder"]
 skills_dirs = ["~/.myagent/skills"]
 ```
 
-`orch doctor [kind]` checks an installed agent against the real tool (version, whether the launch flags still exist in its `--help`, skills, herdr detection). `orch agents launch <kind>` prints the command · `orch team <kind>` / `orch team up` build and open a whole team from one tool · `orch agents sync` installs the skills for every installed agent (run it after adding a new one) · `orch agents check` confirms the skills are installed for every installed agent. The installer copies the skills into each installed agent's folders (`~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`, `~/.hermes/skills`, `~/.gemini/config/skills`) plus Claude Code and OpenCode slash commands.
+`orch doctor [kind]` checks an installed agent against the real tool (version, whether the launch flags still exist in its `--help`, skills, herdr detection). `orch agents launch <kind>` prints the command · `orch team <kind>` / `orch team up` build and open a whole team from one tool · `orch agents sync` installs the skills for every installed agent (run it after adding a new one) · `orch agents check` confirms every installed agent sees each skill exactly once (not missing, not twice). Many tools read more than one folder (Codex reads `~/.codex/skills` and `~/.agents/skills`; OpenCode reads `~/.agents/skills` and `~/.claude/skills`), so the installer writes the fewest folders that give each installed agent one copy, e.g. with Claude, Codex and OpenCode: `~/.claude/skills` (Claude and OpenCode) and `~/.codex/skills` (Codex). Claude Code gets the skill only (a skill is already the `/orch-plan` command); OpenCode gets slash commands in `~/.config/opencode/commands`.
 
 ### Agents herdr can't watch
 For a kind with `herdr_detect = false` (or one missing from the registry, which `orch sync` warns about), `orch` relies only on the **done file and the time budget**: it never reports GONE, BLOCKED or IDLE for it, treats it as free whenever it has no task, and `orch status` marks it `detect:off`. If herdr doesn't recognise the pane as an agent at all, address it by pane id: `Workers: hermes-1 (hermes @pane:w1:p3)`. `orch` then types prompts into that pane, and `orch start` reports a `STALE pane` when the id has changed (`herdr pane list` shows the current ids).

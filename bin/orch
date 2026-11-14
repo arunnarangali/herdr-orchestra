@@ -4003,8 +4003,9 @@ USAGE = """usage: orch <command> [args]
   answer <Mn> <text>       (lead) the developer's answer: into plan.md, and back to the same coder
   fix <Mn> <text> [--to <worker>]   a change to something Mn already landed: a small follow-up milestone, sent
                            straight to the coder who built Mn (no new plan; check, review and summary still apply)
-  agents sync [kind...]    install the orch-plan / orch-run skills for every installed agent (run it after adding a new agent)
-  agents check             check the orch-plan / orch-run skills are installed for every installed agent
+  agents sync [kind...]    install the orch-plan / orch-run skills so every installed agent sees each one exactly once,
+                           and remove old copies (run it after adding a new agent; the installer runs it)
+  agents check             check every installed agent sees each orch skill once (not missing, not twice)
   doctor [kind...]         check installed agents against the real tool: version, launch flags, skills, herdr
   sync                     parse .orchestrate/plan.md -> state.json (validates deps, cycles, overlaps)
   start                    create/switch to the feature branch (plan `Branch:`); create worker worktrees (worktree mode)
@@ -4119,15 +4120,25 @@ def short(p):
     return "~" + p[len(home):] if p.startswith(home) else p
 
 
-def manifest_record(*paths):
-    """Append paths to the installer's manifest so `install.sh --uninstall` removes them."""
+def manifest_lines():
+    mf = manifest_path()
+    return mf.read_text().splitlines() if mf.exists() else []
+
+
+def manifest_write(lines):
     mf = manifest_path()
     mf.parent.mkdir(parents=True, exist_ok=True)
-    lines = mf.read_text().splitlines() if mf.exists() else []
-    for p in paths:
-        if str(p) not in lines:
-            lines.append(str(p))
-    mf.write_text("".join(line + "\n" for line in lines))
+    seen, out = set(), []
+    for line in lines:
+        if line and line not in seen:
+            seen.add(line)
+            out.append(line)
+    mf.write_text("".join(line + "\n" for line in out))
+
+
+def manifest_record(*paths):
+    """Append paths to the installer's manifest so `install.sh --uninstall` removes them."""
+    manifest_write(manifest_lines() + [str(p) for p in paths])
 
 
 def _copy_asset(src, dst):
@@ -4139,74 +4150,190 @@ def _copy_asset(src, dst):
     return True
 
 
-def sync_skills(d):
-    """Copy orch-plan / orch-run into <d>/<skill>/SKILL.md. Returns (changed, paths to record)."""
+SHARED_SKILLS = "~/.agents/skills"   # read by several tools; used when it doesn't make a second copy
+
+
+def shipped_skills():
     src = asset("skills") or die("skills/ not found next to orch or in the install")
-    changed, recs = False, []
-    for s in ("orch-plan", "orch-run"):
-        changed |= _copy_asset(src / s / "SKILL.md", d / s / "SKILL.md")
-        recs.append(d / s)
-    return changed, recs
+    return sorted(p.name for p in src.iterdir() if (p / "SKILL.md").exists() and p.name.startswith("orch-"))
 
 
-def sync_commands(d, flavor):
-    """Copy the orch-*.md slash commands into d. Returns (changed, paths to record)."""
+def shipped_commands(flavor):
     src = asset(flavor)
-    if not src:
-        return False, []
-    changed, recs = False, []
-    for f in sorted(src.glob("orch-*.md")):
-        changed |= _copy_asset(f, d / f.name)
-        recs.append(d / f.name)
-    return changed, recs
+    return sorted(f.name for f in src.glob("orch-*.md")) if src else []
 
 
-def agent_assets(v):
-    """[(path, installed?)] for every skill/slash-command the registry says an agent should have."""
+def _dirs(v, key):
+    return [expand(d) for d in v.get(key, []) or []]
+
+
+def agent_reads(v, what):
+    """Every global folder the tool reads skills (or slash commands) from: `skills_reads` / `commands_reads`
+    plus the folders the registry installs into. Order kept, no repeats."""
     out = []
-    for d in v.get("skills_dirs", []):
-        for s in ("orch-plan", "orch-run"):
-            p = expand(d) / s / "SKILL.md"
-            out.append((p, p.exists()))
-    for d in v.get("commands_dirs", []):
-        for s in ("orch-plan", "orch-run"):
-            p = expand(d) / f"{s}.md"
-            out.append((p, p.exists()))
+    for d in _dirs(v, f"{what}_reads") + _dirs(v, f"{what}_dirs"):
+        if d not in out:
+            out.append(d)
     return out
 
 
-def agents_sync(reg, installed, want=None):
-    """Copy the orch skills/commands into the shared dirs + every installed agent's folders.
-    Idempotent; records each written path in the uninstall manifest. Prints a status table."""
-    home = expand("~")
-    targets = [("base", [("skills", home / ".agents/skills", None)] +
-               [("commands", d, "opencode-commands")
-                for d in (home / ".config/opencode/commands", home / ".config/opencode/command")], "")]
+def pick_dirs(agents, shared=None):
+    """agents: [(kind, reads, candidates)]. Pick the fewest folders to write so every agent reads exactly one copy.
+    Returns (chosen folders, {kind: [folders it reads a copy from]}). Prefers the shared folder, then the folders
+    each agent lists first. When no exact choice exists, the fewest agents with two copies."""
+    import itertools
+    pool = []
+    for _, reads, cands in agents:
+        for d in cands:
+            if d not in pool:
+                pool.append(d)
+    if shared is not None and shared not in pool:
+        pool.append(shared)
+    if not agents:
+        return ([shared] if shared is not None else []), {}
+
+    def rank(d):
+        return min((c.index(d) for _, _, c in agents if d in c), default=9)
+
+    best = None
+    for n in range(1, len(pool) + 1):
+        for combo in itertools.combinations(pool, n):
+            s = set(combo)
+            seen = [len(s & set(reads)) for _, reads, _ in agents]
+            cost = (sum(c == 0 for c in seen), sum(c > 1 for c in seen), n,
+                    0 if shared in s else 1, sum(rank(d) for d in combo))
+            if best is None or cost < best[0]:
+                best = (cost, combo)
+        if best and best[0][:2] == (0, 0):
+            break                                   # bigger sets only cost more
+    chosen = [d for d in pool if d in best[1]]
+    return chosen, {k: [d for d in reads if d in chosen] for k, reads, _ in agents}
+
+
+def _ours(p):
+    """Is this skill folder / command file one of orch's thin wrappers (so safe to remove)?"""
+    f = p / "SKILL.md" if p.is_dir() else p
+    try:
+        return f.is_file() and "orch lead" in f.read_text(errors="replace")
+    except OSError:
+        return False
+
+
+def _remove(p):
+    if p.is_dir() and not p.is_symlink():
+        shutil.rmtree(p)
+    else:
+        p.unlink()
+
+
+def sync_plan(reg, installed):
+    """What `orch agents sync` writes: {(kind of item, folder): flavor}, plus the per-agent view."""
+    agents = [(k, agent_reads(v, "skills"), _dirs(v, "skills_dirs") or agent_reads(v, "skills"))
+              for k, v in reg.items() if installed[k]]
+    agents = [a for a in agents if a[1]]
+    sdirs, sview = pick_dirs(agents, expand(SHARED_SKILLS))
+    flavor, cagents = {}, []
     for k, v in reg.items():
-        if want is not None and k not in want:
+        if not installed[k] or not agent_reads(v, "commands"):
             continue
-        if not installed[k]:
-            if want is not None:
+        cands = _dirs(v, "commands_dirs") or agent_reads(v, "commands")
+        for d in cands:
+            flavor.setdefault(d, v.get("commands_from", "claude-commands"))
+        cagents.append((k, agent_reads(v, "commands"), cands))
+    cdirs, cview = pick_dirs(cagents)
+    return sdirs, sview, [(d, flavor[d]) for d in cdirs], cview
+
+
+def agents_sync(reg, installed, want=None, quiet=False):
+    """Copy the orch skills/commands so that every installed agent reads exactly one copy, and remove orch's
+    copies from every other folder (old folders, renamed or dropped skills). Idempotent; keeps the uninstall
+    manifest in step. Prints a status table."""
+    if want is not None:
+        for k in sorted(want):
+            if not installed.get(k):
                 print(f"skip {k:<9} not installed")
+    was_ok = {k: all(st == "ok" for _, st in agent_assets(v)) for k, v in reg.items() if installed[k]}
+    sdirs, sview, cdirs, cview = sync_plan(reg, installed)
+    skills = shipped_skills()
+    keep, changed_dirs = set(), set()
+    for d in sdirs:
+        src = asset("skills")
+        for s in skills:
+            if _copy_asset(src / s / "SKILL.md", d / s / "SKILL.md"):
+                changed_dirs.add(d)
+            keep.add(d / s)
+    for d, fl in cdirs:
+        src = asset(fl)
+        for name in shipped_commands(fl):
+            if _copy_asset(src / name, d / name):
+                changed_dirs.add(d)
+            keep.add(d / name)
+
+    # remove every other copy: what an earlier install recorded, and stray copies in folders an agent reads
+    removed = []
+    lines = manifest_lines()
+    candidates = [Path(p) for p in lines if Path(p).name.startswith("orch-")]
+    for k, v in reg.items():
+        if installed[k]:
+            for what in ("skills", "commands"):
+                for d in agent_reads(v, what) + _dirs(v, "old_dirs"):
+                    if d.is_dir():
+                        candidates += [p for p in d.iterdir() if p.name.startswith("orch-")]
+    for p in candidates:
+        if p in keep or not (p.exists() or p.is_symlink()):
             continue
-        items = [("skills", expand(d), None) for d in v.get("skills_dirs", [])]
-        items += [("commands", expand(d), v.get("commands_from", "claude-commands"))
-                  for d in v.get("commands_dirs", [])]
-        targets.append((k, items, v.get("invoke", "Run `orch lead plan` and follow it. Feature: <feature>")))
+        if str(p) in lines or _ours(p):
+            _remove(p)
+            removed.append(p)
+    manifest_write([p for p in lines if Path(p) in keep or not Path(p).name.startswith("orch-")]
+                   + [str(p) for p in sorted(keep)])
+
     new = same = 0
-    for k, items, invoke in targets:
-        changed, recs = False, []
-        for what, d, flavor in items:
-            c, r = sync_skills(d) if what == "skills" else sync_commands(d, flavor)
-            changed, recs = changed or c, recs + r
-        manifest_record(*recs)
+    for k, v in reg.items():
+        if not installed[k] or (want is not None and k not in want):
+            continue
+        mine = sview.get(k, []) + [d for d in cview.get(k, [])]
+        changed = not was_ok[k] or any(d in changed_dirs for d in mine)
         new += changed
         same += not changed
-        status, whats = ("NEW" if changed else "ok  "), "  ".join(
-            f"{what}: {short(d)}" for what, d, _ in items)
-        print(f"  {status} {k:<8} {whats}" + (f"  {invoke}" if invoke else ""))
-    print(f"synced {len(targets)} row(s): {new} new, {same} unchanged — "
-          f"restart running agents so they pick up the skills")
+        parts = []
+        if k in sview:
+            parts.append("skills: " + (", ".join(short(d) for d in sview[k]) or "NONE"))
+        if k in cview:
+            parts.append("commands: " + (", ".join(short(d) for d in cview[k]) or "NONE"))
+        dup = any(len(x.get(k, [])) > 1 for x in (sview, cview))
+        status = "DUP " if dup else ("NEW " if changed else "ok  ")
+        print(f"  {status} {k:<8} {'  '.join(parts)}  {v.get('invoke', 'Run `orch lead plan` and follow it. Feature: <feature>')}")
+    if expand(SHARED_SKILLS) in sdirs and not any(expand(SHARED_SKILLS) in x for x in sview.values()):
+        print(f"  {'NEW ' if expand(SHARED_SKILLS) in changed_dirs else 'ok  '} {'shared':<8} skills: {SHARED_SKILLS}")
+    for p in removed:
+        print(f"  removed  old copy {short(p)}")
+    print(f"synced {new + same} agent(s): {new} new, {same} unchanged, {len(removed)} old cop"
+          f"{'y' if len(removed) == 1 else 'ies'} removed — every agent sees each skill once. "
+          f"Restart running agents so they pick up the skills")
+
+
+def agent_assets(v):
+    """[(text, state)] per skill / slash command an installed agent should see once: state is ok, missing or
+    duplicate (the same skill in two folders the tool reads, so it is listed twice)."""
+    out = []
+    reads = agent_reads(v, "skills")
+    for s in shipped_skills() if reads else []:
+        copies = [d for d in reads if (d / s / "SKILL.md").exists()]
+        out.append(_asset_state(f"skill    {s}", copies, reads))
+    reads = agent_reads(v, "commands")
+    for name in shipped_commands(v.get("commands_from", "claude-commands")) if reads else []:
+        copies = [d for d in reads if (d / name).exists()]
+        out.append(_asset_state(f"command  {name}", copies, reads))
+    return out
+
+
+def _asset_state(label, copies, reads):
+    if not copies:
+        return f"{label}  not in {', '.join(short(d) for d in reads)}", "missing"
+    if len(copies) > 1:
+        return f"{label}  twice: {' and '.join(short(d) for d in copies)}", "duplicate"
+    return f"{label}  {short(copies[0])}", "ok"
 
 
 def cmd_agents(args):
@@ -4226,27 +4353,25 @@ def cmd_agents(args):
                                  f"(add it in {user_agents_file()})")
         print(launch_cmd(kind, v, model))
         return
-    if sub == "dirs":           # for install.sh: <kind>\t<skills|commands|invoke>\t<dir or text>[\t<commands_from>]
-        for k, v in reg.items():
-            if not installed[k]:
-                continue
-            print(f"{k}\tinvoke\t{v.get('invoke', 'Run `orch lead plan` and follow it. Feature: <feature>')}")
-            for d in v.get("skills_dirs", []):
-                print(f"{k}\tskills\t{expand(d)}")
-            for d in v.get("commands_dirs", []):
-                print(f"{k}\tcommands\t{expand(d)}\t{v.get('commands_from', 'claude-commands')}")
+    if sub == "dirs":           # the folders `orch agents sync` writes: <skills|commands>\t<dir>[\t<commands_from>]
+        sdirs, _, cdirs, _ = sync_plan(reg, installed)
+        for d in sdirs:
+            print(f"skills\t{d}")
+        for d, fl in cdirs:
+            print(f"commands\t{d}\t{fl}")
         return
     if sub == "check":
-        bad = 0
+        bad = {"missing": 0, "duplicate": 0}
         for k, v in reg.items():
             if not installed[k]:
                 continue
-            for p, ok in agent_assets(v):
-                bad += not ok
-                label = "skill   " if p.name == "SKILL.md" else "command "
-                print(f"{'ok  ' if ok else 'MISSING'} {k:<9} {label}{p}")
-        if bad:
-            print(f"{bad} missing — run: orch agents sync")
+            for text, state in agent_assets(v):
+                if state != "ok":
+                    bad[state] += 1
+                print(f"{ {'ok': 'ok       ', 'missing': 'MISSING  ', 'duplicate': 'DUPLICATE'}[state]} {k:<9} {text}")
+        if bad["missing"] or bad["duplicate"]:
+            print(", ".join(f"{n} {w}" for w, n in bad.items() if n) + " — run: orch agents sync"
+                  + (" (a duplicate means the tool lists that skill twice)" if bad["duplicate"] else ""))
             sys.exit(1)
         return
     if sub == "sync":
@@ -4266,9 +4391,9 @@ def cmd_agents(args):
               f"{'yes' if v.get('verified') else 'no':<8} {','.join(v.get('roles', [])):<22} "
               f"{v.get('launch', v.get('binary', k))}")
     missing = [k for k, v in reg.items()
-               if installed[k] and any(not ok for _, ok in agent_assets(v))]
+               if installed[k] and any(st != "ok" for _, st in agent_assets(v))]
     if missing:
-        print(f"\n{', '.join(missing)}: orch-plan/orch-run missing — run: orch agents sync")
+        print(f"\n{', '.join(missing)}: orch-plan/orch-run missing or listed twice — run: orch agents sync")
     print(f"\nOverride or add kinds in {user_agents_file()}")
 
 
@@ -4308,8 +4433,9 @@ def doctor_kind(kind, v, full=True):
             out.append((False, f"launch flag {fl} is NOT in `{hcmd}` — the launch command in the registry may be out "
                                f"of date (override it in {short(user_agents_file())})"))
     if full:
-        for p, ok in agent_assets(v):
-            out.append((ok, f"skill {short(p)}" + ("" if ok else " missing — run `orch agents sync`")))
+        for text, st in agent_assets(v):
+            out.append((st == "ok", " ".join(text.split()) + ("" if st == "ok" else
+                                                               f" ({st}) — run `orch agents sync`")))
         if v.get("herdr_detect", True):
             code, txt = _probe([HERDR, "agent"])
             if code == 0:
