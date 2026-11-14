@@ -33,4 +33,4 @@ Each coder's worktree also has a `.orch-task/` folder with its task file, fix fi
 | `~/.local/share/herdr-orchestra/` | Every installed version, the active one, and the install manifest |
 | `~/.config/herdr-orchestra/agents.toml` | Your agent registry overrides |
 | `~/.config/herdr-orchestra/models.toml` | Your model catalog overrides |
-| `~/.agents/skills/`, each agent's skills folder | The `orch-plan` / `orch-run` skills |
+| `~/.agents/skills/` or an agent's own skills folder | The `orch-plan` / `orch-run` skills, one copy per agent |

@@ -9,7 +9,7 @@ description: "Install herdr-orchestra with npx herdr-orchestra@latest (or curl),
 npx herdr-orchestra@latest
 ```
 
-`@latest` is the newest GitHub Release: the npm package is published from every release, not from `main`. Run the same command again to update.
+`@latest` is the newest GitHub Release: the npm package is published from every release, not from `main`. Run the same command again to update. An update replaces the skills, it never adds a second copy: each agent reads exactly one `orch-plan` and one `orch-run`, and orch's older copies in other folders are removed (your own skills are left alone). Check it any time with `orch agents check`.
 
 ### Without Node
 
@@ -37,8 +37,8 @@ cd herdr-orchestra && git checkout v4.11.1 && bash install.sh
 | What | Where |
 |---|---|
 | `orch` CLI | `~/.local/bin/orch` |
-| `orch-plan`, `orch-run` skills | `~/.agents/skills/` and each installed agent's skills folder |
-| `/orch-plan`, `/orch-run` slash commands | Claude Code and OpenCode command folders |
+| `orch-plan`, `orch-run` skills | one folder per agent: `~/.agents/skills/` or the agent's own skills folder |
+| `/orch-plan`, `/orch-run` slash commands | OpenCode's command folder (in Claude Code the skill is the command) |
 | every installed version, side by side | `~/.local/share/herdr-orchestra/` |
 
 ## Adding an agent later

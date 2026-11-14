@@ -7,8 +7,15 @@
 #                 out when the tool has none or it is unverified, and choose the model inside the tool
 #   herdr_detect  herdr can tell idle / working / blocked for it (false: orch relies on the done file only)
 #   roles         any of "lead", "coder", "reviewer"
-#   skills_dirs   global SKILL.md folders the installer puts the thin orch-plan / orch-run skills into
-#   commands_dirs slash-command folders the installer puts orch-plan.md / orch-run.md into
+#   skills_dirs   global SKILL.md folders the installer may put the thin orch-plan / orch-run skills into
+#                 (first = preferred)
+#   skills_reads  every global skills folder the tool reads, its own and shared ones (e.g. ~/.agents/skills).
+#                 `orch agents sync` picks the fewest folders so each installed tool reads exactly ONE copy
+#                 of each skill (a skill in two folders it reads is listed twice), and removes orch's copies
+#                 from every other folder
+#   commands_dirs slash-command folders the installer may put orch-plan.md / orch-run.md into
+#   commands_reads every slash-command folder the tool reads (same one-copy rule)
+#   old_dirs      folders older versions installed into and no longer use: sync removes orch's copies there
 #   commands_from which command flavour to install there: "claude-commands" or "opencode-commands"
 #   invoke        how the developer starts the plan playbook in that agent
 #   verified      true only when the launch option and skills folder were checked against the real tool
@@ -24,11 +31,10 @@ model_flag = "--model"
 herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.claude/skills"]
-commands_dirs = ["~/.claude/commands"]
-commands_from = "claude-commands"
+old_dirs = ["~/.claude/commands"]
 invoke = "/orch-plan <feature>"
 verified = true
-notes = "Claude Code 2.1: --permission-mode acceptEdits in --help; ~/.claude/skills present; herdr kind 'claude'."
+notes = "Claude Code 2.1: --permission-mode acceptEdits in --help; ~/.claude/skills present; herdr kind 'claude'. A skill is also a slash command (/orch-plan), so no ~/.claude/commands copy: it would be a second /orch-plan."
 
 [codex]
 binary = "codex"
@@ -37,6 +43,7 @@ model_flag = "--model"
 herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.codex/skills"]
+skills_reads = ["~/.codex/skills", "~/.agents/skills"]
 invoke = "$orch-plan <feature>   (or: use the orch-plan skill: <feature>)"
 verified = true
 notes = "codex-cli 0.167: --full-auto is gone; --approve-for-me routes approvals to automatic review in the workspace-write sandbox. Reads ~/.codex/skills and ~/.agents/skills."
@@ -47,6 +54,7 @@ launch = "amp"
 herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.config/agents/skills", "~/.agents/skills"]
+skills_reads = ["~/.config/agents/skills", "~/.agents/skills"]
 invoke = "use the orch-plan skill: <feature>"
 verified = true
 notes = "No auto-approve CLI flag; set amp.dangerouslyAllowAll or `amp permissions add` rules in its settings. `amp skill list` lists skills."
@@ -58,7 +66,9 @@ model_flag = "--model"
 herdr_detect = true
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = []
+skills_reads = ["~/.agents/skills", "~/.claude/skills"]
 commands_dirs = ["~/.config/opencode/commands"]
+commands_reads = ["~/.config/opencode/commands", "~/.config/opencode/command"]
 commands_from = "opencode-commands"
 invoke = "/orch-plan <feature>"
 verified = true

@@ -2,6 +2,14 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.4.0] - 2026-11-14
+
+### Fixed
+- **Skills no longer show up twice.** An update always wrote over the same files, but the installer put each skill in a shared folder (`~/.agents/skills`) and in every agent's own folder, and several tools read both, so they listed `orch-plan` and `orch-run` twice: Codex (`~/.codex/skills` + `~/.agents/skills`), Amp (`~/.config/agents/skills` + `~/.agents/skills`), OpenCode (`~/.agents/skills` + `~/.claude/skills`, and slash commands in both `commands` and `command`). Now the agent registry lists every folder a tool reads (`skills_reads`, `commands_reads`), and `orch agents sync` (run by the installer) writes the fewest folders so each installed agent reads exactly one copy. Example: with Claude, Codex and OpenCode it writes `~/.claude/skills` (Claude and OpenCode read it) and `~/.codex/skills` (Codex), and nothing in `~/.agents/skills`. Claude Code gets the skill only, since a skill is already the `/orch-plan` command; the old `~/.claude/commands/orch-*.md` copies are removed.
+- **Updates clean up after older versions.** Every sync removes orch's copies from folders it no longer uses, and any skill an older version installed under a name that is no longer shipped (from the install manifest). Only orch's own thin wrappers are removed; your own skills, even ones named `orch-...`, are left alone. Installing three times in a row leaves exactly the same files.
+
+### Added
+- `orch agents check` (and `orch doctor`) report `DUPLICATE` when an agent would see a skill twice, with the two folders, and tell you to run `orch agents sync`.
 ## [5.3.0] - 2026-11-13
 
 ### Fixed
