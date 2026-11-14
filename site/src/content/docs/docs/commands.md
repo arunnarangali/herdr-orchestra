@@ -11,12 +11,13 @@ Run `orch` with no arguments for the full help.
 |---|---|
 | `orch status` | Workers with their models, milestones with their tiers, events waiting for the lead; prints `ALL_DONE` or `STUCK` when relevant |
 | `orch ready` | Free coder slots, fix jobs, then ready milestones |
+| `orch resume` | After a restart (computer off, herdr closed): leaves the downtime out of every time budget, names the agents' panes again, saves unsaved work, sends the tasks in progress again and starts the event manager |
 | `orch autopilot` | The event manager: runs the plan as a script and wakes the lead; exits 0 when done, 3 when it needs you |
 | `orch approve <Mn>` | Let a milestone held for risky changes land |
 | `orch report [--json]` | Estimated vs actual time per milestone and for the feature (and, when it took longer, where the time went and who it waited on), rounds, first-pass rate and wasted work, and how each model did |
 | `orch finish [--no-push]` | Final check, clean up, push the feature branch, open a PR |
 | `orch set <Mn> <status> [reason]` | Manual override; accepts `pending`, `paused`, `failed` and `skipped` |
-| `orch park <Mn> paused\|failed\|pending [reason]` | Free the worker and keep its work in a hidden ref |
+| `orch park <Mn> paused\|failed\|pending [reason]` | Free the worker and keep its work in a hidden ref (also what its coder wrote after an earlier park). A coder still working on a paused or failed milestone is told to stop |
 | `orch cooldown <agent> <min> [reason]` | Bench a worker or the reviewer; reason `gone` ends once Herdr sees it again |
 | `orch cleanup` | Remove clean worker worktrees |
 | `orch version` | The installed version |
@@ -64,7 +65,7 @@ The event manager uses these to run the work. You rarely need them by hand, and 
 | `orch start` | Create or switch to the feature branch; create worker worktrees |
 | `orch pick <Mn>` | The first available worker whose model serves the milestone's tier, or `NONE` |
 | `orch escalate <Mn> [reason]` | A milestone out of rounds gets one fresh round on a stronger model; exits 3 when there is none |
-| `orch prepare <Mn> <worker>` | Reserve the worker and put its worktree on the milestone's saved work |
+| `orch prepare <Mn> <worker>` | Reserve the worker and put its worktree on the milestone's saved work. Unsaved files in the folder are saved first, never refused |
 | `orch setup-done <worker>` | Mark a worktree as dependency-installed |
 | `orch write-task <Mn>` | Build the task file from the plan and the dependency reports |
 | `orch send <Mn> <file>` | Prompt the worker to execute a task or fix file |

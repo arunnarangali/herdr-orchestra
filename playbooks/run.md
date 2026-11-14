@@ -45,6 +45,7 @@ Run `orch events`. It lists the new events, the ones still open, the milestones 
 | `NEEDS-ANSWER Mn` | Open questions in the plan: ask the developer, write the answers under "Notes from user", set "Open questions:" to `- none`, `orch sync`, then `orch dispatch Mn`. |
 | `ESCALATED Mn`, `AUTO-DISPATCHED Mn` | Information. Mention an escalation in the final summary. |
 | `STOPPED` / the event manager is not running | Read the last lines of `.orchestrate/autopilot.log` and tell the developer why (a red baseline, the run's budget, the branch failing its check). Your next `orch dispatch` or `orch answer` starts it again; so does `orch autopilot` in a terminal. |
+| `orch status` starts with `!! EVENT MANAGER NOT RUNNING`, or the developer says the computer or herdr was restarted | Run `orch resume` once and read what it prints. It leaves the time orch was down out of every time budget, gives the agents' panes their names back, saves unsaved work, sends the tasks in progress to their agents again and starts the event manager. For each `LOST` line, give the developer the exact command it prints (`herdr agent rename <pane> <name>`, or `orch team up` for a pane with no agent in it), then run `orch resume` again. Never fix this with git by hand, and never prompt a coder yourself. |
 | `ALL_DONE` | Section 3. |
 
 If you changed plan.md by hand, run `orch sync` (it works once the event manager is idle; `orch answer` and `orch dispatch` work at any time).
