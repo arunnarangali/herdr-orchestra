@@ -4224,9 +4224,11 @@ def _ours(p):
     """Is this skill folder / command file one of orch's thin wrappers (so safe to remove)?"""
     f = p / "SKILL.md" if p.is_dir() else p
     try:
-        return f.is_file() and "orch lead" in f.read_text(errors="replace")
+        text = f.read_text(errors="replace") if f.is_file() else ""
     except OSError:
         return False
+    # every version's skills and commands: thin wrappers say "orch lead", the first (4.0) skills "Orchestrator step"
+    return "orch lead" in text or "Orchestrator step" in text
 
 
 def _remove(p):

@@ -706,6 +706,7 @@ mkdir -p "$IH/.claude/commands" "$IH/.config/opencode/commands" "$IH/.config/ope
 cp "$ROOT"/claude-commands/orch-*.md "$IH/.claude/commands/"
 cp "$ROOT"/opencode-commands/orch-*.md "$IH/.config/opencode/commands/"; cp "$ROOT"/opencode-commands/orch-*.md "$IH/.config/opencode/command/"
 echo "Run \`orch lead old\`" > "$IH/.agents/skills/orch-old/SKILL.md"      # a skill an older version shipped, since renamed
+printf -- '---\nname: orch-plan\ndescription: Orchestrator step 1 for a Herdr multi-agent team\n---\n\nYou are the LEAD of a Herdr agent team.\n' > "$IH/.codex/skills/orch-plan/SKILL.md"   # the first (4.0) skill: a full playbook, before the manifest
 echo "the developer's own skill" > "$IH/.agents/skills/orch-mine/SKILL.md"
 echo "not ours" > "$IH/.agents/skills/my-skill/SKILL.md"
 echo "$IH/.agents/skills/orch-old" > "$IH/.local/share/herdr-orchestra/manifest.txt"
@@ -716,6 +717,7 @@ count() { find "$IH" -path "$IH/.local" -prune -o \( -name "orch-plan" -o -name 
 for i in 1 2 3; do HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --no-herdr-skill > "$WORK/install$i.log" 2>&1 || break; count > "$WORK/copies$i"; done
 check "update: no tool lists a skill twice (codex reads exactly one copy)" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check >/dev/null 2>&1'
 check "codex keeps the copy in its documented folder, the extra copies were removed" '[ -f "$IH/.agents/skills/orch-plan/SKILL.md" ] && [ ! -e "$IH/.codex/skills/orch-plan" ] && [ ! -e "$IH/.config/opencode/command/orch-plan.md" ] && [ ! -e "$IH/.claude/commands/orch-plan.md" ] && grep -q "removed  old copy ~/.codex/skills/orch-plan" "$WORK/install1.log"'
+check "a 4.0 skill (full playbook, not in the manifest) counts as orch's own and is removed" '[ ! -e "$IH/.codex/skills/orch-plan" ]'
 check "a skill an older version shipped (in the manifest) is removed" '[ ! -e "$IH/.agents/skills/orch-old" ]'
 check "the developer's own skills are left alone" '[ -f "$IH/.agents/skills/orch-mine/SKILL.md" ] && [ -f "$IH/.agents/skills/my-skill/SKILL.md" ]'
 check "installing 3 times leaves the same files (one copy per tool)" 'cmp -s "$WORK/copies1" "$WORK/copies3" && [ "$(wc -l < "$WORK/copies3")" -eq 4 ] && grep -q "0 old copies removed" "$WORK/install3.log"'
