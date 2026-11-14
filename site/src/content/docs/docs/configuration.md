@@ -24,6 +24,7 @@ Most settings for a run live in the plan header: branch, base, commit style, che
 | `ORCH_MAX_LOST` | 4 | Attempts a milestone may lose to unreachable or rate-limited agents before it fails |
 | `ORCH_RISK_MAX_LINES` | 1500 | Diff size above which a milestone is held for approval |
 | `ORCH_LEAD_WAIT_MIN` | 15 | Ready milestones the lead has not dispatched start by themselves after this |
+| `ORCH_DOWN_MIN_S` | 120 | An event manager silent for longer than this was down (computer off, herdr closed). That time is not counted against any task |
 | `ORCH_LEAD_CONFIRM_S` | 30 | A wake-up the lead did not pick up (idle again, events unread) is sent again after this; the wait doubles each time |
 | `ORCH_LEAD_REWAKE_S` | 300 | The longest wait before a wake-up is sent again, and the wait for a lead herdr can't watch |
 | `ORCH_LEAD_SETTLE_S` | 300 | At the end of a run, how long the event manager stays up for a busy lead to pick up the last events |

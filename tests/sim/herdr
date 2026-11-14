@@ -4,13 +4,19 @@
 FH=${FH:?}
 case "$1 $2" in
   "agent get")  [ -f "$FH/$3.gone" ] || [ -f "$FH/$3.missing" ] && { echo "no such agent $3" >&2; exit 1; }
-                echo "{\"name\":\"$3\",\"status\":\"$(cat "$FH/$3.status" 2>/dev/null || echo idle)\"}";;
+                echo "{\"name\":\"$3\",\"pane_id\":\"$(cat "$FH/$3.paneid" 2>/dev/null)\",\"status\":\"$(cat "$FH/$3.status" 2>/dev/null || echo idle)\"}";;
   "agent prompt") [ -f "$FH/$3.deaf" ] && { echo "agent $3 unreachable" >&2; exit 1; }
                   echo "$3 <- $4" >> "$FH/prompts.log"; echo working > "$FH/$3.status"
                   nohup "$(dirname "$0")/behave.sh" "$3" "$(cat "$FH/$3.dir")" "$4" >> "$FH/behave.log" 2>&1 &;;
   "agent read") cat "$FH/$3.pane" 2>/dev/null;;
   "pane get")   [ -f "$FH/pane-$3.name" ] || { echo "pane $3 not found" >&2; exit 1; }
                 echo "{\"result\":{\"pane\":{\"pane_id\":\"$3\"}}}";;
+  "pane list")  [ -f "$FH/nolist" ] && { echo "pane list failed" >&2; exit 1; }   # panes: $FH/pane-<id>.cwd (+ .kind)
+                sep=; printf '{"result":{"panes":['
+                for f in "$FH"/pane-*.cwd; do [ -f "$f" ] || continue; id=${f##*/pane-}; id=${id%.cwd}
+                  printf '%s{"pane_id":"%s","cwd":"%s","agent":"%s"}' "$sep" "$id" "$(cat "$f")" "$(cat "$FH/pane-$id.kind" 2>/dev/null)"; sep=,
+                done; echo ']}}';;
+  "agent list") echo '{"result":{"agents":[]}}';;
   "pane current") echo '{"id":"cli:pane:current","result":{"pane":{"agent_status":"idle","pane_id":"w1:p1"},"type":"pane_current"}}';;
   "pane send-text") [ -f "$FH/pane-$3.name" ] || { echo "pane $3 not found" >&2; exit 1; }
                     agent=$(cat "$FH/pane-$3.name"); echo "pane $3 ($agent) <- $4" >> "$FH/pane-prompts.log"
@@ -25,5 +31,6 @@ case "$1 $2" in
                 echo "run $3 $4" >> "$FH/team.log"; echo "$4" > "$FH/pane-$3.cmd";;
   "pane rename") echo "pane-rename $3 $4" >> "$FH/team.log";;
   "agent rename") [ -f "$FH/pane-$3.cmd" ] && [ ! -f "$FH/nodetect" ] || { echo "no agent detected in $3" >&2; exit 1; }
-                  echo "rename $3 $4" >> "$FH/team.log"; rm -f "$FH/$4.missing"; cp "$FH/pane-$3.cwd" "$FH/$4.dir";;
+                  echo "rename $3 $4" >> "$FH/team.log"; rm -f "$FH/$4.missing"; cp "$FH/pane-$3.cwd" "$FH/$4.dir"
+                  echo "$3" > "$FH/$4.paneid";;
 esac

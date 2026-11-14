@@ -34,6 +34,7 @@ LEAD_SETTLE_S = int(os.environ.get("ORCH_LEAD_SETTLE_S", "300"))     # at ALL_DO
 LEAD_MAX_WAKES = int(os.environ.get("ORCH_LEAD_MAX_WAKES", "3"))     # ...this many times, then tell the developer
 LEAD_WAIT_S = int(os.environ.get("ORCH_LEAD_WAIT_MIN", "15")) * 60   # ready work the lead never dispatched starts by itself
 LEAD_IDLE_MAX_S = int(os.environ.get("ORCH_LEAD_IDLE_MAX_MIN", "720")) * 60   # give up waiting for answers after this
+DOWN_MIN_S = int(os.environ.get("ORCH_DOWN_MIN_S", "120"))   # the event manager silent for longer than this was down
 MAX_FIX = 3
 MAX_REVIEW = 2
 MAX_CONFLICT = 2
@@ -63,6 +64,7 @@ CHECK_TIMEOUT_S = int(os.environ.get("ORCH_CHECK_TIMEOUT_MIN", "30")) * 60
 ACTIVE = {"coding", "verifying", "awaiting-review", "reviewing", "reviewed", "committed", "conflict", "needs-fix",
           "held"}
 TERMINAL_OK = {"merged"}
+RESTING = {"pending", "paused", "failed", "needs-fix", "conflict"}   # no agent on it; a coder takes it up again later
 
 
 # ---------------------------------------------------------------- helpers
@@ -150,7 +152,7 @@ def state_lock():
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
 LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "fix",
-              "team"}
+              "team", "resume"}
 _LEASE = None
 
 
@@ -987,6 +989,7 @@ def cmd_sync(args):
         "lead_seq": old.get("lead_seq", 0),
         "lead_wake": old.get("lead_wake"),
         "lead_ready_told": old.get("lead_ready_told"),
+        "tree_task": old.get("tree_task"),
         "workers": {},
         "order": ids,
         "tasks": {},
@@ -1110,6 +1113,106 @@ def restore_stash(st, tid):
         die(f"could not restore {tid}'s parked work: it conflicts with what landed since. It is kept in {ref} "
             f"(`git stash apply {sha}` to look at it)\n{r.stdout}{r.stderr}")
     git("update-ref", "-d", ref, cwd=ROOT)
+
+
+def rescue_ref(st, who):
+    """A hidden ref for unsaved files orch found and could not give to a milestone. Kept by `orch finish`."""
+    ref = f"{REF_NS}/{st['branch'].replace('/', '-')}/rescue-{who}-{time.strftime('%Y%m%d-%H%M%S')}"
+    n = 1
+    while ref_ok(ref if n == 1 else f"{ref}-{n}"):       # never write over an earlier rescue
+        n += 1
+    return ref if n == 1 else f"{ref}-{n}"
+
+
+def _last_task_of(st, name):
+    """The milestone this coder worked on most recently (by its recorded attempts), or None."""
+    best = (0, None)
+    for tid in st["order"]:
+        ends = [a.get("end", 0) for a in st["tasks"][tid].get("attempts") or []
+                if a.get("kind") == "coder" and a.get("agent") == name]
+        if ends and max(ends) > best[0]:
+            best = (max(ends), tid)
+    return best[1]
+
+
+def save_stray(st, name, rescue=True):
+    """Worktree mode: a coder that holds no milestone has uncommitted files in its folder (it kept working after
+    its milestone was parked, or the machine went down). Save them into the milestone they belong to: the one
+    whose saved work this folder is on, else the one this coder worked on last if nothing of it was saved yet.
+    When orch can't tell whose they are, they go to a rescue ref (rescue=True) or stay where they are.
+    Returns a line saying what happened, or None when there was nothing to save."""
+    w = st["workers"].get(name) or {}
+    d = w.get("dir")
+    if st["isolation"] != "worktree" or w.get("task") or not d or not Path(d).exists() or not is_dirty(d):
+        return None
+    head = git("rev-parse", "HEAD", cwd=d).stdout.strip()
+    owner = None
+    for tid in st["order"]:
+        if st["tasks"][tid]["status"] in RESTING and ref_ok(task_ref(st, tid)) and \
+                git("rev-parse", task_ref(st, tid), cwd=ROOT).stdout.strip() == head:
+            owner = tid
+            break
+    if not owner:
+        last = _last_task_of(st, name)
+        lt = st["tasks"].get(last) or {}
+        if last and lt["status"] in RESTING and lt.get("last_worker") == name and not lt.get("worker") \
+                and not work_ref(st, last) and not ahead_of_branch(st, d):
+            owner = last
+    if owner:
+        wip_commit(d, f"orch wip {owner}: files written after it was parked")
+        git("update-ref", task_ref(st, owner), "HEAD", cwd=d)
+        return f"SAVED {name}'s unsaved files into {owner}'s saved work ({task_ref(st, owner)})"
+    if not rescue:
+        return None
+    ref = rescue_ref(st, name)
+    wip_commit(d, f"orch rescue: unsaved files found in {name}'s folder")
+    git("update-ref", ref, "HEAD", cwd=d)
+    return (f"RESCUED {name}'s unsaved files: orch can't tell which milestone they belong to, so they are kept in "
+            f"{ref} (`git show --stat {ref}` to look)")
+
+
+def shared_fold(st, tid):
+    """Shared mode: the main folder has uncommitted files that belong to Mn (written after Mn was parked). Add
+    them to Mn's saved work and leave the folder clean. If they can't be combined with what was saved before,
+    the newer files are kept in a rescue ref. Returns a line saying what happened."""
+    ref = task_ref(st, tid)
+    if not ref_ok(ref):
+        stash_to_ref(st, tid)
+        return f"SAVED the unsaved files in the main folder into {tid}'s saved work ({ref})"
+    old = git("rev-parse", ref, cwd=ROOT).stdout.strip()
+    git("stash", "push", "--include-untracked", "-q", "-m", f"orch {tid} later", cwd=ROOT)
+    new = git("rev-parse", "stash@{0}", cwd=ROOT).stdout.strip()
+    keep = rescue_ref(st, tid)
+    git("update-ref", keep, new, cwd=ROOT)       # safe before anything else is tried
+    git("stash", "drop", "-q", cwd=ROOT)
+
+    def wipe():
+        git("reset", "--hard", "-q", "HEAD", cwd=ROOT)
+        git("clean", "-fdq", cwd=ROOT)           # only what the applies below put there: both are kept in refs
+    if git("stash", "apply", "-q", old, cwd=ROOT, check=False).returncode == 0 and \
+            git("stash", "apply", "-q", new, cwd=ROOT, check=False).returncode == 0:
+        stash_to_ref(st, tid)                    # both together are Mn's saved work now
+        git("update-ref", "-d", keep, cwd=ROOT)
+        return f"SAVED the unsaved files in the main folder into {tid}'s saved work ({ref})"
+    wipe()
+    return (f"RESCUED the unsaved files in the main folder: they don't fit on top of {tid}'s saved work, so they "
+            f"are kept in {keep} (`git stash show -p {new[:12]}` to look); {tid} keeps its earlier saved work")
+
+
+def stop_note(st, agent, tid, status, reason):
+    """Tell a coder whose milestone was just paused or failed to stop. Only when it is (or may be) still working;
+    whatever it writes anyway is saved the next time the milestone or its folder is used."""
+    if watched(st, agent):
+        s = herdr_state(agent)
+        if s is None or not word(s, "working"):
+            return False
+    why = " ".join((reason or status).split())[:160]
+    try:
+        deliver(st, agent, f"STOP: {tid} is {status} ({why}). Stop working on it now and do not change any more "
+                           f"files. What you did so far is saved. You get a new prompt if it continues.")
+    except DeliveryError:
+        return False
+    return True
 
 
 def commit_message(st, tid):
@@ -1384,6 +1487,7 @@ def cmd_start(args):
     agents = [(name, w, "WORKER") for name, w in st["workers"].items()]
     if st.get("reviewer"):
         agents.append((st["reviewer"], st.get("reviewer_info") or {}, "REVIEWER"))
+    lost = False
     for name, w, label in agents:
         where = f" dir={w['dir']}" if label == "WORKER" else ""
         if w.get("pane"):
@@ -1398,7 +1502,11 @@ def cmd_start(args):
             herdr = "detect:off (relying on its done file)"
         else:
             herdr = "found" if herdr_state(name) is not None else "NOT FOUND"
+            lost = lost or herdr == "NOT FOUND"
         print(f"{label} {name} kind={w.get('kind')}{where} herdr={herdr}")
+    if lost:
+        print("HINT an agent herdr can't find: after a herdr or computer restart the panes come back without their "
+              "names — `orch resume` names them again; `orch team up` opens the ones that are really gone")
 
 
 def deps_met(st, t):
@@ -1519,23 +1627,36 @@ def cmd_prepare(args):
         die("no free slot (max parallel reached)")
     d = Path(w["dir"] or ROOT)
     if st["isolation"] == "worktree":
-        if is_dirty(d):
-            die(f"{d} has uncommitted changes — park or clean that worker first")
+        in_place = w.get("task") == tid and is_dirty(d)    # its own work in progress: it carries on right there
+        if is_dirty(d) and not in_place:   # never refuse: save what is there first, then hand the folder over
+            print(save_stray(st, worker))
         src = work_ref(st, tid)
         if src and src != task_ref(st, tid):       # pre-4.5 task branch: carry its work over to the hidden ref
             git("update-ref", task_ref(st, tid), src, cwd=ROOT)
             src = task_ref(st, tid)
-        git("switch", "-q", "--detach", src or st["branch"], cwd=d)
+        if not in_place:
+            git("switch", "-q", "--detach", src or st["branch"], cwd=d)
     else:
         if git("rev-parse", "--abbrev-ref", "HEAD", cwd=ROOT).stdout.strip() != st["branch"]:
             die(f"main tree is not on {st['branch']}")
+        mine = False
+        if is_dirty(ROOT) and not holds(st, tid) and not coders_busy(st):
+            # files written after a milestone was parked belong to the milestone that had the folder last
+            last = st.get("tree_task")
+            if last == tid:
+                mine = True
+                if ref_ok(task_ref(st, tid)):
+                    print(shared_fold(st, tid))
+            elif last in st["tasks"] and st["tasks"][last]["status"] in RESTING:
+                print(shared_fold(st, last))
         if ref_ok(task_ref(st, tid)):
             if is_dirty(ROOT):
                 die(f"main tree has uncommitted changes, so {tid}'s parked work ({task_ref(st, tid)}) can't be "
                     f"restored — finish or discard them first")
             restore_stash(st, tid)
-        elif is_dirty(ROOT) and t["status"] == "pending" and not holds(st, tid):
+        elif is_dirty(ROOT) and t["status"] == "pending" and not holds(st, tid) and not mine:
             die("main tree has uncommitted changes that no milestone owns — commit, stash or discard them first")
+        st["tree_task"] = tid
     (d / TASK_DIR / tid).mkdir(parents=True, exist_ok=True)
     t.update(worker=worker, last_worker=worker, dir=str(d))
     t.pop("assign", None)          # a lead's "this coder" holds for one dispatch; later retries may move
@@ -1561,14 +1682,61 @@ def cmd_setup_done(args):
     print("OK")
 
 
+def account_downtime(st):
+    """The event manager writes a heartbeat (`run.beat`) every loop. A heartbeat older than DOWN_MIN_S when it
+    starts again means nothing was watching the run meanwhile (computer off, herdr closed, manager killed).
+    That time is nobody's working time: every open wait is moved forward by it, so no task is paused as "over
+    its time budget" for time orch was not there, and the window is kept in `run.downs` for the time report.
+    Returns the seconds orch was down (0 = it was not)."""
+    run = st.setdefault("run", {})
+    beat, t = run.get("beat"), now()
+    run["beat"] = t
+    if not beat or t - beat < DOWN_MIN_S:
+        return 0
+    run.setdefault("downs", []).append({"from": beat, "to": t})
+    del run["downs"][:-100]
+    for task_ in st["tasks"].values():
+        w = task_.get("wait")
+        if w:
+            w["down_s"] = w.get("down_s", 0) + max(0, t - max(beat, w.get("started", w["since"])))
+            w["since"] += max(0, t - max(beat, w["since"]))
+            if w.get("blocked_since"):
+                w["blocked_since"] += max(0, t - max(beat, w["blocked_since"]))
+        if task_.get("ready_ts"):              # the lead could not dispatch while orch was down either
+            task_["ready_ts"] += max(0, t - max(beat, task_["ready_ts"]))
+    return t - beat
+
+
+def needs_manager(st):
+    """True when the run has work only the event manager can move on: an agent being waited on, a step in
+    progress, or a milestone that is ready and released."""
+    if not (st.get("run") or {}).get("started"):
+        return False                           # never driven yet: `orch autopilot` (or a dispatch) starts it
+    for t in st["tasks"].values():
+        if t.get("wait") or (t["status"] in ACTIVE and t["status"] != "held"):
+            return True
+        if t["status"] == "pending" and deps_met(st, t) and (t.get("go") or not lead_on(st)):
+            return True
+    return False
+
+
+def _clock(ts):
+    """11:42 for today, else 2026-11-14 11:42."""
+    lt = time.localtime(ts)
+    return time.strftime("%H:%M" if lt[:3] == time.localtime()[:3] else "%Y-%m-%d %H:%M", lt)
+
+
 def record_attempt(t, outcome, usage=None):
     """Close the task's current wait as one attempt in its metrics (Phase 3: orch report)."""
     w = t.get("wait")
     if not w:
         return
     start = w.get("started", w.get("since", now()))
+    down = min(w.get("down_s", 0), max(0, now() - start))     # orch was not running: not the agent's time
     a = {"kind": w.get("kind"), "agent": w.get("agent"), "file": w.get("file"), "start": start, "end": now(),
-         "secs": max(0, now() - start), "nudges": w.get("nudges", 0), "outcome": outcome}
+         "secs": max(0, now() - start - down), "nudges": w.get("nudges", 0), "outcome": outcome}
+    if down:
+        a["down_s"] = down
     if w.get("model"):
         a["model"], a["tier"] = w["model"], w.get("tier")
     blocked = w.get("blocked_s", 0) + (now() - w["blocked_since"] if w.get("blocked_since") else 0)
@@ -2189,7 +2357,11 @@ def _park(st, tid, status, reason, force=False):
     t = st["tasks"][tid]
     record_attempt(t, f"parked as {status}: {reason}" if reason else f"parked as {status}")
     d, w = t.get("dir"), t.get("worker")
+    wait, note_to = t.get("wait") or {}, None
     if w and holds(st, tid):
+        if status in ("paused", "failed") and wait.get("kind") == "coder" and wait.get("agent") == w \
+                and not Path(wait["sentinel"]).exists():
+            note_to = w                        # parked under a coder that had not finished: tell it to stop
         if st["isolation"] == "worktree" and d and Path(d).exists():
             if is_dirty(d):
                 wip_commit(d, f"orch wip {tid}: parked — {reason or status}")
@@ -2198,6 +2370,15 @@ def _park(st, tid, status, reason, force=False):
         elif st["isolation"] == "shared":
             stash_to_ref(st, tid)              # the tree is clean again, so the next milestone can start
         st["workers"][w]["task"] = None
+    elif t["status"] in RESTING:
+        # already parked, but its coder may have kept writing since: that work is saved too, never skipped
+        saved = None
+        if st["isolation"] == "worktree":
+            saved = save_stray(st, w or t.get("last_worker"), rescue=False)
+        elif st.get("tree_task") == tid and not coders_busy(st) and is_dirty(ROOT):
+            saved = shared_fold(st, tid)
+        if saved:
+            print(saved)
     if w:
         t["last_worker"], t["worker"] = w, None
     if st.get("reviewer_busy") == tid:
@@ -2205,6 +2386,8 @@ def _park(st, tid, status, reason, force=False):
     move(st, tid, status, reason, force=force)
     t["wait"] = None
     save(st)
+    if note_to and stop_note(st, note_to, tid, status, reason):
+        print(f"STOP_NOTE {tid} -> {note_to}: told to stop and not change more files")
 
 
 def cmd_park(args):
@@ -2271,6 +2454,12 @@ def cmd_status(args):
     st = load()
     if driver_alive():
         print(f"driven by {driver_line(driver_info())}")
+    elif needs_manager(st):
+        beat = (st.get("run") or {}).get("beat")
+        print("!! EVENT MANAGER NOT RUNNING"
+              + (f" since {_clock(beat)} ({_dur(now() - beat)} ago)" if beat else "")
+              + " — nothing is watching this run, so it will not move.\n"
+              "!! Run `orch resume` (after a restart it also finds the agents again and re-sends their tasks).")
     print(f"branch={st['branch']} base={st.get('base')} isolation={st['isolation']} "
           f"max_parallel={st['max_parallel']} reviewer={st['reviewer']} (busy: {st.get('reviewer_busy')})")
     if st.get("integration_broken"):
@@ -2296,7 +2485,7 @@ def cmd_status(args):
               + (f"; waiting for `orch dispatch`: {', '.join(hold)}" if hold else "")
               + (f"; wake-up sent {lw['n']}x (last {_fmt_secs(now() - lw.get('ts', now()))} ago), not picked up yet"
                  if unread_events(st) and (lw := st.get("lead_wake") or {}).get("n") else "")
-              + ("" if driver_alive() else "; the event manager is NOT running (`orch autopilot`)"))
+              + ("" if driver_alive() else "; the event manager is NOT running (`orch resume`)"))
     if all(t["status"] in ("merged", "skipped") for t in st["tasks"].values()):
         print(f"ALL_DONE — run `orch finish` to push {st['branch']} and open a PR into {st.get('base')}")
     elif lead_on(st) and (undispatched(st) or any(event_open(st, e) for e in st["lead_events"])):
@@ -2360,12 +2549,17 @@ def cmd_finish(args):
                cwd=ROOT).stdout.split()
     if st["isolation"] == "worktree":
         remove_worktrees(st)
+    rescued = [r for r in refs if "/rescue-" in r]
+    refs = [r for r in refs if r not in rescued]
     for ref in refs:
         git("update-ref", "-d", ref, cwd=ROOT)
     for tid in st["order"]:                       # task branches left by orch < 4.5
         if branch_exists(f"{st['branch']}-{tid}"):
             git("branch", "-D", "-q", f"{st['branch']}-{tid}", cwd=ROOT, check=False)
     print(f"CLEAN {st['branch']} is the only branch this run made ({len(refs)} hidden ref(s) removed)")
+    for ref in rescued:
+        print(f"KEPT {ref}: unsaved files orch rescued during the run and no milestone used — look with "
+              f"`git show --stat {ref}`, delete with `git update-ref -d {ref}`")
     if "--no-push" in args:
         print(f"NOT PUSHED (--no-push): push {st['branch']} and open a PR into {base} when ready")
         return
@@ -2696,7 +2890,7 @@ EVENT_HELP = {
                      "developer the fix in the event text (usually: rename the reviewer's new pane). Review resumes "
                      "by itself once herdr finds the reviewer again.",
     "all_done": "every milestone landed. Finish .orchestrate/summary.md (see `orch lead run`, section ALL_DONE).",
-    "stopped": "the event manager stopped. Tell the developer why; they run `orch autopilot` again.",
+    "stopped": "the event manager stopped. Tell the developer why; they run `orch resume` (or `orch autopilot`).",
 }
 
 
@@ -2735,7 +2929,8 @@ def cmd_events(args):
             f"{n} ({w['kind']}" + (f": {w['model']}, {w.get('tier') or 'unrated'}" if w.get("model") else "") + ")"
             + (" free" if n in free else f" on {w['task']}") for n, w in st["workers"].items()))
         print("event manager: " + (driver_line(driver_info()) if driver_alive() else
-                                   "NOT running — your next `orch dispatch` or `orch answer` starts it"))
+                                   "NOT running — your next `orch dispatch` or `orch answer` starts it"
+                                   + (" (work is in progress: run `orch resume` now)" if needs_manager(st) else "")))
         if not new and not old and not hold:
             print("Nothing needs you.")
         print("Handle each event above, then STOP: you are woken again when something else happens. Never prompt a "
@@ -3249,6 +3444,14 @@ def cmd_autopilot(args):
     if stale:
         say("A pane id in plan.md is stale. Stopping.\n" + "\n".join(stale), True)
         sys.exit(3)
+    # after a gap (computer off, herdr closed, manager killed): don't count the gap, find the agents again, save
+    # unsaved work and re-send what was in progress. Nothing happens when there was no gap.
+    try:
+        _, rout = run("resume", "--from-manager")
+        if rout:
+            say("back after a gap:\n" + rout, True)
+    except RuntimeError as e:
+        say(f"could not run the restart recovery — carrying on without it\n{e}")
     st = load()
     for name in [n for n in st["workers"] if not watched(st, n)] + (
             [st["reviewer"]] if st.get("reviewer") and not watched(st, st["reviewer"]) else []):
@@ -3284,7 +3487,7 @@ def cmd_autopilot(args):
         el, last_tick = time.time() - last_tick, time.time()
         if waiting_since:
             el = 0
-        patch_state(lambda s_: s_["run"].update(driven_s=round(s_["run"].get("driven_s", 0) + el, 1)))
+        patch_state(lambda s_: s_["run"].update(driven_s=round(s_["run"].get("driven_s", 0) + el, 1), beat=now()))
         st = load()
         if st.get("budget_s") and st["run"].get("driven_s", 0) > st["budget_s"]:
             say(f"STOPPED — the run's budget ({st['budget_s'] // 60} min of autopilot time) is used up. Raise "
@@ -3574,6 +3777,11 @@ def time_account(st, at=None):
     time orch can't place is shown as orch's own steps, and a missing estimate stays missing."""
     at = at or now()
     trans, rows = _transitions(st), []
+    downs = (st.get("run") or {}).get("downs") or []
+
+    def down_in(a, b):
+        """Seconds of [a, b] in which orch was not running (computer off, event manager stopped)."""
+        return sum(max(0, min(b, d["to"]) - max(a, d["from"])) for d in downs)
     for tid in st["order"]:
         t = st["tasks"][tid]
         if t["status"] == "skipped":
@@ -3581,7 +3789,8 @@ def time_account(st, at=None):
         evs = trans.get(tid, [])
         first = next((i for i, e in enumerate(evs) if e.get("to") == "coding"), None)
         row = {"task": tid, "title": t.get("title", ""), "estimate_s": t.get("estimate_s"), "actual_s": None,
-               "landed": t["status"] == "merged", "start": None, "end": None, "parts": [], "over_s": None}
+               "landed": t["status"] == "merged", "start": None, "end": None, "parts": [], "over_s": None,
+               "down_s": 0}
         rows.append(row)
         if first is None:
             continue
@@ -3601,7 +3810,7 @@ def time_account(st, at=None):
             a_, b_ = max(evs[i]["ts"], start), min(evs[i + 1]["ts"] if i + 1 < len(evs) else end, end)
             w = _wait_part(st, evs[i].get("to"), evs[i].get("why"), evs[i].get("agent"))
             if w and b_ > a_:
-                add(w[0], w[1], b_ - a_, True)
+                add(w[0], w[1], b_ - a_ - down_in(a_, b_), True)
         # working: from the attempts
         esc = next((e["ts"] for e in evs[first:] if (e.get("why") or "").startswith("escalated")), None)
         built = reviewed = False
@@ -3634,10 +3843,11 @@ def time_account(st, at=None):
                 again = c.get("where") in seen
                 seen.add(c.get("where"))
                 add("checks run again after fixes" if again else "checks", "check command", c.get("secs", 0), again)
-        total = end - start
+        down = down_in(start, end)             # not counted: nobody could work or be watched
+        total = end - start - down
         placed = sum(p["secs"] for p in parts.values())
         add("orch's own steps (setup, prompts, merge)", "orch", max(0, total - placed), False)
-        row.update(start=start, end=end, actual_s=total,
+        row.update(start=start, end=end, actual_s=total, down_s=down,
                    parts=sorted(parts.values(), key=lambda p: (p["extra"], -p["secs"])))
         if row["estimate_s"]:
             row["over_s"] = total - row["estimate_s"]
@@ -3645,21 +3855,22 @@ def time_account(st, at=None):
     # landed and before a fix asked with `orch fix` is not counted, time with nothing running is
     started = sorted((r for r in rows if r["start"]), key=lambda r: r["start"])
     feat = {"estimate_s": st.get("estimate_s"), "actual_s": None, "over_s": None, "idle_s": 0, "after_done_s": 0,
-            "landed": bool(rows) and all(r["landed"] for r in rows), "why": []}
+            "down_s": 0, "landed": bool(rows) and all(r["landed"] for r in rows), "why": []}
     if started:
         fstart = started[0]["start"]
         fend = max(r["end"] for r in started)
         reach, idle, after = started[0]["end"], 0, 0
         for r in started[1:]:
             if r["start"] > reach:
-                gap = r["start"] - reach
+                gap = r["start"] - reach - down_in(reach, r["start"])
                 if st["tasks"][r["task"]].get("fix_of") and all(x["landed"] and x["end"] <= reach
                                                                 for x in started if x["start"] < r["start"]):
                     after += gap
                 else:
                     idle += gap
             reach = max(reach, r["end"])
-        feat.update(actual_s=fend - fstart - after, idle_s=idle, after_done_s=after)
+        fdown = down_in(fstart, fend)
+        feat.update(actual_s=fend - fstart - after - fdown, idle_s=idle, after_done_s=after, down_s=fdown)
         if feat["estimate_s"]:
             feat["over_s"] = feat["actual_s"] - feat["estimate_s"]
         agg = {}
@@ -3698,7 +3909,11 @@ def time_lines(acct):
     if est and act is not None:
         head += (f", {_dur(f['over_s'])} longer than estimated" if f["over_s"] > 0 else
                  f", {_dur(f['over_s'])} quicker than estimated" if f["over_s"] < 0 else ", on time")
-    out += [head, "", "| Milestone | Estimate | Actual | Difference | Built by |", "|---|---|---|---|---|"]
+    out += [head]
+    if f.get("down_s"):
+        out += [f"Not counted: {_dur(f['down_s'])} while orch was not running (computer off, herdr closed or the "
+                f"event manager stopped). No agent is charged for that time."]
+    out += ["", "| Milestone | Estimate | Actual | Difference | Built by |", "|---|---|---|---|---|"]
     for r in acct["tasks"]:
         diff = "-" if r["over_s"] is None else ("on time" if r["over_s"] == 0 else
                                                 f"{'+' if r['over_s'] > 0 else '-'}{_dur(r['over_s'])}")
@@ -3898,6 +4113,9 @@ def team_up(args):
     missing_dirs = [n for n, w, d in agents if n in st["workers"] and not d]
     if missing_dirs:
         die(f"run `orch start` first: it makes each coder's folder ({', '.join(missing_dirs)} have none yet)")
+    # after a restart: panes that only lost their name get it back, and a coder's own pane that came back as a
+    # plain shell gets its agent started again, instead of a second pane next to it
+    empty = {} if dry else rename_lost(dict(st, lead=None), hints=False)
     todo = []
     for name, w, d in agents:
         if w.get("pane"):
@@ -3928,20 +4146,21 @@ def team_up(args):
             print(f"WOULD   {name}: {' '.join(shlex.quote(x) for x in split)}  then  herdr pane run <new pane> "
                   f"{shlex.quote(cmd)}  then  herdr agent rename <new pane> {name}")
             continue
-        ok, data, out = _herdr_json(split)
-        pid = None
-        try:
-            pid = data["result"]["pane"]["pane_id"] if ok else None
-        except (TypeError, KeyError):
-            pid = (re.search(r'"pane_id"\s*:\s*"([\w:.-]+)"', out) or [None, None])[1]
+        pid = empty.get(name)
         if not pid:
-            print(f"FAILED  {name}: herdr could not open a pane ({out.splitlines()[-1] if out else 'no output'})")
-            failed += 1
-            continue
-        last = pid
+            ok, data, out = _herdr_json(split)
+            try:
+                pid = data["result"]["pane"]["pane_id"] if ok else None
+            except (TypeError, KeyError):
+                pid = (re.search(r'"pane_id"\s*:\s*"([\w:.-]+)"', out) or [None, None])[1]
+            if not pid:
+                print(f"FAILED  {name}: herdr could not open a pane ({out.splitlines()[-1] if out else 'no output'})")
+                failed += 1
+                continue
+            last = pid
         ok, _, out = _herdr_json([HERDR, "pane", "run", pid, cmd])
         if not ok:
-            print(f"FAILED  {name}: pane {pid} opened, but `herdr pane run` failed ({out[-120:]})")
+            print(f"FAILED  {name}: pane {pid} is there, but `herdr pane run` failed ({out[-120:]})")
             failed += 1
             continue
         if model and not v.get("model_flag"):
@@ -3972,7 +4191,207 @@ def team_up(args):
         sys.exit(3)
 
 
+# ---------------------------------------------------------------- resume: carry on after a restart
+def _dicts_with(obj, key, parent=None):
+    """Every dict (with its parent dict) anywhere in a JSON value that has a string under `key`."""
+    out = []
+    if isinstance(obj, dict):
+        if isinstance(obj.get(key), str):
+            out.append((obj, parent))
+        for v in obj.values():
+            out += _dicts_with(v, key, obj)
+    elif isinstance(obj, list):
+        for v in obj:
+            out += _dicts_with(v, key, parent)
+    return out
+
+
+def herdr_panes():
+    """{pane id: {"cwds": [...], "kind": str or None}} from `herdr pane list` and `herdr agent list`, or None
+    when herdr can't list panes. Read loosely: any object with a `pane_id`, its `cwd` / `foreground_cwd`, and the
+    agent kind where herdr gives one, so a changed JSON layout still yields the ids and folders."""
+    panes, listed = {}, False
+    for sub in ("pane", "agent"):
+        ok, data, _ = _herdr_json([HERDR, sub, "list"])
+        if not ok or data is None:
+            continue
+        listed = True
+        for d, parent in _dicts_with(data, "pane_id"):
+            p = panes.setdefault(d["pane_id"], {"cwds": [], "kind": None})
+            srcs = [d] + [x for x in (d.get("agent"), parent if sub == "agent" else None) if isinstance(x, dict)]
+            for src in srcs:
+                for k in ("foreground_cwd", "cwd"):
+                    if isinstance(src.get(k), str) and src[k] and src[k] not in p["cwds"]:
+                        p["cwds"].append(src[k])
+                for k in ("agent_kind", "kind", "agent"):
+                    if isinstance(src.get(k), str) and src[k] and not p["kind"]:
+                        p["kind"] = src[k].lower()
+    return panes if listed else None
+
+
+def agent_pane(name):
+    """The pane id herdr reports for a live agent name, or None."""
+    ok, data, _ = _herdr_json([HERDR, "agent", "get", name])
+    return _find_key(data, "pane_id") if ok and data is not None else None
+
+
+def _inside(path, folder):
+    a, b = os.path.realpath(path), os.path.realpath(folder)
+    return a == b or a.startswith(b.rstrip("/") + "/")
+
+
+def rename_lost(st, hints=True):
+    """herdr brings panes back after a restart, but not the agents' names, and orch reaches agents by name. For
+    every agent in the plan that herdr can't find, look for its pane by folder and give the name back. A coder's
+    worktree is its own folder, so one pane there is its pane. The reviewer and the lead sit in the main folder,
+    next to the developer's own panes, so there the pane must also show the agent's kind. Where that can't be
+    decided, print the exact command (hints=False: only say what was named).
+    Returns {name: pane id or None} for the agents still not found; a pane id means "its pane is there (a
+    coder's own folder), but no agent runs in it"."""
+    plan = [(n, w, w.get("dir") or str(ROOT), st["isolation"] == "worktree" and bool(w.get("dir")))
+            for n, w in st["workers"].items()]
+    if st.get("reviewer"):
+        plan.append((st["reviewer"], st.get("reviewer_info") or {}, str(ROOT), False))
+    if st.get("lead"):
+        plan.append((st["lead"]["name"], st["lead"], str(ROOT), False))
+    plan = [x for x in plan if not x[1].get("pane") and x[1].get("detect", True)]
+    lost = [x for x in plan if herdr_state(x[0]) is None]
+    if not lost:
+        return {}
+    say = print if hints else (lambda *_: None)
+    panes = herdr_panes()
+    if panes is None:
+        for n, _, d, _ in lost:
+            say(f"LOST    {n}: herdr has no agent with this name, and `herdr pane list` did not answer. Find its "
+                f"pane with `herdr agent list` (folder {short(d)}), then: herdr agent rename <pane> {n}")
+        return {x[0]: None for x in lost}
+    found = {x[0] for x in plan} - {x[0] for x in lost}
+    taken = {agent_pane(n) for n in found} - {None}
+    reg = registry(required=False) or {}
+    still, pending, progress, cands = {}, list(lost), True, {}
+    while pending and progress:                # a pane given to one agent can settle who gets another
+        progress = False
+        for item in list(pending):
+            n, w, d, own = item
+            kind = (w.get("kind") or "").lower()
+            here = [pid for pid, p in panes.items() if pid not in taken and any(_inside(x, d) for x in p["cwds"])]
+            same = [pid for pid in here if kind and panes[pid]["kind"]
+                    and (kind in panes[pid]["kind"] or panes[pid]["kind"] in kind)]
+            cands[n] = here
+            pick = here[0] if own and len(here) == 1 else same[0] if len(same) == 1 else None
+            if not pick:
+                continue
+            pending.remove(item)
+            taken.add(pick)
+            progress = True
+            ok, _, _ = _herdr_json([HERDR, "agent", "rename", pick, n])
+            if ok:
+                print(f"NAMED   {n}: pane {pick} (in {short(d)}) has its name back")
+                continue
+            still[n] = pick if own else None
+            v = reg.get(w.get("kind"))
+            cmd = launch_cmd(w.get("kind"), v, w.get("model"), strict=False) if v else (w.get("kind") or "<its agent>")
+            say(f"LOST    {n}: pane {pick} is in its folder ({short(d)}), but herdr sees no agent running in it. "
+                + (f"`orch team up` starts it there; or start it yourself (`{cmd}`)" if own else
+                   f"Start it there (`{cmd}`)") + f", then: herdr agent rename {pick} {n}")
+    for n, w, d, own in pending:
+        still[n] = None
+        if cands.get(n):
+            say(f"LOST    {n}: can't tell which pane is {n} ({', '.join(cands[n])} "
+                f"{'is' if len(cands[n]) == 1 else 'are'} in {short(d)}). Look, then: herdr agent rename <pane> {n}")
+        else:
+            say(f"LOST    {n}: no pane is left in its folder ({short(d)}). `orch team up` opens one, or start it "
+                f"yourself there and: herdr agent rename <pane> {n}")
+    return still
+
+
+RESUME_CODER = ("orch was restarted (the computer or herdr was off), so here is your task again. The changes you "
+                "made before are still in this folder: look at them first (`git status`, `git diff`), keep what is "
+                "right and carry on from there. Do not start over. ")
+RESUME_REVIEWER = "orch was restarted (the computer or herdr was off), so here is your review task again. "
+
+
+def cmd_resume(args):
+    """orch resume -> carry on after a restart (the computer was off, herdr was closed, the event manager died).
+    1. says how long orch was down, and does not count that time against any task;
+    2. gives the agents' panes their names back (found by folder), or prints the exact rename command;
+    3. saves unsaved files left in the coders' folders;
+    4. sends each task that was in progress to its agent again (a fresh conversation carries on from the files);
+    5. starts the event manager, which wakes the lead if events wait for it.
+    Safe to run at any time and more than once. Exit 3: an agent with work in progress is still not found.
+    (`--from-manager`: the event manager's own call when it starts; it does 1-4 only after a real gap.)"""
+    from_manager = "--from-manager" in args
+    waiting = []
+    with state_lock():
+        st = load()
+        info = driver_info()
+        mine = from_manager and bool(os.environ.get("ORCH_DRIVER")) and os.environ.get("ORCH_DRIVER") == info.get("token")
+        if driver_alive() and not mine:
+            print(f"The event manager is running ({driver_line(info)}), so the run is being watched.")
+            if rename_lost(st):
+                print("Fix the agents above; the event manager carries on by itself once herdr finds them.")
+            else:
+                print("Every agent in the plan is found. Nothing to resume.")
+            return
+        beat = st["run"].get("beat")
+        busy = [(tid, st["tasks"][tid]["wait"]) for tid in st["order"] if st["tasks"][tid].get("wait")]
+        gap = account_downtime(st)
+        save(st)
+        if from_manager and not gap:
+            return
+        if gap and (busy or not from_manager):
+            print(f"DOWN    orch was not running from {_clock(beat)} to {_clock(now())} ({_dur(gap)}). That time is "
+                  f"not counted against any task or agent.")
+        elif not from_manager:
+            print("RESUME  the event manager is not running" + (f" (last seen {_clock(beat)})" if beat else "") + ".")
+        for tid, w in busy:
+            print(f"WAS     {tid} \"{st['tasks'][tid]['title']}\": {w['agent']} was "
+                  + ("reviewing it" if w.get("kind") == "reviewer" else "working on it"))
+        rename_lost(st)
+        for name, w in st["workers"].items():
+            saved = save_stray(st, name)
+            if saved:
+                print(saved)
+        for tid, w in busy:
+            agent = w["agent"]
+            if Path(w["sentinel"]).exists():
+                print(f"DONE    {tid}: {agent} had finished; the event manager takes it from here")
+                continue
+            if watched(st, agent):
+                hs = herdr_state(agent)
+                if hs is None:
+                    waiting.append((tid, agent))
+                    print(f"NOT SENT {tid}: {agent} is not found in herdr (see above)")
+                    continue
+                if word(hs, "working", "blocked"):
+                    print(f"OK      {tid}: {agent} is already "
+                          + ("at a question in its pane" if word(hs, "blocked") else "working"))
+                    continue
+            w["delivering"], w["since"] = True, now()   # recorded first, like every send: confirmed or sent again
+            save(st)
+            try:
+                deliver(st, agent, (RESUME_REVIEWER if w.get("kind") == "reviewer" else RESUME_CODER) + w["prompt"])
+            except DeliveryError as e:
+                print(f"NOT SENT {tid} -> {agent}: {e} — the event manager sends it again")
+                continue
+            _delivered(st, agent)
+            w["delivering"] = False
+            save(st)
+            print(f"RESENT  {tid} -> {agent}: it carries on from the files in its folder")
+    if from_manager:
+        return
+    if waiting:
+        print("NOT STARTED: " + ", ".join(f"{a} ({t})" for t, a in waiting) + " must be running first. Do what the "
+              "LOST lines say, then run `orch resume` again. (To go on without them, run `orch autopilot`: their "
+              "milestones then move to another coder with the work so far.)")
+        sys.exit(3)
+    print(start_manager())
+    if lead_on(st):
+        print("The lead is woken with `orch events` when something needs it.")
+
+
 COMMANDS = {
+    "resume": cmd_resume,
     "sync": cmd_sync, "start": cmd_start, "ready": cmd_ready, "pick": cmd_pick, "prepare": cmd_prepare,
     "setup-done": cmd_setup_done, "send": cmd_send, "review": cmd_review, "poll": cmd_poll, "bump": cmd_bump,
     "commit": cmd_commit, "merge": cmd_merge, "park": cmd_park, "cooldown": cmd_cooldown, "set": cmd_set,
@@ -3984,7 +4403,7 @@ COMMANDS = {
     "escalate": cmd_escalate, "fix": cmd_fix, "team": cmd_team,
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
-UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "fix", "team"}
+UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "fix", "team", "resume"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
@@ -3998,6 +4417,8 @@ USAGE = """usage: orch <command> [args]
   agents launch <kind> [--model <id>]  print the command that starts <kind> in a pane (auto-approve edits)
   models                   the model catalog: tiers (small / medium / high), ratings, and what policy forbids
   models show|check <id>   one model's ratings and evidence / is it allowed?
+  resume                   after a restart (computer off, herdr closed): name the agents' panes again, save unsaved
+                           work, re-send the tasks that were in progress and start the event manager
   events [--peek]          (lead) what you were woken for; reading acknowledges it
   dispatch <Mn>... [--to <worker>] [--tier <tier>]   (lead) start or restart milestones; starts the event manager
   answer <Mn> <text>       (lead) the developer's answer: into plan.md, and back to the same coder
@@ -4041,7 +4462,7 @@ USAGE = """usage: orch <command> [args]
 Exit codes: 2 error · 3 needs you / busy / cap · 4 merge conflict · 5 prompt not delivered (retried later) ·
             6 check fails on the feature branch (nothing committed) · 7 held for approval · 10 poll wait
 While `orch autopilot` runs it holds the driver lease: other commands that change the run are refused
-(status, ready, pick, report, approve, fix and the lead's events / dispatch / answer still work).
+(status, ready, pick, report, approve, fix, resume and the lead's events / dispatch / answer still work).
 """
 
 # Env vars a Herdr pane carries. Agents whose tools run in a separate background process (Hermes runs

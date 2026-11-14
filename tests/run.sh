@@ -782,7 +782,9 @@ out=$("$ORCH" team up 2>&1)
 check "team up again is a no-op" 'grep -q "^TEAM UP: every agent in the plan is running" <<<"$out"'
 touch "$FH/codex-2.missing" "$FH/nodetect"
 out=$(ORCH_TEAM_WAIT_S=1 "$ORCH" team up 2>&1); code=$?
-check "an agent herdr never detects is reported with the rename command (exit 3)" '[ $code -eq 3 ] && grep -q "^WAITING codex-2: .*herdr agent rename w1:p4 codex-2" <<<"$out"'
+# its pane (w1:p2) is still there in its own folder, so the agent is started again in it, not in a second pane
+check "an agent herdr never detects is reported with the rename command (exit 3)" '[ $code -eq 3 ] && grep -q "^WAITING codex-2: .*herdr agent rename w1:p2 codex-2" <<<"$out"'
+check "…and a coder's pane that is still there is used again, no second pane next to it" '[ "$(grep -c "^split " "$FH/team.log")" -eq 2 ] && [ "$(grep -c "^run w1:p2 " "$FH/team.log")" -eq 2 ]'
 rm -f "$FH/nodetect"
 check "playbook step 3 builds the team with orch team when the lead is alone" 'grep -q "orch team <your kind>" "$ROOT/playbooks/plan.md" && grep -q "orch team up" "$ROOT/playbooks/run.md"'
 
@@ -830,6 +832,143 @@ check "why M1 was late: fix round by its coder, the developer answer, the usage 
 check "a milestone quicker than its estimate gets no why" '! grep -q "Why M2" <<<"$out"'
 check "report --json carries the time account" '"$ORCH" report --json | python3 -c "import json,sys; t=json.load(sys.stdin)[\"time\"]; assert t[\"feature\"][\"actual_s\"] == 6000 and t[\"feature\"][\"over_s\"] == 600 and t[\"tasks\"][0][\"over_s\"] == 3600"'
 check "the plan playbook asks for estimates and the summary has the time section" 'grep -q "^Estimate:" "$ROOT/playbooks/plan.md" && grep -q "Time: estimate vs actual" "$ROOT/bin/orch"'
+
+echo "30. after a restart: time orch was down is not agent time"
+stpy(){ python3 -c "
+import json, time; p = '$APP/.orchestrate/state.json'; st = json.load(open(p)); now = int(time.time())
+$1
+json.dump(st, open(p, 'w'))"; }
+PRS='# Plan: t\nBranch: feature/rs\nCheck command: true\nIsolation: ISO\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M9: Stalls\nDepends on: none\nPrefer: codex\nOpen questions:\n- none\n\n## [x] M5: e\nDepends on: none\nPrefer: claude\nOpen questions:\n- none\n'
+newrepo dn; WT="$APP/../app-wt"
+printf '%b' "${PRS/ISO/worktree}" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null && "$ORCH" prepare M9 codex-1 >/dev/null && "$ORCH" write-task M9 >/dev/null && "$ORCH" send M9 task.md >/dev/null
+sleep 2; echo working > "$FH/codex-1.status"            # the coder is in the middle of M9
+# the computer was off for about 2 hours: M9 was sent 2h05m ago, the event manager was last alive 2h ago
+stpy "
+w = st['tasks']['M9']['wait']; w['since'] -= 7500; w['started'] -= 7500
+st['tasks']['M5']['go'] = True
+st['run'].update(started=now - 8000, beat=now - 7200)"
+out=$("$ORCH" status 2>&1)
+check "status says loudly that the event manager is not running, since when, and what to run" 'head -1 <<<"$out" | grep -q "^!! EVENT MANAGER NOT RUNNING since .* (2h00m ago)" && grep -q "^!! Run \`orch resume\`" <<<"$out"'
+"$ORCH" set M5 paused "kept out of this test" >/dev/null
+timeout 12 "$ORCH" autopilot > "$WORK/dn.log" 2>&1
+check "the 2 hours orch was down do not put the coder over its time budget" '! grep -q "over its time budget" "$WORK/dn.log" && [ "$(status_of M9)" = coding ]'
+check "the event manager says it is back after a gap, and for how long" 'grep -q "back after a gap" "$WORK/dn.log" && grep -q "DOWN    orch was not running from .* (2h00m)" "$WORK/dn.log"'
+check "a coder that is already working again is left alone (no second prompt)" 'grep -q "OK      M9: codex-1 is already working" "$WORK/dn.log" && [ "$(grep -c "M9/task.md" "$FH/prompts.log")" -eq 1 ]'
+check "the gap is kept on the wait and in the run" 'python3 -c "
+import json; st = json.load(open(\".orchestrate/state.json\")); w = st[\"tasks\"][\"M9\"][\"wait\"]
+assert 7190 <= w[\"down_s\"] <= 7260, w; d = st[\"run\"][\"downs\"]; assert len(d) == 1 and 7190 <= d[0][\"to\"] - d[0][\"from\"] <= 7260, d"'
+check "status has no warning for a run nobody has driven yet" '(newrepo dn0 && printf "%b" "${PRS/ISO/worktree}" > .orchestrate/plan.md && "$ORCH" sync >/dev/null && ! "$ORCH" status | grep -q "EVENT MANAGER")'
+cd "$APP" && export FH="$WORK/dn/fh"
+stpy "st['tasks']['M9']['wait']['since'] -= 46 * 60"
+out=$("$ORCH" poll 1 2>&1)
+check "real working time still counts: 46 more minutes is over the budget" 'grep -q "^TIMEOUT M9 agent=codex-1 after 5[0-9] min" <<<"$out"'
+out=$("$ORCH" park M9 paused "codex-1 over its time budget" 2>&1)
+check "a coder that is still working when its milestone is paused is told to stop" 'grep -q "^STOP_NOTE M9 -> codex-1" <<<"$out" && grep -q "^codex-1 <- STOP: M9 is paused (codex-1 over its time budget). Stop working on it now" "$FH/prompts.log"'
+check "the attempt is charged its working time, not the 2 hours down" 'python3 -c "
+import json; a = json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M9\"][\"attempts\"][-1]
+assert 7190 <= a[\"down_s\"] <= 7260 and 290 <= a[\"secs\"] <= 420, a"'
+sleep 2
+out=$("$ORCH" park M5 paused "again" 2>&1)
+check "a milestone no coder is working on gets no stop note" '! grep -q STOP_NOTE <<<"$out"'
+
+echo "31. unsaved work is always saved first: park, dispatch and prepare never refuse"
+echo late > "$WT/codex-1/late.txt"                      # the paused coder kept writing after M9 was parked
+out=$("$ORCH" dispatch M9 2>&1); code=$?
+check "dispatch saves what the paused coder wrote meanwhile into the milestone's saved work" '[ $code -eq 0 ] && grep -q "^SAVED codex-1.s unsaved files into M9.s saved work (refs/orch/feature-rs/M9)" <<<"$out" && git show --stat refs/orch/feature-rs/M9 | grep -q late.txt && [ -z "$(git -C "$WT/codex-1" status --porcelain)" ]'
+echo later > "$WT/codex-1/later.txt"; echo more >> "$WT/codex-1/late.txt"
+out=$("$ORCH" park M9 pending "again" 2>&1)
+check "orch park on an already parked milestone saves too (it used to print PARKED and save nothing)" 'grep -q "^SAVED codex-1" <<<"$out" && git show refs/orch/feature-rs/M9:late.txt | grep -q more && git show --stat refs/orch/feature-rs/M9 | grep -q later.txt'
+echo last > "$WT/codex-1/last.txt"
+out=$("$ORCH" prepare M9 codex-1 2>&1); code=$?
+check "prepare with unsaved files in the folder saves them and goes on (no \"park or clean that worker first\")" '[ $code -eq 0 ] && grep -q "^SAVED codex-1" <<<"$out" && ! grep -q "park or clean" <<<"$out" && [ "$(status_of M9)" = coding ] && [ -f "$WT/codex-1/late.txt" ] && [ -f "$WT/codex-1/later.txt" ] && [ -f "$WT/codex-1/last.txt" ]'
+echo whose > "$WT/claude-1/whose.txt"                   # files in a folder whose coder never had a milestone
+"$ORCH" set M5 pending >/dev/null
+out=$("$ORCH" prepare M5 claude-1 2>&1); code=$?
+check "files orch can't give to a milestone go to a rescue ref, and the task still starts" '[ $code -eq 0 ] && grep -q "^RESCUED claude-1.s unsaved files: .* kept in refs/orch/feature-rs/rescue-claude-1-" <<<"$out" && [ "$(status_of M5)" = coding ] && [ ! -f "$WT/claude-1/whose.txt" ] && git show --stat "$(git for-each-ref --format="%(refname)" "refs/orch/feature-rs/rescue-claude-1-*")" | grep -q whose.txt'
+# a milestone in review is never changed behind the reviewer's back: stray files there are rescued, not added
+"$ORCH" park M5 pending >/dev/null; "$ORCH" prepare M5 claude-1 >/dev/null; echo e > "$WT/claude-1/e.txt"
+"$ORCH" handoff M5 >/dev/null; stpy "st['tasks']['M5']['status'] = 'reviewing'"
+echo sneaky > "$WT/claude-1/sneaky.txt"; before=$(git rev-parse refs/orch/feature-rs/M5)
+stpy "st['tasks']['M9']['status'] = 'pending'; st['tasks']['M9']['worker'] = None; st['workers']['codex-1']['task'] = None"
+out=$("$ORCH" prepare M9 claude-1 2>&1); code=$?
+check "files written after a handoff do not slip into the work under review" '[ $code -eq 0 ] && grep -q "^RESCUED claude-1" <<<"$out" && [ "$(git rev-parse refs/orch/feature-rs/M5)" = "$before" ]'
+
+newrepo dsh; echo "$APP" > "$FH/claude-1.dir"; echo "$APP" > "$FH/codex-1.dir"
+printf '%b' "${PRS/ISO/shared}" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null && "$ORCH" prepare M9 codex-1 >/dev/null && "$ORCH" write-task M9 >/dev/null && "$ORCH" send M9 task.md >/dev/null
+sleep 2; echo one > w1.txt; "$ORCH" park M9 paused "stopped" >/dev/null
+echo two > w2.txt; echo changed >> shared.txt             # written after the pause, in the shared folder
+out=$("$ORCH" dispatch M9 2>&1); code=$?
+check "shared mode: files written after the pause are added to the milestone's saved work" '[ $code -eq 0 ] && grep -q "^SAVED the unsaved files in the main folder into M9" <<<"$out" && [ -z "$(git status --porcelain)" ]'
+out=$("$ORCH" prepare M9 codex-1 2>&1); code=$?
+check "shared mode: the coder gets the milestone back with all of it" '[ $code -eq 0 ] && [ "$(cat w1.txt)" = one ] && [ "$(cat w2.txt)" = two ] && grep -q changed shared.txt'
+"$ORCH" park M9 paused "stopped again" >/dev/null
+echo other > w1.txt                                       # clashes with the saved w1.txt
+out=$("$ORCH" prepare M9 codex-1 2>&1); code=$?
+check "shared mode: files that clash with the saved work are kept in a rescue ref, the saved work comes back" '[ $code -eq 0 ] && grep -q "^RESCUED the unsaved files in the main folder" <<<"$out" && [ "$(cat w1.txt)" = one ] && [ "$(cat w2.txt)" = two ] && [ -n "$(git for-each-ref "refs/orch/feature-rs/rescue-M9-*")" ]'
+"$ORCH" park M9 pending >/dev/null; stpy "st['tree_task'] = None"; echo mine > dev.txt
+out=$("$ORCH" prepare M9 codex-1 2>&1); code=$?
+check "shared mode: the developer's own uncommitted files are still not touched" '[ $code -ne 0 ] && grep -q "can.t be restored" <<<"$out" && [ -f dev.txt ]'
+
+echo "32. orch resume: one command after a restart"
+newrepo rs; WT="$APP/../app-wt"
+printf '%b' "${PRS/ISO/worktree}" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null && "$ORCH" prepare M9 codex-1 >/dev/null && "$ORCH" write-task M9 >/dev/null && "$ORCH" send M9 task.md >/dev/null
+sleep 2
+"$ORCH" prepare M5 claude-1 >/dev/null; echo half > "$WT/claude-1/half.txt"; "$ORCH" park M5 pending "claude-1 hit a usage/rate limit" >/dev/null
+echo more > "$WT/claude-1/more.txt"                       # written after M5 was parked, before the power went
+stpy "
+w = st['tasks']['M9']['wait']; w['since'] -= 7500; w['started'] -= 7500
+st['run'].update(started=now - 8000, beat=now - 7200)"
+# herdr after the restart: the panes are back in their folders, the names are gone. codex-1's agent runs again
+# (pane w1:p7), claude-1's pane is a plain shell (w1:p8), the reviewer's pane sits next to the developer's shell
+touch "$FH/codex-1.missing" "$FH/claude-1.missing" "$FH/reviewer.missing"
+echo "$WT/codex-1" > "$FH/pane-w1:p7.cwd"; echo codex > "$FH/pane-w1:p7.cmd"
+echo "$WT/claude-1" > "$FH/pane-w1:p8.cwd"
+echo "$APP" > "$FH/pane-w1:p20.cwd"; echo agy > "$FH/pane-w1:p20.cmd"; echo "$APP" > "$FH/pane-w1:p21.cwd"
+out=$("$ORCH" start 2>&1)
+check "orch start points at orch resume when herdr can't find an agent" 'grep -q "^HINT .*orch resume" <<<"$out"'
+out=$("$ORCH" resume 2>&1); code=$?
+check "resume says how long orch was down and what was in progress" '[ $code -eq 0 ] && grep -q "^DOWN    orch was not running from .* (2h00m). That time is not counted" <<<"$out" && grep -q "^WAS     M9 \"Stalls\": codex-1 was working on it" <<<"$out"'
+check "resume gives a coder's pane its name back, found by its folder" 'grep -q "^NAMED   codex-1: pane w1:p7 " <<<"$out" && grep -q "^rename w1:p7 codex-1" "$FH/team.log" && [ ! -f "$FH/codex-1.missing" ]'
+check "a pane with no agent in it: resume says how to start it and prints the rename command" 'grep -q "^LOST    claude-1: pane w1:p8 is in its folder .*orch team up.* starts it there.*herdr agent rename w1:p8 claude-1" <<<"$out"'
+check "in the main folder a pane is only renamed when it shows the right kind; otherwise the command is printed" 'grep -q "^LOST    reviewer: can.t tell which pane is reviewer (w1:p20, w1:p21 are in .*herdr agent rename <pane> reviewer" <<<"$out" && ! grep -q "rename w1:p2[01]" "$FH/team.log"'
+check "resume saves the unsaved files a coder left behind" 'grep -q "^SAVED claude-1.s unsaved files into M5" <<<"$out" && git show --stat refs/orch/feature-rs/M5 | grep -q more.txt'
+check "resume sends the task in progress to its coder again, as a carry-on" 'grep -q "^RESENT  M9 -> codex-1" <<<"$out" && grep -q "^codex-1 <- orch was restarted .*carry on from there. Do not start over. Read .orch-task/M9/task.md .*done-1" "$FH/prompts.log"'
+check "resume ends by starting the event manager (here: says it could not, autostart is off in tests)" 'grep -q "the event manager is NOT running" <<<"$out"'
+check "the 2 hours are not on the coder's clock after resume" 'python3 -c "
+import json, time; w = json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M9\"][\"wait\"]
+assert time.time() - w[\"since\"] < 60 and 7190 <= w[\"down_s\"] <= 7260 and not w[\"delivering\"], w"'
+echo agy > "$FH/pane-w1:p20.kind"; sleep 2; echo working > "$FH/codex-1.status"   # codex-1 is on M9 again
+out=$("$ORCH" resume 2>&1); code=$?
+check "running resume again is safe: the reviewer is named once herdr shows its kind, nothing is sent twice" '[ $code -eq 0 ] && grep -q "^NAMED   reviewer: pane w1:p20 " <<<"$out" && ! grep -q "^DOWN" <<<"$out" && [ "$(grep -c "M9/task.md" "$FH/prompts.log")" -eq 2 ]'
+out=$(ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1); code=$?
+check "team up starts the agent again in its old pane instead of opening a second one" '[ $code -eq 0 ] && grep -q "^OPENED  claude-1: pane w1:p8 " <<<"$out" && grep -q "^run w1:p8 claude" "$FH/team.log" && ! grep -q "^split" "$FH/team.log"'
+touch "$FH/codex-1.missing"; rm -f "$FH"/pane-w1:p7.*; echo idle > "$FH/codex-1.status"
+out=$("$ORCH" resume 2>&1); code=$?
+check "an agent with work in progress that is really gone: resume stops (exit 3) and says what to do" '[ $code -eq 3 ] && grep -q "^LOST    codex-1: no pane is left in its folder .*orch team up" <<<"$out" && grep -q "^NOT SENT M9: codex-1 is not found" <<<"$out" && grep -q "^NOT STARTED: codex-1 (M9) must be running first" <<<"$out"'
+touch "$FH/nolist"
+out=$("$ORCH" resume 2>&1)
+check "when herdr can't list panes, resume still prints the rename command to use" 'grep -q "^LOST    codex-1: .*herdr agent rename <pane> codex-1" <<<"$out"'
+rm -f "$FH/nolist" "$FH/codex-1.missing"
+"$ORCH" park M9 paused "kept" >/dev/null; "$ORCH" set M5 paused "kept" >/dev/null
+newrepo rsm; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+{ printf '%b' "$P1"; printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null
+stpy "st['run'].update(started=now - 8000, beat=now - 7200)"
+out=$(ORCH_NO_AUTOSTART=0 "$ORCH" resume 2>&1); code=$?
+check "resume starts the event manager and the run carries on to the end" '[ $code -eq 0 ] && grep -q "started the event manager" <<<"$out"'
+for _ in $(seq 60); do grep -q "ALL_DONE" .orchestrate/autopilot.log 2>/dev/null && break; sleep 1; done
+check "…the run it started finishes" '[ "$(status_of M6)" = merged ] && grep -q "ALL_DONE" .orchestrate/autopilot.log'
+out=$("$ORCH" resume 2>&1)
+check "the time report leaves the time orch was down out" '(cd "$WORK/est/app" && python3 - <<PY && "$ORCH" report
+import json; p = ".orchestrate/state.json"; st = json.load(open(p)); T = 1_000_000
+st["run"]["downs"] = [{"from": T + 2400, "to": T + 3000}]      # 10 of the 20 minutes M1 sat paused
+json.dump(st, open(p, "w"))
+PY
+) > "$WORK/est-down.txt" 2>&1 && grep -q "Whole feature: estimated 1h30m, actual 1h30m, on time" "$WORK/est-down.txt" && grep -q "^Not counted: 10m while orch was not running" "$WORK/est-down.txt" && grep -q "| M1 | 40m | 1h30m | +50m |" "$WORK/est-down.txt" && grep -qF "10m developer / lead: paused" "$WORK/est-down.txt"'
+check "the playbook and the README tell what to do after a restart" 'grep -q "orch resume" "$ROOT/playbooks/run.md" && grep -q "orch resume" "$ROOT/README.md"'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

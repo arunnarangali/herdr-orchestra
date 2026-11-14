@@ -235,6 +235,8 @@ When a milestone passes its checks it's saved to its hidden ref and the coder is
 | A prompt can't be delivered | the task goes back in the queue (its job kept) and that agent is retried after 2 min; 3 in a row bench it for 30 min |
 | Attempts keep getting lost (unreachable, gone, rate-limited) | after 4 (`ORCH_MAX_LOST`) the task fails with the history instead of looping |
 | Autopilot is killed mid-step | the next run confirms or re-sends an unconfirmed prompt to the same agent, and finishes or undoes a half-done merge |
+| The computer was off, herdr was closed, or the event manager died | `orch status` says so in its first lines. `orch resume` carries on: the time orch was down is not counted against any task, the agents' panes get their names back, unsaved work is saved and the tasks in progress are sent again (see [After a restart](#after-a-restart)) |
+| A paused coder keeps writing files | it is told to stop; whatever it writes anyway is saved into the milestone the next time the milestone or that folder is used. orch never refuses a task because a folder has unsaved files |
 | Lockfiles changed since a folder was set up | the setup command runs again there (and in your main folder before the merge check) |
 | Risky change (deleted file, migration, CI config, secrets file, unlisted dependency change, very large diff) | the milestone is **held** until you run `orch approve Mn`; the rest keeps going |
 | The wake-up prompt never became a turn for the lead (it sat in the input box, or you were typing there) | sent again after 30s, then 1 min; after 3 tries you get a notification. The event manager does not leave at ALL_DONE before the lead has read the last events |
@@ -245,6 +247,25 @@ When a milestone passes its checks it's saved to its hidden ref and the coder is
 | Agent stops early | nudged once, then parked |
 | Worker writes `QUESTION:` | that task and its dependents wait, the lead is woken to answer or ask you; everything else continues |
 
+### After a restart
+Nothing on a switched-off computer can restart itself, so after a reboot (or after closing herdr) one command is needed. Open herdr, then run in the repo:
+
+```bash
+orch resume
+```
+
+It does five things, and says what it did:
+
+1. **The time orch was down is not counted.** Example: M4 was sent at 11:30, the computer went off at 11:42 and came back at 13:31. M4 counts 12 minutes of work, not 2 hours, so it is not paused as "over its time budget", and the time report says `Not counted: 1h49m while orch was not running`.
+2. **Agents get their names back.** herdr brings the panes back, but not the agents' names, and orch reaches agents by name. `orch resume` finds each coder's pane by its folder and names it again (`NAMED opencode-1: pane w1:p3`). Where it can't decide (the reviewer and the lead sit in the main folder, next to your own panes), it prints the exact command: `herdr agent rename w1:p5 reviewer`. A pane that came back as a plain shell needs its agent started: `orch team up` does that in the same pane.
+3. **Unsaved work is saved** into the milestone it belongs to.
+4. **Each task that was in progress is sent to its agent again.** The agent's old conversation is not needed: the task and the code are in files, so a fresh conversation carries on from them. You don't have to type "continue" in each pane.
+5. **The event manager is started**, and it wakes the lead if events wait for it.
+
+It is safe to run more than once. If an agent with work in progress is still missing, it stops and says what to do. `orch autopilot` and the lead's `orch dispatch` do steps 1 to 4 by themselves when they start the event manager after a gap.
+
+orch can't bring an agent's old conversation back, and it can't start itself when the computer starts.
+
 ### Contracts and reports
 `plan.md` stays the file you edit. From it `orch` generates a `task.json` for each milestone (numbered acceptance criteria `AC1…`, allowed files, interfaces, the commits of its dependencies). Coders answer with a `result-N.json` (status, commit message, files changed, the check they ran, each criterion met or not), and the reviewer with a `review-N.json` (a verdict per criterion plus findings). The old line formats (`COMMIT:`, `QUESTION:`, `BLOCKER:`) still work as a fallback. The shapes are in [docs/contracts.md](docs/contracts.md).
 
@@ -253,9 +274,9 @@ Every status change is written to `.orchestrate/events.jsonl`, and `orch report 
 Optional plan header lines: `Lead mode: events | off` (default `events` when the plan has a `Lead:` line) · `Scope: warn | strict` · `Risk hold: on | off` · `Budget: 3h` (autopilot stops when its running time is used up) · `Estimate: 1h30m` (the lead's estimate for the feature) · `Setup inputs: <globs>` (which files mean "run setup again"; default: lockfiles and manifests). Per milestone: `Why separate` (why it is its own milestone; needed when the plan has more than one) · `Tier`, `Needs`, `Model why` (see [Models and tiers](#models-and-tiers)) · `Estimate: 40m` (dispatch to landed if nothing goes wrong) · `Parallel: allow` lets it run next to a milestone that shares its `Likely files`.
 
 ### Commands
-`orch status` · `orch report` · `orch approve Mn` · `orch models [show|check <id>]` · `orch events [--peek]` · `orch dispatch Mn... [--to <worker>] [--tier <tier>]` · `orch answer Mn "<answer>"` · `orch fix Mn "<change>" [--to <worker>]` · `orch doctor [kind]` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind> [--model <id>]|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch` (full help)
+`orch status` · `orch resume` · `orch report` · `orch approve Mn` · `orch models [show|check <id>]` · `orch events [--peek]` · `orch dispatch Mn... [--to <worker>] [--tier <tier>]` · `orch answer Mn "<answer>"` · `orch fix Mn "<change>" [--to <worker>]` · `orch doctor [kind]` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind> [--model <id>]|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch` (full help)
 
-Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (unset: no limit) · `ORCH_GONE_COOLDOWN_MIN` (10) · `ORCH_SEND_RETRY_S` (120) · `ORCH_HERDR_TIMEOUT_S` (30) · `ORCH_MAX_LOST` (4) · `ORCH_UNREACHABLE_MIN` (30) · `ORCH_CONFIRM_S` (30) · `ORCH_RISK_MAX_LINES` (1500) · `ORCH_LEAD_WAIT_MIN` (15: ready work the lead hasn't dispatched starts by itself) · `ORCH_LEAD_CONFIRM_S` (30: a wake-up the lead did not pick up is sent again, doubling) · `ORCH_LEAD_REWAKE_S` (300) · `ORCH_LEAD_MAX_WAKES` (3) · `ORCH_LEAD_IDLE_MAX_MIN` (720: how long the event manager waits for an answer) · `ORCH_NO_AUTOSTART=1` (the lead's commands never start the event manager)
+Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (unset: no limit) · `ORCH_GONE_COOLDOWN_MIN` (10) · `ORCH_SEND_RETRY_S` (120) · `ORCH_HERDR_TIMEOUT_S` (30) · `ORCH_MAX_LOST` (4) · `ORCH_UNREACHABLE_MIN` (30) · `ORCH_CONFIRM_S` (30) · `ORCH_DOWN_MIN_S` (120: an event manager silent for longer was down, and that time is not counted) · `ORCH_RISK_MAX_LINES` (1500) · `ORCH_LEAD_WAIT_MIN` (15: ready work the lead hasn't dispatched starts by itself) · `ORCH_LEAD_CONFIRM_S` (30: a wake-up the lead did not pick up is sent again, doubling) · `ORCH_LEAD_REWAKE_S` (300) · `ORCH_LEAD_MAX_WAKES` (3) · `ORCH_LEAD_IDLE_MAX_MIN` (720: how long the event manager waits for an answer) · `ORCH_NO_AUTOSTART=1` (the lead's commands never start the event manager)
 
 ## Develop and release
 

@@ -2,6 +2,22 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.5.0] - 2026-11-14
+
+Found in a real run: the developer closed herdr and switched the computer off in the middle of a run, and came back 2 hours later. The panes were back, but the agents had no names and no conversations. The event manager was started again and paused the milestone at once as "over its time budget (121 min)". Dispatching it again failed with "has uncommitted changes — park or clean that worker first", and the work had to be saved with git by hand.
+
+### Added
+- **`orch resume`: one command after a restart.** Run it once after a reboot or after closing herdr. It says how long orch was down, gives the agents' panes their names back, saves unsaved work, sends each task that was in progress to its agent again, and starts the event manager. You no longer resume each conversation and type "continue" in each pane: the task and the code are in files, so a fresh conversation carries on from them. Panes are found by folder: a coder's worktree is its own folder, so the pane in it is its pane (`NAMED opencode-1: pane w1:p3`). The reviewer and the lead sit in the main folder next to your own panes, so there a pane is renamed only when herdr shows the right agent kind; otherwise the exact command is printed (`herdr agent rename <pane> reviewer`). It is safe to run more than once, and it stops with exit 3 when an agent with work in progress is still missing. `orch autopilot` and the lead's `orch dispatch` do the same steps by themselves when the event manager starts after a gap.
+- **`orch status` says loudly when nothing is watching the run.** When work is in progress and the event manager is not running, the first lines are `!! EVENT MANAGER NOT RUNNING since 11:42 (1h49m ago)` and `!! Run orch resume`. It used to be a few words at the end of the lead line. `orch start` points at `orch resume` when herdr can't find an agent.
+- **A paused coder is told to stop.** When a milestone is paused or failed while its coder is still working, the coder gets one line: stop, don't change more files, your work is saved.
+
+### Fixed
+- **Time orch was down no longer counts as working time.** The time budget was measured from the moment the prompt was sent, so 2 hours with the computer off were 2 hours of "work". The event manager now writes a heartbeat every loop. When it starts and the last heartbeat is older than `ORCH_DOWN_MIN_S` (120 seconds), the gap is taken out of every open task. Example: M4 was sent at 11:30, the computer went off at 11:42 and came back at 13:31. M4 counts 12 minutes, not 2 hours. The time report leaves that time out too and says so: `Not counted: 1h49m while orch was not running`. Real working time still counts as before.
+- **Unsaved work never blocks a task.** `orch prepare` refused a coder's folder that had uncommitted files, and a second `orch park` on an already parked milestone printed PARKED and saved nothing. So a paused coder that kept writing left the milestone stuck. Now `orch park`, `orch dispatch` and `orch prepare` always save what is in the folder first, into the milestone's saved work, and go on. Files orch can't give to a milestone (and files written after a milestone went to review, so nothing slips in behind the reviewer) are kept in a rescue ref whose name is printed, such as `refs/orch/feature-x/rescue-opencode-1-20261114-133100`. `orch finish` keeps rescue refs and lists them. Shared mode does the same for files written in the main folder after a pause; your own uncommitted files there are still left alone.
+- **`orch team up` after a restart does not open a second pane next to the old one.** A pane that only lost its name gets it back, and a coder's pane that came back as a plain shell gets its agent started again in that pane.
+
+Tested with simulated agents and a simulated herdr only. herdr's docs say `pane list` gives each pane's `cwd`, but not the exact JSON, so orch reads it loosely and falls back to printing the rename commands.
+
 ## [5.4.0] - 2026-11-14
 
 ### Fixed
