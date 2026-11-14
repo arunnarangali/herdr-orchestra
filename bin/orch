@@ -4151,6 +4151,7 @@ def _copy_asset(src, dst):
 
 
 SHARED_SKILLS = "~/.agents/skills"   # read by several tools; used when it doesn't make a second copy
+SHARED_COMMANDS = ("~/.config/opencode/commands", "opencode-commands")   # written even before OpenCode is installed
 
 
 def shipped_skills():
@@ -4250,7 +4251,9 @@ def sync_plan(reg, installed):
         for d in cands:
             flavor.setdefault(d, v.get("commands_from", "claude-commands"))
         cagents.append((k, agent_reads(v, "commands"), cands, False))
-    cdirs, cview = pick_dirs(cagents)
+    shared = expand(SHARED_COMMANDS[0])
+    flavor.setdefault(shared, SHARED_COMMANDS[1])
+    cdirs, cview = pick_dirs(cagents, shared)
     return sdirs, sview, [(d, flavor[d]) for d in cdirs], cview
 
 
@@ -4322,8 +4325,9 @@ def agents_sync(reg, installed, want=None):
         dup = len(cview.get(k, [])) > 1 or (len(sview.get(k, [])) > 1 and not v.get("skills_one_wins"))
         status = "DUP " if dup else ("NEW " if changed else "ok  ")
         print(f"  {status} {k:<8} {'  '.join(parts)}  {v.get('invoke', 'Run `orch lead plan` and follow it. Feature: <feature>')}")
-    if expand(SHARED_SKILLS) in sdirs and not any(expand(SHARED_SKILLS) in x for x in sview.values()):
-        print(f"  {'NEW ' if expand(SHARED_SKILLS) in changed_dirs else 'ok  '} {'shared':<8} skills: {SHARED_SKILLS}")
+    for d, what, view in ((expand(SHARED_SKILLS), "skills", sview), (expand(SHARED_COMMANDS[0]), "commands", cview)):
+        if d in (sdirs if what == "skills" else [c for c, _ in cdirs]) and not any(d in x for x in view.values()):
+            print(f"  {'NEW ' if d in changed_dirs else 'ok  '} {'shared':<8} {what}: {short(d)}")
     for p in removed:
         print(f"  removed  old copy {short(p)}")
     print(f"synced {new + same} agent(s): {new} new, {same} unchanged, {len(removed)} old cop"
