@@ -860,6 +860,20 @@ import json; st = json.load(open(\".orchestrate/state.json\")); w = st[\"tasks\"
 assert 7190 <= w[\"down_s\"] <= 7260, w; d = st[\"run\"][\"downs\"]; assert len(d) == 1 and 7190 <= d[0][\"to\"] - d[0][\"from\"] <= 7260, d"'
 check "status has no warning for a run nobody has driven yet" '(newrepo dn0 && printf "%b" "${PRS/ISO/worktree}" > .orchestrate/plan.md && "$ORCH" sync >/dev/null && ! "$ORCH" status | grep -q "EVENT MANAGER")'
 cd "$APP" && export FH="$WORK/dn/fh"
+stpy "
+w = st['tasks']['M9']['wait']; w['since'] -= 7200; w['started'] -= 7200     # 2 more hours went by, asleep
+for d in st['run']['downs']:
+    d['from'] -= 7200; d['to'] -= 7200"
+out=$(ORCH_TEST_SLEPT_S=7200 "$ORCH" poll 1 2>&1)
+check "a laptop that slept 2 hours while the event manager stayed up: the sleep is not working time either" '! grep -q TIMEOUT <<<"$out" && grep -q "^WAITING M9:coding" <<<"$out" && python3 -c "
+import json; st = json.load(open(\".orchestrate/state.json\")); d = st[\"run\"][\"downs\"]
+assert len(d) == 2 and d[1][\"to\"] - d[1][\"from\"] == 7200, d; assert 14390 <= st[\"tasks\"][\"M9\"][\"wait\"][\"down_s\"] <= 14470"'
+check "one sleep is taken out once, even when two processes notice it" 'python3 -c "
+import importlib.machinery, importlib.util, json, time
+l = importlib.machinery.SourceFileLoader(\"orch\", \"$ROOT/bin/orch\"); m = importlib.util.module_from_spec(importlib.util.spec_from_loader(\"orch\", l)); l.exec_module(m)
+st = json.load(open(\".orchestrate/state.json\")); n = len(st[\"run\"][\"downs\"])
+assert m.account_downtime(st, 7200) == 0 and len(st[\"run\"][\"downs\"]) == n, st[\"run\"][\"downs\"]
+st[\"run\"][\"downs\"] = []; assert m.account_downtime(st, 7200) == 7200"'
 stpy "st['tasks']['M9']['wait']['since'] -= 46 * 60"
 out=$("$ORCH" poll 1 2>&1)
 check "real working time still counts: 46 more minutes is over the budget" 'grep -q "^TIMEOUT M9 agent=codex-1 after 5[0-9] min" <<<"$out"'
@@ -867,7 +881,7 @@ out=$("$ORCH" park M9 paused "codex-1 over its time budget" 2>&1)
 check "a coder that is still working when its milestone is paused is told to stop" 'grep -q "^STOP_NOTE M9 -> codex-1" <<<"$out" && grep -q "^codex-1 <- STOP: M9 is paused (codex-1 over its time budget). Stop working on it now" "$FH/prompts.log"'
 check "the attempt is charged its working time, not the 2 hours down" 'python3 -c "
 import json; a = json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M9\"][\"attempts\"][-1]
-assert 7190 <= a[\"down_s\"] <= 7260 and 290 <= a[\"secs\"] <= 420, a"'
+assert 14390 <= a[\"down_s\"] <= 14470 and 290 <= a[\"secs\"] <= 440, a"'
 sleep 2
 out=$("$ORCH" park M5 paused "again" 2>&1)
 check "a milestone no coder is working on gets no stop note" '! grep -q STOP_NOTE <<<"$out"'

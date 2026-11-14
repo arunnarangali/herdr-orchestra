@@ -256,7 +256,7 @@ orch resume
 
 It does five things, and says what it did:
 
-1. **The time orch was down is not counted.** Example: M4 was sent at 11:30, the computer went off at 11:42 and came back at 13:31. M4 counts 12 minutes of work, not 2 hours, so it is not paused as "over its time budget", and the time report says `Not counted: 1h49m while orch was not running`.
+1. **The time orch was down is not counted.** Example: M4 was sent at 11:30, the computer went off at 11:42 and came back at 13:31. M4 counts 12 minutes of work, not 2 hours, so it is not paused as "over its time budget", and the time report says `Not counted: 1h49m while orch was not running`. A laptop that only slept, with the event manager still up, is handled without any command: the sleep is taken out the same way.
 2. **Agents get their names back.** herdr brings the panes back, but not the agents' names, and orch reaches agents by name. `orch resume` finds each coder's pane by its folder and names it again (`NAMED opencode-1: pane w1:p3`). Where it can't decide (the reviewer and the lead sit in the main folder, next to your own panes), it prints the exact command: `herdr agent rename w1:p5 reviewer`. A pane that came back as a plain shell needs its agent started: `orch team up` does that in the same pane.
 3. **Unsaved work is saved** into the milestone it belongs to.
 4. **Each task that was in progress is sent to its agent again.** The agent's old conversation is not needed: the task and the code are in files, so a fresh conversation carries on from them. You don't have to type "continue" in each pane.

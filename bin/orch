@@ -1682,17 +1682,39 @@ def cmd_setup_done(args):
     print("OK")
 
 
-def account_downtime(st):
+def sleep_meter():
+    """Returns a function that tells how many seconds the computer was suspended since its last call (0 when
+    less than DOWN_MIN_S). The wall clock keeps going while a laptop sleeps and the monotonic clock does not,
+    so the difference is the time this process could not run. (ORCH_TEST_SLEPT_S: a test's pretend sleep.)"""
+    last = [time.time(), time.monotonic()]
+    fake = [float(os.environ.get("ORCH_TEST_SLEPT_S") or 0)]
+
+    def slept():
+        wall, mono = time.time(), time.monotonic()
+        s = (wall - last[0]) - (mono - last[1]) + fake[0]
+        last[0], last[1], fake[0] = wall, mono, 0
+        return int(s) if s >= DOWN_MIN_S else 0
+    return slept
+
+
+def account_downtime(st, slept=0):
     """The event manager writes a heartbeat (`run.beat`) every loop. A heartbeat older than DOWN_MIN_S when it
     starts again means nothing was watching the run meanwhile (computer off, herdr closed, manager killed).
+    `slept` is the same thing found while running: the computer was suspended for that many seconds until now.
     That time is nobody's working time: every open wait is moved forward by it, so no task is paused as "over
     its time budget" for time orch was not there, and the window is kept in `run.downs` for the time report.
-    Returns the seconds orch was down (0 = it was not)."""
+    Returns the seconds newly taken out (0 = orch was not down, or that time was taken out already)."""
     run = st.setdefault("run", {})
-    beat, t = run.get("beat"), now()
+    t = now()
+    beat = t - slept if slept else run.get("beat")
     run["beat"] = t
     if not beat or t - beat < DOWN_MIN_S:
         return 0
+    # never the same time twice: `orch poll` and the event manager both notice one sleep, seconds apart
+    known = sum(max(0, min(t, d["to"]) - max(beat, d["from"])) for d in run.get("downs") or [])
+    if t - beat - known < (DOWN_MIN_S if slept else 1):
+        return 0
+    beat += known
     run.setdefault("downs", []).append({"from": beat, "to": t})
     del run["downs"][:-100]
     for task_ in st["tasks"].values():
@@ -2070,10 +2092,14 @@ def cmd_poll(args):
     secs = int(args[0]) if args else 100
     start = time.time()
     end = start + secs
+    slept = sleep_meter()
     while True:
         with state_lock():
             st = load()
             events, changed = [], False
+            asleep = slept()
+            if asleep and account_downtime(st, asleep):
+                changed = True                 # the computer was asleep: that time is not on any agent's clock
             for tid in st["order"]:
                 t = st["tasks"][tid]
                 w = t.get("wait")
@@ -3479,12 +3505,18 @@ def cmd_autopilot(args):
         + (f", budget {st['budget_s'] // 60} min" if st.get("budget_s") else "")
         + (f"; events go to the lead ({st['lead']['name']})" if lead_on(st) else ""))
     last_tick = time.time()
+    slept = sleep_meter()
     waiting_since = None       # set while nothing runs and the run waits for the lead or the developer
 
     while True:
         st = load()
         # 0. budget: driving time adds up across restarts (time spent only waiting for an answer doesn't count)
         el, last_tick = time.time() - last_tick, time.time()
+        asleep = slept()
+        if asleep:                             # the computer was suspended: nobody's time, not the budget's either
+            patch_state(lambda s_: account_downtime(s_, asleep))
+            say(f"the computer was asleep for {_dur(asleep)}: that time is not counted against any task")
+            el = max(0, el - asleep)
         if waiting_since:
             el = 0
         patch_state(lambda s_: s_["run"].update(driven_s=round(s_["run"].get("driven_s", 0) + el, 1), beat=now()))
@@ -4262,8 +4294,8 @@ def rename_lost(st, hints=True):
     panes = herdr_panes()
     if panes is None:
         for n, _, d, _ in lost:
-            say(f"LOST    {n}: herdr has no agent with this name, and `herdr pane list` did not answer. Find its "
-                f"pane with `herdr agent list` (folder {short(d)}), then: herdr agent rename <pane> {n}")
+            say(f"LOST    {n}: herdr has no agent with this name, and `herdr pane list` did not answer (is herdr "
+                f"open?). Find its pane with `herdr agent list` (folder {short(d)}), then: herdr agent rename <pane> {n}")
         return {x[0]: None for x in lost}
     found = {x[0] for x in plan} - {x[0] for x in lost}
     taken = {agent_pane(n) for n in found} - {None}
@@ -4354,7 +4386,7 @@ def cmd_resume(args):
                 print(saved)
         for tid, w in busy:
             agent = w["agent"]
-            if Path(w["sentinel"]).exists():
+            if any(w.get(k) and Path(w[k]).exists() for k in ("sentinel", "report", "result")):
                 print(f"DONE    {tid}: {agent} had finished; the event manager takes it from here")
                 continue
             if watched(st, agent):
