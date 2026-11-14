@@ -722,10 +722,9 @@ check "installing 3 times leaves the same files (one copy per tool)" 'cmp -s "$W
 HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --uninstall > /dev/null 2>&1
 check "uninstall still removes every orch copy, not the developer's" '[ -z "$(find "$IH" -name "orch-p*" -o -name "orch-r*")" ] && [ -f "$IH/.agents/skills/orch-mine/SKILL.md" ]'
 # a skills folder that is a symlink to another one is one folder: no copy is deleted from under the other name
-IH="$WORK/home3"; mkdir -p "$IH/.agents/skills"; ln -s "$IH/.agents/skills" "$IH/.claude"; mkdir -p "$IH/.claude"
-rm -f "$IH/.claude"; mkdir -p "$IH/.claude"; ln -s "$IH/.agents/skills" "$IH/.claude/skills"
+IH="$WORK/home3"; mkdir -p "$IH/.agents/skills" "$IH/.claude"; ln -s "$IH/.agents/skills" "$IH/.claude/skills"
 out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents sync 2>&1); code=$?
-check "~/.claude/skills -> ~/.agents/skills: sync keeps one copy and deletes nothing" '[ $code -eq 0 ] && [ -f "$IH/.agents/skills/orch-plan/SKILL.md" ] && grep -q "0 old copies removed" <<<"$out"'
+check "a symlinked .claude/skills -> .agents/skills: sync keeps one copy and deletes nothing" '[ $code -eq 0 ] && [ -f "$IH/.agents/skills/orch-plan/SKILL.md" ] && grep -q "0 old copies removed" <<<"$out"'
 check "…and opencode, which reads both names, is not flagged as a duplicate" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents check >/dev/null 2>&1'
 # an agent that is only missing from PATH right now keeps its copy
 IH="$WORK/home4"; mkdir -p "$IH"
