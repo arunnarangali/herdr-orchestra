@@ -11,8 +11,9 @@ description: What herdr-orchestra keeps in your repo and on your machine.
 | `state.json` | Parsed plan plus run state, including the lead's event queue (owned by `orch`; don't edit) |
 | `state.lock` | Lock so two `orch` commands can't lose updates |
 | `baseline.txt` | The check's output before any work |
-| `autopilot.log` | What the event manager did, when it woke the lead, and why it stopped |
-| `manager.out` | Output of an event manager that the lead's `orch dispatch` started in the background |
+| `autopilot.log` | What the event manager did, when it woke the lead, and why it stopped (`STOPPED` / `CRASHED` lines, tagged with the repo and branch). Over 2 MB it becomes `autopilot.log.1`; one old copy is kept |
+| `manager.out` | Output of an event manager that the lead's `orch dispatch` started in the background (1 MB, one old copy) |
+| `crash/` | The last screen of an agent that quit or vanished; the newest 20 are kept |
 | `events.jsonl` | One line per state change, for `orch report` |
 | `driver.lock` | The lease that keeps a run to one driver |
 | `review/Mn/review-N.json` (or `.md`) | Each review round's findings |

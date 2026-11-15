@@ -16,6 +16,9 @@ Most things never reach you: the event manager retries, and the lead decides. A 
 | A round limit was hit, even on a stronger model | The lead reads the report and tells you what keeps failing. Add a fact or constraint to the plan, or take it over |
 | The computer was restarted, herdr was closed, or the event manager died | `orch status` starts with `!! EVENT MANAGER NOT RUNNING`. Open herdr and run `orch resume` (see below) |
 | An agent is missing or a pane id is stale | `orch team up` opens every missing agent in its folder on its model; or start it yourself (`orch agents launch <kind> --model <id>`), or fix the pane id from `herdr pane list` |
+| A coder vanished mid-task (`WORKER-LOST`) | The lead tells you the exact fix: `orch resume` after a herdr restart, or `orch team up` when the agent quit and left a plain shell. The milestone waits with its work so far |
+| You don't want one coder any more (for example, no Claude today) | `orch bench <worker> off` (or ask the lead). It stays out until `orch bench <worker> on` |
+| You want to swap a coder | `orch stop`, change `Workers:` in plan.md, `orch sync`, `orch team up`, `orch resume` |
 | A milestone lost 4 attempts | The agents were unreachable, gone or rate-limited. Restart or wait for them |
 | The lead is not reading its events | Look at its pane. Nothing is lost: `orch events --peek` lists what waits, and ready work starts by itself after 15 minutes |
 | The run's budget is used up | Raise or remove `Budget:` in the plan header |
@@ -57,6 +60,16 @@ It is safe to run more than once. `orch autopilot` and the lead's `orch dispatch
 
 orch never refuses a task because a coder's folder has unsaved files. It saves them into the milestone they belong to first. If it can't tell whose they are, it keeps them in a rescue ref and prints its name, for example `refs/orch/feature-x/rescue-opencode-1-20261114-133100`. `orch finish` keeps rescue refs and lists them.
 
+## Why did it stop?
+
+Every stop writes a last line in `.orchestrate/autopilot.log`: `STOPPED: orch stop`, `STOPPED: the event manager exited (code 3)` or `CRASHED: <error>` with the traceback. When the event manager was killed without a word (the memory guard closed the terminal, the computer restarted), the next `orch status`, `orch resume` or manager start finds it and looks up why in the computer's own log:
+
+```
+[shop feature/cart] CRASHED: the event manager (pid 4120) stopped without a word; last alive 14:36:10. Reason: the memory guard (systemd-oomd) closed the terminal or app this run was in, because the computer was low on memory
+```
+
+Only kills of this run's own processes count, so with two projects open each one writes only its own notes. `orch doctor --crash` shows the last notes and the saved agent screens (`.orchestrate/crash/`). The event manager starts in its own systemd scope where it can, so a closed terminal no longer takes it down.
+
 ## Useful commands
 
 - `orch status`: every worker and milestone, and why something waits.
@@ -64,4 +77,7 @@ orch never refuses a task because a coder's folder has unsaved files. It saves t
 - `orch events --peek`: the lead's queue, without acknowledging anything.
 - `orch park M2 paused "why"`: stop a milestone and keep its work. A coder that is still working on it is told to stop.
 - `orch cooldown claude-1 60`: bench an agent for 60 minutes.
+- `orch bench claude-1 off`: keep a coder out until `orch bench claude-1 on`.
+- `orch stop`: stop the event manager cleanly before you change the team.
+- `orch doctor --crash`: why the event manager last stopped.
 - `orch requeue-review M2`: send a review again after the reviewer vanished.

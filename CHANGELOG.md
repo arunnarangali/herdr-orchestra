@@ -2,6 +2,30 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.7.0] - 2026-11-15
+
+Found in a real run (orch 5.4.0): a coder hit its usage limit, then the terminal closed and herdr restarted. The event manager had been started from a herdr pane, so it died too. For 2.5 hours `orch status` still said "M3 coding on rs-opencode-1" for a pane that no longer existed, and nobody was told. After that, `orch team up` opened an OpenCode pane that quit at once and left a plain shell, and the task was typed into that shell. `dispatch --to rs-agy-1` said "ok" for a worker with no pane. The developer's "no more Claude" was forgotten as soon as Claude's pane came back. Swapping a coder meant killing the event manager by hand, and a dead manager left no trace of why it died.
+
+### Added
+- **`orch bench <worker> off [reason]` / `on`.** Keeps a coder out of the run until you turn it back on. Unlike a usage-limit bench it never ends by itself: it holds across restarts, `orch sync`, `orch resume` and `orch team up`. Milestones sent to that coder with `--to` are freed for the others. `orch status` shows `state=OFF (<reason>)`.
+- **`orch stop [--now]`.** Stops the event manager cleanly: it finishes the step it is on (a check, a merge) and exits, keeping every event. Then `orch sync` works, and `orch resume` starts it again. The playbook has a swap-a-coder recipe: `orch stop`, change `Workers:`, `orch sync`, `orch team up`, `orch resume`.
+- **Crash notes in `autopilot.log`.** Every stop writes a last line, tagged with the repo and branch: `[shop feature/cart] STOPPED: orch stop`, `STOPPED: the event manager exited (code 3)`, or `CRASHED: ValueError: ...` with the traceback. A manager killed without a word is found by the next `orch status`, `orch resume` or manager start, which looks up why in the computer's own log: the memory guard (`systemd-oomd`) closing the terminal, the kernel killing a process for memory, a crash dump (`coredumpctl`), sleep, shutdown, or a reboot (from the boot time). It writes the reason and the matching system log line once.
+- **Crash notes stay with their own project.** When the event manager starts, it records this run's own processes (itself, herdr, and every process working in the run's folders) and their cgroups. A kill in the system log is blamed on this run only when it names one of them. Otherwise it says `unknown — the system log shows a kill then, but not of this run's processes (another project or app)`.
+- **`orch doctor --crash`** (in a repo): why the event manager last stopped, the last `STOPPED` / `CRASHED` / `LOST` / `QUIT` notes, and the saved agent screens.
+- **Saved screens.** When a coder's agent quits and leaves a shell, or `orch team up` sees an agent quit right after starting, its last 40 lines are saved to `.orchestrate/crash/<agent>-<time>.txt` (newest 20 kept, `ORCH_CRASH_KEEP`).
+- **A vanished coder is a lead event, not a log line.** `WORKER-LOST Mn` tells the lead what happened (pane closed, or only a shell left) and the exact fix (`orch resume` after a herdr restart, or `orch team up`). When most agents vanish at once, the log says `HERDR RESTART? 4 of 5 agents vanished at once`, with a desktop alert and a `HERDR-RESTART` lead event.
+
+### Changed
+- **An agent counts as there only when herdr runs an agent in its pane.** A name on a pane with only a shell left (`"agent": null`, no status) used to count as alive, so prompts were typed into the shell. Now it counts as gone everywhere orch picks a coder.
+- **`orch dispatch --to <worker>` refuses a worker with no agent** (`rs-agy-1 has no agent in herdr (NO AGENT). Run orch team up ...`) or one that is benched off. A plain dispatch warns when none of the possible coders is there.
+- **`orch status` and `orch ready` tell the truth.** Each worker line shows `herdr=ok`, `NO AGENT` or `SHELL ONLY`, and `state=free`, `coding M3`, `benched 42m (rate-limit)` or `OFF`. A milestone coding on a vanished worker says `!! but rs-opencode-1 has no agent in herdr: nothing is working on it — orch resume`. `READY`'s free slots count only coders herdr can see, and `NOAGENT` names the rest.
+- **`orch team up` looks again a few seconds after starting each agent** (`ORCH_TEAM_CONFIRM_S`, default 5). One that quit at once is reported as `QUIT`, exit 3, instead of `OPENED`.
+- **Old notes are cleared.** A milestone's note such as `[rs-claude-1 hit a usage/rate limit]` is cleared when another coder starts on it.
+- **The event manager starts in its own systemd scope** (`systemd-run --user --scope`) when it can, so the memory guard closing a terminal, or a closed herdr pane, does not take it down. Where that is not available it starts as before. `ORCH_NO_SCOPE=1` turns it off.
+- **Logs stay small.** `autopilot.log` becomes `autopilot.log.1` past 2 MB (`ORCH_LOG_MAX_MB`) and only that one old copy is kept; `manager.out` the same at 1 MB.
+
+Tested with simulated agents and a simulated herdr and system log only. Two things are not proven on a real machine yet: herdr's exact JSON for a pane whose agent quit (orch reads `"agent": null`, or no status at all, as "only a shell"), and the `systemd-run --scope` start on Ubuntu.
+
 ## [5.6.0] - 2026-11-15
 
 A small change (a few UI tweaks, a new field in an API response, a validation rule) went through the same process as a big feature: full research, a plan with a breakdown, roles and model reasons, worktrees and setup, a reviewer for every UI change, a long summary, and the check command run four or five times. For a 10-minute change most of the time went on the process around it.
