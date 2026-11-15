@@ -41,6 +41,8 @@ Run `orch events`. It lists the new events, the ones still open, the milestones 
 | `PAUSED Mn`: agent stopped twice / over its time budget / blocked / orch error | Look at what the agent shows (`herdr agent read <agent> --source recent-unwrapped --lines 60`) or the error in the log, and tell the developer. Don't work around it by hand. When it is sorted out: `orch dispatch Mn`. |
 | `FAILED Mn`: checks / review / criteria still failing | It already had its rounds, and a round on a stronger model if the team has one. Read the last report and the last check output or review file. Explain in two lines what keeps failing. If a fact or constraint was missing from the milestone, add it to the plan (never a how-to) and `orch dispatch Mn`; add `--tier high` when the work turned out harder than its tier. If you can't tell what is missing, ask the developer. |
 | `FAILED Mn`: lost N attempts | The agents kept being unreachable, gone or rate-limited. Tell the developer which agents to restart or wait for; then `orch dispatch Mn`. |
+| `WORKER-LOST Mn` | A coder vanished while it worked (pane closed, the agent quit and left a shell, herdr restarted). **Not routine:** tell the developer at once, with the exact fix in the event text (`orch resume`, or `orch team up`). The milestone waits for the next free coder with its work so far; nothing else to do. |
+| `HERDR-RESTART` | Most agents vanished at once. Tell the developer to run `orch resume`, then `orch team up` for any agent it reports `LOST`. |
 | `HELD Mn` | Risky changes (deleted files, migrations, CI config, secrets files, unlisted dependency changes, a very large diff) wait for the developer. Show the reasons from `orch status`, and tell the developer to look and run `orch approve Mn` (or `orch set Mn paused`). |
 | `NEEDS-ANSWER Mn` | Open questions in the plan: ask the developer, write the answers under "Notes from user", set "Open questions:" to `- none`, `orch sync`, then `orch dispatch Mn`. |
 | `ESCALATED Mn`, `AUTO-DISPATCHED Mn` | Information. Mention an escalation in the final summary. |
@@ -49,6 +51,14 @@ Run `orch events`. It lists the new events, the ones still open, the milestones 
 | `ALL_DONE` | Section 3. |
 
 If you changed plan.md by hand, run `orch sync` (it works once the event manager is idle; `orch answer` and `orch dispatch` work at any time).
+
+**The developer says "stop sending work to <coder>"** (for example, no Claude today): run `orch bench <worker> off "<their reason>"`. It holds until `orch bench <worker> on`, across restarts, `orch sync` and `orch resume`; a usage-limit bench does not. Tell the developer what it still holds (`orch status`). Never try to keep a coder out by remembering it yourself.
+
+**Swap a coder** (for example, AGY instead of OpenCode): `orch stop` (the event manager finishes its current step and exits; nothing is lost), change `Workers:` in plan.md, `orch sync`, `orch team up`, check that `orch status` shows the new worker as `herdr=ok`, then `orch resume`. Never kill the event manager by hand.
+
+**Before `orch dispatch --to <worker>`**, `orch status` must show that worker as `herdr=ok`. dispatch refuses a worker with no agent (`NO AGENT`, `SHELL ONLY`); do what it says (`orch team up`) and try again. If `orch team up` reports `QUIT <worker>`, the agent quit as soon as it started: show the developer the pane and the saved screen it names.
+
+**Why did the event manager stop?** `orch doctor --crash` prints the last `STOPPED` / `CRASHED` / `LOST` notes (with the reason found in the computer's own log) and the saved agent screens. Give the developer that reason in one line.
 
 **Red baseline.** The event manager needs the check command to pass before any work. If it says the baseline fails: run the check yourself (`<check cmd> 2>&1 | tail -40`), tell the developer exactly what fails, and propose a narrower `Check command` that passes today and still covers the feature. Write it into the plan header only when the developer agrees, then `orch sync` and dispatch again. Never judge "no new failures" by eye.
 

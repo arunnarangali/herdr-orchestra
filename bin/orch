@@ -35,6 +35,10 @@ LEAD_MAX_WAKES = int(os.environ.get("ORCH_LEAD_MAX_WAKES", "3"))     # ...this m
 LEAD_WAIT_S = int(os.environ.get("ORCH_LEAD_WAIT_MIN", "15")) * 60   # ready work the lead never dispatched starts by itself
 LEAD_IDLE_MAX_S = int(os.environ.get("ORCH_LEAD_IDLE_MAX_MIN", "720")) * 60   # give up waiting for answers after this
 DOWN_MIN_S = int(os.environ.get("ORCH_DOWN_MIN_S", "120"))   # the event manager silent for longer than this was down
+STOP_WAIT_S = float(os.environ.get("ORCH_STOP_WAIT_S", "60"))   # `orch stop` waits this long for the step it is on
+TEAM_CONFIRM_S = float(os.environ.get("ORCH_TEAM_CONFIRM_S", "5"))   # `team up` looks again after this: still running?
+LOG_MAX_B = int(float(os.environ.get("ORCH_LOG_MAX_MB", "2")) * 1024 * 1024)   # autopilot.log; one old copy is kept
+CRASH_KEEP = int(os.environ.get("ORCH_CRASH_KEEP", "20"))         # saved agent screens in .orchestrate/crash/
 MAX_FIX = 3
 MAX_REVIEW = 2
 MAX_CONFLICT = 2
@@ -158,7 +162,7 @@ def state_lock():
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
 LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "fix",
-              "team", "resume"}
+              "team", "resume", "bench", "stop", "doctor"}
 _LEASE = None
 
 
@@ -253,6 +257,216 @@ def fault(point):
     os._exit(99)
 
 
+# ---------------------------------------------------------------- logs and crash notes
+# Everything stays in this repo's own .orchestrate/, so two projects run side by side never share a log. Crash
+# notes start with `[<repo> <branch>]`, and a line from the computer's own log is only blamed on this run when it
+# names one of this run's own processes (recorded when the event manager starts, and every few minutes).
+JOURNALCTL = os.environ.get("ORCH_JOURNALCTL", "journalctl")
+COREDUMPCTL = os.environ.get("ORCH_COREDUMPCTL", "coredumpctl")
+PROCS_EVERY_S = 300
+VANISH_CHECK_S = float(os.environ.get("ORCH_VANISH_CHECK_S", "30"))
+
+
+def _rotate(path, limit):
+    """Keep a log under `limit` bytes: past it, the file becomes <name>.1 (one old copy) and a new one starts."""
+    try:
+        if path.exists() and path.stat().st_size > limit:
+            path.replace(path.with_name(path.name + ".1"))
+    except OSError:
+        pass
+
+
+def log_line(msg):
+    """Append one timestamped line to .orchestrate/autopilot.log (size-capped)."""
+    p = ORCH / "autopilot.log"
+    _rotate(p, LOG_MAX_B)
+    try:
+        with p.open("a") as f:
+            f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except OSError:
+        pass
+
+
+def run_tag(st=None):
+    """`[<repo> <branch>]`: which project and run a crash note is about."""
+    branch = None
+    try:
+        branch = (st or load()).get("branch")
+    except (SystemExit, OSError, ValueError):
+        pass
+    return f"[{ROOT.name}{' ' + branch if branch else ''}]"
+
+
+def save_screen(agent, why):
+    """Keep the last lines an agent's pane shows, while herdr can still read them, in .orchestrate/crash/
+    (only the newest CRASH_KEEP files are kept). Returns the file, or None when there was nothing to read."""
+    try:
+        r = subprocess.run([HERDR, "agent", "read", agent, "--source", "recent-unwrapped", "--lines", "40"],
+                           text=True, capture_output=True, timeout=HERDR_TIMEOUT_S)
+        text = r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        text = ""
+    if not text:
+        return None
+    d = ORCH / "crash"
+    d.mkdir(exist_ok=True)
+    f = d / f"{re.sub(r'[^A-Za-z0-9_.-]', '_', agent)}-{time.strftime('%Y%m%d-%H%M%S')}.txt"
+    f.write_text(f"{run_tag()} {agent}: {why}\nsaved {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                 + "\n".join(text.splitlines()[-40:]) + "\n")
+    for old in sorted(d.glob("*.txt"), key=lambda p: p.stat().st_mtime)[:-CRASH_KEEP]:
+        with contextlib.suppress(OSError):
+            old.unlink()
+    return f
+
+
+def _cgroup(pid):
+    try:
+        for line in Path(f"/proc/{pid}/cgroup").read_text().splitlines():
+            if line.startswith("0::"):
+                return line[3:].strip() or None
+    except OSError:
+        pass
+    return None
+
+
+def run_processes(st):
+    """This run's own processes: the event manager, herdr, and every process working in the run's folders (the
+    agents and what they started). {pid: name} plus their cgroups. Empty where /proc does not exist."""
+    procs, groups = {}, set()
+    if not Path("/proc").is_dir():
+        return {"procs": {}, "cgroups": []}
+    folders = [str(ROOT)] + [w["dir"] for w in st.get("workers", {}).values() if w.get("dir")]
+    me = os.getpid()
+    for d in Path("/proc").iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            comm = (d / "comm").read_text().strip()
+            if int(d.name) != me and comm != "herdr":
+                cwd = os.readlink(d / "cwd")
+                if not any(_inside(cwd, f) for f in folders):
+                    continue
+        except OSError:
+            continue
+        procs[d.name] = comm
+        if len(procs) >= 300:
+            break
+    procs[str(me)] = "orch autopilot"
+    for pid in procs:
+        g = _cgroup(pid)
+        if g:
+            groups.add(g)
+    return {"procs": procs, "cgroups": sorted(groups)[:60]}
+
+
+def boot_time():
+    if os.environ.get("ORCH_BOOT_TIME"):
+        return int(os.environ["ORCH_BOOT_TIME"])
+    try:
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime "):
+                return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _lines(cmd):
+    try:
+        r = subprocess.run(cmd, text=True, capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return r.stdout.splitlines()[-3000:] if r.returncode == 0 else []
+
+
+OOMD_RE = re.compile(r"systemd-oomd.*?Killed (/\S+)")
+KOOM_RE = re.compile(r"(?:Out of memory: Killed process|oom-kill:.*?pid=)\s*(\d+)(?:\s*\(([^)]+)\))?")
+SLEEP_RE = re.compile(r"PM: suspend entry|Suspending system|The system will suspend|Entering sleep state")
+DOWN_RE = re.compile(r"System is powering down|System is rebooting|The system will (?:power off|reboot)|"
+                     r"Shutting down\.|Power key pressed")
+
+
+def crash_reason(rec, last):
+    """Why a run's processes stopped around `last` (epoch), from the computer's own logs. Returns (reason, evidence
+    lines). Only kills that name one of this run's processes or cgroups count; the rest is reported as such."""
+    procs = (rec or {}).get("procs") or {}
+    groups = (rec or {}).get("cgroups") or []
+    since, until = int(last) - 300, int(last) + 600
+    bt = boot_time()
+    if bt and bt > last:
+        return (f"the computer was restarted (it booted at {_clock(bt)}, after orch was last alive at "
+                f"{_clock(last)})", [])
+    lines = _lines([JOURNALCTL, "--no-pager", "-q", "-o", "short-iso", "--since", f"@{since}", "--until", f"@{until}"])
+    lines += _lines([JOURNALCTL, "--no-pager", "-q", "-o", "short-iso", "-k", "--since", f"@{since}",
+                     "--until", f"@{until}"])
+    other = []
+    for line in lines:
+        m = OOMD_RE.search(line)
+        if m:
+            killed = m.group(1).rstrip(".,")
+            if any(g == killed or g.startswith(killed.rstrip("/") + "/") for g in groups):
+                return ("the memory guard (systemd-oomd) closed the terminal or app this run was in, because the "
+                        "computer was low on memory", [line.strip()[:300]])
+            other.append(line.strip()[:300])
+            continue
+        m = KOOM_RE.search(line)
+        if m:
+            if m.group(1) in procs:
+                name = procs[m.group(1)]
+                return (f"out of memory: the system killed {name} (pid {m.group(1)})", [line.strip()[:300]])
+            other.append(line.strip()[:300])
+            continue
+        if SLEEP_RE.search(line):
+            return "the computer went to sleep", [line.strip()[:300]]
+        if DOWN_RE.search(line):
+            return "the computer was shut down or restarted", [line.strip()[:300]]
+    for line in _lines([COREDUMPCTL, "list", "--no-pager", "-q", "--since", f"@{since}", "--until", f"@{until}"]):
+        parts = line.split()
+        pid = next((p for p in parts if p.isdigit() and p in procs), None)
+        if pid or "herdr" in line:
+            return (f"{procs.get(pid, 'herdr')} crashed (a core dump was written)", [line.strip()[:300]])
+    if other:
+        return (f"unknown — the system log shows {len(other)} kill(s) then, but not of this run's processes "
+                f"(another project or app)", other[:3])
+    if not lines:
+        return "unknown — the system log could not be read (journalctl missing, or no permission)", []
+    return "unknown — the system log has nothing about it at that time", []
+
+
+def note_dead_manager(st, save_it=True, starting=False):
+    """An event manager that died without its last line (killed: memory, a closed terminal, a crash of the whole
+    app) is found here, once: the reason is looked up and written to autopilot.log. Returns the note, or None."""
+    m = (st.get("run") or {}).get("manager")
+    if not m or m.get("ended") or m.get("host") not in (None, socket.gethostname()):
+        return None
+    if starting:                     # the new manager holds the lease now: the old one is dead unless it is us
+        if m.get("pid") == os.getpid():
+            return None
+    elif driver_alive():
+        return None
+    last = (st.get("run") or {}).get("beat") or m.get("started") or now()
+    reason, evidence = crash_reason(m, last)
+    m["ended"] = {"ts": now(), "how": "died", "reason": reason, "last_alive": last}
+    note = (f"{run_tag(st)} CRASHED: the event manager (pid {m.get('pid')}) stopped without a word; last alive "
+            f"{_clock(last)}. Reason: {reason}")
+    log_line(note)
+    for e in evidence:
+        log_line(f"{run_tag(st)}   system log: {e}")
+    if save_it:
+        save(st)
+    return note + "".join(f"\n  system log: {e}" for e in evidence)
+
+
+def last_crash_lines(n=12):
+    """The newest crash, stop and lost notes from autopilot.log (and its old copy)."""
+    out = []
+    for p in (ORCH / "autopilot.log.1", ORCH / "autopilot.log"):
+        if p.exists():
+            out += [l for l in p.read_text(errors="replace").splitlines()
+                    if re.search(r"\] (CRASHED|STOPPED|QUIT|LOST|HERDR RESTART\?)|system log:", l)]
+    return out[-n:]
+
+
 # Every status change goes through move(). Statuses not listed as a key are terminal.
 _PARK = {"pending", "paused", "failed"}
 TRANSITIONS = {
@@ -285,6 +499,8 @@ def move(st, tid, to, why=None, force=False):
     t["status"] = to
     if why is not None:
         t["reason"] = why
+    elif to != frm and to in ("coding", "verifying", "reviewing"):
+        t["reason"] = ""          # work goes on: an old note ("hit a usage limit") no longer describes it
     if to != frm or why:
         ev = {"ts": now(), "task": tid, "from": frm, "to": to, "why": why or "",
               "agent": t.get("worker") or t.get("last_worker"), "attempt": t.get("attempt", 0)}
@@ -364,21 +580,61 @@ def _status_field(obj):
     return found if found is not None else _find_key(obj, "status")
 
 
-def herdr_state(agent):
-    """The agent's lowercased status from `herdr agent get`, or None if herdr can't find it.
-    Only the status field is matched, so a name or path containing "working" or "blocked" is not misread;
-    output that isn't JSON falls back to the whole text."""
+def _shell_only(obj):
+    """True when herdr knows the name but no agent runs in its pane: the JSON says `"agent": null` (or empty),
+    or it has no status at all. That pane is a plain shell (the agent quit, or never started), and a prompt
+    sent there would be typed into the shell."""
+    if not isinstance(obj, (dict, list)):
+        return False
+    if _status_field(obj) is None:
+        return True
+    stack = [obj]
+    while stack:
+        o = stack.pop()
+        if isinstance(o, dict):
+            if "agent" in o and o["agent"] in (None, "", False):
+                return True
+            stack.extend(o.values())
+        elif isinstance(o, list):
+            stack.extend(o)
+    return False
+
+
+def herdr_presence(agent):
+    """("agent", status) when herdr runs the agent, ("shell", None) when the name is on a pane with no agent in
+    it, ("gone", None) when herdr can't find the name (or can't be reached)."""
     try:
         r = subprocess.run([HERDR, "agent", "get", agent], text=True, capture_output=True, timeout=HERDR_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        return "gone", None
     if r.returncode != 0:
-        return None
+        return "gone", None
     try:
-        status = _status_field(json.loads(r.stdout))
+        data = json.loads(r.stdout)
     except ValueError:
-        status = None
-    return (status if status is not None else r.stdout + r.stderr).lower()
+        return "agent", (r.stdout + r.stderr).lower()   # not JSON: the whole text, as before
+    if _shell_only(data):
+        return "shell", None
+    return "agent", _status_field(data).lower()
+
+
+def herdr_state(agent):
+    """The agent's lowercased status from `herdr agent get`, or None if herdr can't find it, or only a shell is
+    left in its pane. Only the status field is matched, so a name or path containing "working" or "blocked" is
+    not misread; output that isn't JSON falls back to the whole text."""
+    return herdr_presence(agent)[1]
+
+
+def presence_word(st, name):
+    """What `orch status` says about an agent's pane: ok, detect:off, NO AGENT, SHELL ONLY, or a stale pane id."""
+    info = agent_info(st, name)
+    if info.get("pane"):
+        ok, _, _ = _herdr_json([HERDR, "pane", "get", info["pane"]])
+        return "ok" if ok else "STALE PANE"
+    if not info.get("detect", True):
+        return "detect:off"
+    where, _ = herdr_presence(name)
+    return {"agent": "ok", "shell": "SHELL ONLY", "gone": "NO AGENT"}[where]
 
 
 def word(state, *words):
@@ -545,10 +801,12 @@ def need_rank(t):
 def eligible_workers(st, t):
     """Workers allowed to take the task: its tier or higher (unrated workers count as any tier). When nobody on the
     team reaches the tier, the strongest workers the team has, so a run never waits for a model nobody started."""
-    if t.get("assign") in st["workers"]:
+    if t.get("assign") in st["workers"] and not st["workers"][t["assign"]].get("off"):
         return [t["assign"]]
     need = need_rank(t)
-    ranks = {n: rank(w.get("tier")) for n, w in st["workers"].items()}
+    ranks = {n: rank(w.get("tier")) for n, w in st["workers"].items() if not w.get("off")}   # `orch bench <w> off`
+    if not ranks:
+        return []
     ok = [n for n, r in ranks.items() if not need or not r or r >= need]
     if not ok:
         top = max(ranks.values())
@@ -1034,6 +1292,7 @@ def cmd_sync(args):
         ow = old.get("workers", {}).get(name, {})
         st["workers"][name] = {"kind": kind, "task": ow.get("task"), "cooldown_until": ow.get("cooldown_until", 0),
                                "cooldown_reason": ow.get("cooldown_reason", ""),
+                               **({"off": ow["off"]} if ow.get("off") else {}),     # kept until `orch bench <w> on`
                                "dir": ow.get("dir"), "setup_done": ow.get("setup_done", False),
                                "setup_hash": ow.get("setup_hash"), "delivery_fails": ow.get("delivery_fails", 0),
                                "pane": pane, "detect": detect(kind, pane, "Workers"),
@@ -1630,7 +1889,15 @@ def cmd_ready(args):
     slots = free_slots(st)
     if st["isolation"] == "shared" and slots <= 0 and active_count(st) == len(fix_jobs(st)) and fix_jobs(st):
         slots = 1          # shared mode: a queued fix job IS the active milestone, and it needs a coder
+    # only coders herdr can see count as free: a coder with no agent can't take work, whatever its task field says
+    present = [n for n, w in st["workers"].items() if not w.get("task") and not w.get("off") and not cooling(n, w)
+               and (not w.get("detect", True) or w.get("pane") or herdr_state(n) is not None)]
+    gone = [n for n, w in st["workers"].items() if not w.get("task") and not w.get("off") and w.get("detect", True)
+            and not w.get("pane") and herdr_state(n) is None]
+    slots = min(slots, len(present))
     print(f"SLOTS {max(slots, 0)}")
+    if gone:
+        print(f"NOAGENT {' '.join(gone)} (no agent in herdr: `orch team up`)")
     for tid in fix_jobs(st):  # fixes first: reviewed work merges sooner and unlocks dependents
         print(f"FIX {tid} {st['tasks'][tid]['status']} {st['tasks'][tid]['title']}")
     for tid in out:
@@ -1649,7 +1916,7 @@ def cooling(name, info):
 
 
 def worker_free(st, name, w):
-    if w.get("task") or cooling(name, w):
+    if w.get("task") or w.get("off") or cooling(name, w):
         return False
     if not w.get("detect", True):      # herdr can't watch it: no task + no cooldown = free
         return True
@@ -2514,6 +2781,70 @@ def cmd_cooldown(args):
     print(f"COOLDOWN {name} for {args[1]} min" + (f" ({reason})" if reason else ""))
 
 
+def cmd_bench(args):
+    """orch bench <worker> off [reason] | on -> keep a coder out of the run until the developer says otherwise.
+    Unlike a cooldown it never ends by itself: not after a restart, `orch sync`, `orch resume` or `orch team up`."""
+    need(args, 2, "bench <worker> off [reason] | bench <worker> on")
+    name, mode, reason = args[0], args[1], " ".join(args[2:]).strip()
+    if mode not in ("off", "on"):
+        die("usage: orch bench <worker> off [reason] | orch bench <worker> on")
+    with state_lock():
+        st = load()
+        if name not in st["workers"]:
+            die(f"unknown worker {name!r} — workers: {', '.join(st['workers'])}"
+                + (" (the reviewer can't be benched this way: change `Reviewer:` in plan.md)"
+                   if name == st.get("reviewer") else ""))
+        w = st["workers"][name]
+        if mode == "on":
+            was = w.pop("off", None)
+            save(st)
+            print(f"ON      {name} takes work again" if was else f"ON      {name} was not off")
+            return
+        w["off"] = {"ts": now(), "why": reason or "the developer said so"}
+        moved = [tid for tid in st["order"] if st["tasks"][tid].get("assign") == name
+                 and st["tasks"][tid]["status"] not in ("merged", "skipped")]
+        for tid in moved:
+            st["tasks"][tid].pop("assign", None)        # `--to <this worker>` no longer holds it back
+        save(st)
+        print(f"OFF     {name}: gets no new work until `orch bench {name} on` ({w['off']['why']})")
+        if moved:
+            print(f"        {', '.join(moved)} no longer wait for {name}: the next free coder takes them")
+        if w.get("task"):
+            print(f"        it still holds {w['task']}: that one finishes here. To move it now: "
+                  f"`orch set {w['task']} paused`, then `orch dispatch {w['task']}`")
+        if not eligible_workers(st, {"tier": None, "min_tier": None}):
+            print("WARN    every coder is off now: nothing new starts until one is back on")
+
+
+def cmd_stop(args):
+    """orch stop [--now] -> stop the event manager cleanly: it finishes the step it is on (a check, a merge) and
+    exits; every event and all work are kept. Then change the run (plan.md + `orch sync`, `orch team up`) and
+    start it again with `orch resume`. --now also stops the step it is on."""
+    if not driver_alive():
+        print("the event manager is not running")
+        return
+    info = driver_info()
+    pid = info.get("pid")
+    if info.get("host") not in (None, socket.gethostname()):
+        die(f"the event manager runs on {info.get('host')}: stop it there")
+    if not isinstance(pid, int):
+        die("can't tell the event manager's process id from .orchestrate/driver.lock")
+    (ORCH / "stop.request").write_text(json.dumps({"ts": now(), "now": "--now" in args}))
+    for _ in range(2 if "--now" in args else 1):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+        time.sleep(0.3)
+    end = time.time() + STOP_WAIT_S
+    while time.time() < end and driver_alive():
+        time.sleep(0.25)
+    if driver_alive():
+        print(f"STOPPING the event manager (pid {pid}) is finishing its current step and stops right after it. "
+              f"`orch status` shows when it has; `orch stop --now` stops it at once.")
+        sys.exit(3)
+    print(f"STOPPED the event manager (pid {pid}). Nothing is lost. Change what you need (plan.md + `orch sync`, "
+          f"`orch team up`), then start it again with `orch resume`.")
+
+
 STATUSES = {"pending", "coding", "verifying", "awaiting-review", "reviewing", "reviewed", "committed", "merged",
             "needs-answer", "paused", "failed", "conflict", "skipped", "needs-fix", "held"}
 
@@ -2544,6 +2875,10 @@ def cmd_set(args):
 
 def cmd_status(args):
     st = load()
+    dead = None if driver_alive() else note_dead_manager(st)
+    here = {n: presence_word(st, n) for n in st["workers"]}    # ask herdr first, then print in one go
+    if dead:
+        print("!! " + dead.replace("\n", "\n!! "))
     if driver_alive():
         print(f"driven by {driver_line(driver_info())}")
     elif needs_manager(st):
@@ -2561,17 +2896,27 @@ def cmd_status(args):
               f"{st['integration_broken']} — fix it; autopilot re-checks before it continues")
     for n, w in st["workers"].items():
         cd = max(0, w.get("cooldown_until", 0) - now())
+        h = here[n]
+        state = ("OFF (" + (w["off"].get("why") or "developer") + ")" if w.get("off") else
+                 f"coding {w['task']}" if w.get("task") else
+                 f"benched {cd // 60}m ({w.get('cooldown_reason') or 'cooldown'})" if cd else "free")
         print(f"  worker {n:<12} {w['kind']:<8} task={w.get('task') or '-':<5} "
               + (f"model={w['model']} ({w.get('tier') or 'unrated'}) " if w.get("model") else "")
               + f"{'cooldown ' + str(cd // 60) + 'm' if cd else ''}"
-              f"{'' if w.get('detect', True) else ' detect:off'}")
+              f"{'' if w.get('detect', True) else ' detect:off'}"
+              + f"  herdr={h} state={state}"
+              + ("  !! no agent: `orch team up` (or `orch resume` after a restart)" if h in ("NO AGENT", "SHELL ONLY")
+                 else ""))
     for tid in st["order"]:
         t = st["tasks"][tid]
         print(f"  {tid:<4} {t['status']:<15} deps={','.join(t['deps']) or '-':<10} "
               f"worker={t.get('worker') or '-':<10} "
               + (f"tier={t['tier'] if rank(t.get('min_tier')) <= rank(t.get('tier')) else t['min_tier'] + '^'} "
                  if need_rank(t) else "") + t["title"]
-              + (f"  [{t['reason']}]" if t.get("reason") else ""))
+              + (f"  [{t['reason']}]" if t.get("reason") else "")
+              + (f"  !! but {t['worker']} has no agent in herdr ({here[t['worker']]}): nothing is working on it — "
+                 f"`orch resume`" if t["status"] in ("coding", "conflict") and here.get(t.get("worker"))
+                 in ("NO AGENT", "SHELL ONLY") else ""))
     if lead_on(st):
         ev = [e for e in st["lead_events"] if event_open(st, e)]
         hold = undispatched(st)
@@ -2803,14 +3148,29 @@ def start_manager():
         return f"the event manager is running ({driver_line(driver_info())})"
     if os.environ.get("ORCH_NO_AUTOSTART") == "1":
         return "the event manager is NOT running — ask the developer to run `orch autopilot` in a terminal"
-    with open(ORCH / "manager.out", "a") as out:
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "autopilot"], cwd=ROOT, stdin=subprocess.DEVNULL,
-                         stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
-                         env={k: v for k, v in os.environ.items() if not k.startswith("ORCH_DRIVER")})
-    for _ in range(20):
-        time.sleep(0.25)
-        if driver_alive():
-            return "started the event manager (`orch autopilot`, log: .orchestrate/autopilot.log)"
+    _rotate(ORCH / "manager.out", LOG_MAX_B // 2)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("ORCH_DRIVER")}
+    cmd = [sys.executable, os.path.abspath(__file__), "autopilot"]
+    # In its own systemd scope the manager is not part of the terminal (or herdr pane) it was started from: when the
+    # memory guard closes that terminal, or herdr restarts, the manager keeps watching and says what it saw.
+    unit = f"orch-{re.sub(r'[^A-Za-z0-9]', '-', ROOT.name)[:30]}-{os.getpid()}"
+    tries = []
+    if os.environ.get("ORCH_NO_SCOPE") != "1" and shutil.which("systemd-run"):
+        tries.append((["systemd-run", "--user", "--scope", "--quiet", "--collect", f"--unit={unit}"] + cmd,
+                      {**env, "ORCH_SCOPE": unit}))
+    tries.append((cmd, env))
+    for argv, e in tries:
+        with open(ORCH / "manager.out", "a") as out:
+            p = subprocess.Popen(argv, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                 start_new_session=True, env=e)
+        for _ in range(20):
+            time.sleep(0.25)
+            if driver_alive():
+                return ("started the event manager (`orch autopilot`" + (f", in its own scope {unit} so a closed "
+                        f"terminal does not stop it" if argv[0] == "systemd-run" else "")
+                        + ", log: .orchestrate/autopilot.log)")
+            if p.poll() is not None:
+                break                     # systemd-run can't reach the user session: start it the plain way
     return ("could NOT start the event manager from here (see .orchestrate/manager.out) — ask the developer to run "
             "`orch autopilot` in a terminal")
 
@@ -2829,6 +3189,16 @@ def cmd_dispatch(args):
         st = load()
         if opts.get("--to") and opts["--to"] not in st["workers"]:
             die(f"unknown worker {opts['--to']!r} — workers: {', '.join(st['workers'])}")
+        if opts.get("--to"):
+            to = opts["--to"]
+            if st["workers"][to].get("off"):
+                die(f"{to} is off ({st['workers'][to]['off'].get('why')}): `orch bench {to} on` first, or pick another "
+                    f"worker")
+            here = presence_word(st, to)
+            if here not in ("ok", "detect:off"):
+                die(f"{to} has no agent in herdr ({here}" + (": only a plain shell is left in its pane" if here ==
+                    "SHELL ONLY" else "") + f"). Run `orch team up` (or `orch resume` after a restart), check that "
+                    f"`orch status` shows {to} as ok, then dispatch again")
         if opts.get("--tier") and opts["--tier"] not in TIERS:
             die("--tier must be small, medium or high")
         for tid in args:
@@ -2849,8 +3219,14 @@ def cmd_dispatch(args):
                 _park(st, tid, "pending", "dispatched again by the lead")
             who = [n for n in eligible_workers(st, t)]
             waits = [d for d in t["deps"] if st["tasks"][d]["status"] != "merged"]
-            print(f"DISPATCH {tid} -> {' or '.join(who)}" + (f" (tier {TIERS[need_rank(t) - 1]})" if need_rank(t) else "")
+            print(f"DISPATCH {tid} -> {' or '.join(who) or 'nobody (every coder is off)'}"
+                  + (f" (tier {TIERS[need_rank(t) - 1]})" if need_rank(t) else "")
                   + (f" — starts when {', '.join(waits)} merged" if waits else ""))
+            if who and not opts.get("--to"):
+                missing = [n for n in who if presence_word(st, n) not in ("ok", "detect:off")]
+                if len(missing) == len(who):
+                    print(f"WARN     none of them has an agent in herdr right now ({', '.join(missing)}): {tid} waits "
+                          f"until one does. Run `orch team up` (or `orch resume` after a restart)")
         save(st)
     print(start_manager())
     print("You will be woken with `orch events` when something needs you. Stop here; do not poll.")
@@ -2986,6 +3362,13 @@ EVENT_HELP = {
     "reviewer-lost": "the reviewer can't be reached, so the milestone waits for review (its work is kept). Tell the "
                      "developer the fix in the event text (usually: rename the reviewer's new pane). Review resumes "
                      "by itself once herdr finds the reviewer again.",
+    "worker-lost": "a coder vanished while it worked (pane closed, agent quit, herdr restarted). Its milestone "
+                   "waits for the next free coder with the work so far. This is NOT routine: tell the developer at "
+                   "once, with the exact fix from the event text (`orch resume` or `orch team up`). If the developer "
+                   "does not want that coder any more: `orch bench <worker> off`.",
+    "herdr-restart": "most agents vanished at once: herdr was probably restarted or closed. Tell the developer to "
+                     "run `orch resume` (it names the panes again and re-sends the work); then `orch team up` for "
+                     "any agent it reports LOST.",
     "all_done": "every milestone landed. Finish .orchestrate/summary.md (see `orch lead run`, section ALL_DONE).",
     "stopped": "the event manager stopped. Tell the developer why; they run `orch resume` (or `orch autopilot`).",
 }
@@ -3122,25 +3505,138 @@ RATE_RE = re.compile(r"usage limit|rate.?limit|quota|too many requests|\b429\b|l
                      re.I)
 
 
+class _Stop(BaseException):
+    """`orch stop` (or a closed terminal) asked the event manager to stop: unwinds to cmd_autopilot."""
+
+
+_STOP = {"asked": None, "child": None}
+
+
+def _on_stop_signal(signum, _frame):
+    """First signal: stop at the next safe point (a running `orch poll` is ended, as it only waits). Second: now."""
+    why = "terminal closed (SIGHUP)" if signum == getattr(signal, "SIGHUP", None) else "SIGTERM"
+    try:
+        req = json.loads((ORCH / "stop.request").read_text())
+        if now() - req.get("ts", 0) < 120:
+            why = "orch stop" + (" --now" if req.get("now") else "")
+    except (OSError, ValueError):
+        pass
+    again = _STOP["asked"] is not None
+    _STOP["asked"] = why
+    child = _STOP["child"]
+    if child is not None and child[0].poll() is None and (again or child[1] == "poll"):
+        with contextlib.suppress(OSError):
+            child[0].terminate()
+    if again:
+        raise _Stop()
+
+
+def _stop_point():
+    if _STOP["asked"]:
+        raise _Stop()
+
+
 def cmd_autopilot(args):
+    """The event manager (see _autopilot). This wrapper records how it ends: every stop writes a last line to
+    autopilot.log, a Python error writes the traceback, and a manager that was killed without a word (memory guard,
+    a crash of the whole terminal) is found by the next one, which looks up why in the computer's own log."""
+    take_lease()
+    if STATE.exists():
+        manager_begin()
+    tag = run_tag() if STATE.exists() else f"[{ROOT.name}]"
+    with contextlib.suppress(ValueError, OSError):
+        signal.signal(signal.SIGTERM, _on_stop_signal)
+        signal.signal(signal.SIGHUP, _on_stop_signal)
+
+    def ended(how, detail=""):
+        nonlocal tag
+        if STATE.exists():
+            tag = run_tag()
+        with contextlib.suppress(BaseException):
+            with state_lock():
+                s_ = load()
+                m = s_["run"].get("manager") or {}
+                if m.get("pid") == os.getpid():
+                    m["ended"] = {"ts": now(), "how": how, "reason": detail[:300]}
+                    s_["run"]["manager"] = m
+                    save(s_)
+    try:
+        _autopilot(args)
+        ended("finished")
+        log_line(f"{tag} STOPPED: the event manager finished")
+    except _Stop:
+        why = _STOP["asked"] or "stop"
+        ended("stopped", why)
+        log_line(f"{tag} STOPPED: {why} — nothing is lost; `orch resume` starts it again")
+        print(f"STOPPED ({why})", flush=True)
+        with contextlib.suppress(OSError):
+            (ORCH / "stop.request").unlink()
+        sys.exit(0)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        ended("exit", f"exit {code}")
+        log_line(f"{tag} STOPPED: the event manager exited (code {code}); the line above says why")
+        raise
+    except KeyboardInterrupt:
+        ended("stopped", "Ctrl-C")
+        log_line(f"{tag} STOPPED: Ctrl-C")
+        raise
+    except BaseException as e:
+        import traceback
+        tb = traceback.format_exc()
+        ended("crashed", f"{type(e).__name__}: {e}")
+        log_line(f"{tag} CRASHED: {type(e).__name__}: {e}")
+        for l in tb.rstrip().splitlines()[-40:]:
+            log_line(f"{tag}   {l}")
+        if shutil.which("notify-send"):
+            subprocess.run(["notify-send", "orch autopilot", f"{tag} CRASHED: {type(e).__name__}: {e}"],
+                           capture_output=True)
+        raise
+
+
+def manager_begin():
+    """The event manager starting: report a predecessor that died without a word, then record this one (pid, host,
+    this run's processes) so the next one can do the same for it. Safe to call twice."""
+    with state_lock():
+        st = load()
+        m = st["run"].get("manager") or {}
+        if m.get("pid") == os.getpid():
+            return
+        dead = note_dead_manager(st, save_it=False, starting=True)
+        if dead:
+            print(dead, flush=True)
+            if shutil.which("notify-send"):
+                subprocess.run(["notify-send", "orch autopilot", dead.splitlines()[0]], capture_output=True)
+        st["run"]["manager"] = {"pid": os.getpid(), "host": socket.gethostname(), "started": now(),
+                                "scope": os.environ.get("ORCH_SCOPE") or None, **run_processes(st)}
+        save(st)
+
+
+def _autopilot(args):
     """The event manager: a plain script that watches the agents, runs checks, sends fixes and reviews, merges, and
     wakes the lead when something needs a decision. It is the only driver of a run: it holds the driver lease, and
     other processes can't change the run meanwhile (the lead's `orch dispatch` / `orch answer` are requests it
     carries out). Without a lead (`Lead mode: off`) it dispatches by itself and stops (exit 3) when a human is needed."""
     me = [sys.executable, os.path.abspath(__file__)]
-    log = ORCH / "autopilot.log"
-    take_lease()
+    if os.environ.get("ORCH_FAULT") == "autopilot-error":
+        raise ValueError("test crash")             # test hook: a Python error inside the event manager
 
     def say(msg, important=False):
-        line = f"[{time.strftime('%H:%M:%S')}] {msg}"
-        print(line, flush=True)
-        with log.open("a") as f:
-            f.write(line + "\n")
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+        log_line(msg)
         if important and shutil.which("notify-send"):
             subprocess.run(["notify-send", "orch autopilot", msg], capture_output=True)
 
     def run(*a, ok=(0,)):
-        r = subprocess.run(me + [str(x) for x in a], text=True, capture_output=True)
+        _stop_point()
+        p = subprocess.Popen(me + [str(x) for x in a], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _STOP["child"] = (p, str(a[0]))
+        try:
+            so, se = p.communicate()
+        finally:
+            _STOP["child"] = None
+        r = subprocess.CompletedProcess(p.args, p.returncode, so, se)
+        _stop_point()                    # `orch stop` came while it ran: the step is done, stop here
         out = (r.stdout + r.stderr).strip()
         if r.returncode not in ok:
             raise RuntimeError(f"orch {' '.join(str(x) for x in a)} -> exit {r.returncode}: {out}")
@@ -3529,11 +4025,24 @@ def cmd_autopilot(args):
                 run("cooldown", agent, GONE_COOLDOWN_MIN, "gone")
                 say(f"reviewer {agent} is gone — restart it; {tid} waits for review (the coder's work is kept)", True)
             else:
+                where, _ = herdr_presence(agent)
+                shell = where == "shell"
+                saved = save_screen(agent, f"no agent left in its pane while it worked on {tid}") if shell else None
+                what = ("its pane is still there, but only a plain shell is left in it (the agent quit)" if shell
+                        else "herdr can't find it (its pane was closed, or herdr restarted)")
+                fix = ("run `orch team up`: it starts the agent again in that pane" if shell else
+                       "run `orch resume` if herdr restarted (it finds the pane by folder and names it again), "
+                       "else `orch team up` to open a new pane")
                 park(tid, "pending", f"{agent} disappeared from herdr", important=False, lost=True)
                 run("cooldown", agent, GONE_COOLDOWN_MIN, "gone")
-                say(f"{agent} is gone — restart it in its folder; {tid} goes to the next free coder", True)
+                patch_state(lambda s2: lead_event(
+                    s2, "worker-lost", tid, f"{agent} is gone: {what}. {tid} waits for the next free coder, with "
+                                            f"its work so far. Fix: {fix}."))
+                say(f"{run_tag()} LOST {agent}: {what}. {tid} goes to the next free coder. Fix: {fix}"
+                    + (f" (its last screen: {short(saved)})" if saved else ""), True)
 
     run("sync")
+    manager_begin()
     _, start_out = run("start")
     for line in start_out.splitlines():
         if line.startswith(("RECOVERED", "WARN agent")):
@@ -3579,9 +4088,42 @@ def cmd_autopilot(args):
     last_tick = time.time()
     slept = sleep_meter()
     waiting_since = None       # set while nothing runs and the run waits for the lead or the developer
+    seen = {"procs": time.time(), "check": 0.0, "present": None, "told": False}
+
+    def watch_herdr():
+        """Every VANISH_CHECK_S: which agents herdr still runs. When most of them vanish at once, herdr itself
+        restarted (or was closed): say so loudly, once, instead of one quiet GONE per agent."""
+        if time.time() - seen["check"] < VANISH_CHECK_S:
+            return
+        seen["check"] = time.time()
+        s_ = load()
+        names = [n for n in list(s_["workers"]) + ([s_["reviewer"]] if s_.get("reviewer") else [])
+                 + ([s_["lead"]["name"]] if s_.get("lead") else []) if watched(s_, n) and not agent_info(s_, n).get("pane")]
+        present = {n for n in names if herdr_state(n) is not None}
+        before = seen["present"]
+        seen["present"] = present
+        if before is None:
+            return
+        gone = sorted(before - present)
+        if len(gone) >= 2 and len(gone) * 2 >= len(before) and not seen["told"]:
+            seen["told"] = True
+            say(f"{run_tag(s_)} HERDR RESTART? {len(gone)} of {len(before)} agents vanished at once ({', '.join(gone)}). "
+                f"If herdr was restarted or closed, run `orch resume`: it finds their panes again and re-sends the work",
+                True)
+            patch_state(lambda s2: lead_event(s2, "herdr-restart", None,
+                                              f"{len(gone)} of {len(before)} agents vanished at once: "
+                                              f"{', '.join(gone)}. Tell the developer to run `orch resume`."))
+        elif not gone and present == before:
+            seen["told"] = False
 
     while True:
+        _stop_point()
         st = load()
+        if time.time() - seen["procs"] > PROCS_EVERY_S:      # agents come and go: keep this run's processes current
+            seen["procs"] = time.time()
+            procs = run_processes(st)
+            patch_state(lambda s_: (s_["run"].get("manager") or {}).update(procs))
+        watch_herdr()
         # 0. budget: driving time adds up across restarts (time spent only waiting for an answer doesn't count)
         el, last_tick = time.time() - last_tick, time.time()
         asleep = slept()
@@ -4243,7 +4785,7 @@ def team_up(args):
     if not todo:
         print("TEAM UP: every agent in the plan is running")
         return
-    failed, last = 0, None
+    failed, last, opened = 0, None, []
     for name, w, d in todo:
         kind, model = w.get("kind"), w.get("model")
         v = reg.get(kind)
@@ -4291,12 +4833,26 @@ def team_up(args):
             time.sleep(min(2.0, max(0.2, TEAM_WAIT_S / 30)))
         if named:
             print(f"OPENED  {name}: pane {pid} in {short(d)} running `{cmd}`")
+            opened.append((name, w, pid, cmd))
         else:
             print(f"WAITING {name}: pane {pid} runs `{cmd}`, but herdr has not seen the agent start yet — if it "
                   f"shows a first-run question (trust this folder, sign in), answer it, then: herdr agent rename {pid} {name}")
             failed += 1
     if dry:
         return
+    if opened:              # an agent can start, get its name, and quit a second later (a bad flag, a missing login)
+        time.sleep(TEAM_CONFIRM_S)
+        for name, w, pid, cmd in opened:
+            where, _ = herdr_presence(name)
+            if where == "agent":
+                continue
+            failed += 1
+            saved = save_screen(name, f"{w.get('kind')} quit right after `orch team up` started it")
+            print(f"QUIT    {name}: {w.get('kind')} exited right after it started — only a plain shell is left in "
+                  f"pane {pid}, so nothing will be sent there. Run `{cmd}` in that pane yourself to see why"
+                  + (f" (its last screen is in {short(saved)})" if saved else "") + ", then `orch team up` again")
+            log_line(f"{run_tag(st)} QUIT {name}: {w.get('kind')} exited right after `orch team up` started it "
+                     f"in pane {pid}")
     print("TEAM UP: done — run `orch start` again; every agent should show herdr=found" if not failed else
           f"TEAM UP: {failed} agent(s) not ready — see above, then `orch team up` again")
     if failed:
@@ -4445,6 +5001,10 @@ def cmd_resume(args):
             else:
                 print("Every agent in the plan is found. Nothing to resume.")
             return
+        if not from_manager:
+            dead = note_dead_manager(st)
+            if dead:
+                print(dead)
         beat = st["run"].get("beat")
         busy = [(tid, st["tasks"][tid]["wait"]) for tid in st["order"] if st["tasks"][tid].get("wait")]
         gap = account_downtime(st)
@@ -4512,10 +5072,11 @@ COMMANDS = {
     "send-job": cmd_send_job, "handoff": cmd_handoff, "needs-fix": cmd_needs_fix, "review-ok": cmd_review_ok,
     "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
     "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer,
-    "escalate": cmd_escalate, "fix": cmd_fix, "team": cmd_team,
+    "escalate": cmd_escalate, "fix": cmd_fix, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
+    "doctor": lambda a: cmd_doctor_crash(a),
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
-UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "fix", "team", "resume"}
+UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "fix", "team", "resume", "bench", "stop", "doctor"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
@@ -4557,6 +5118,9 @@ USAGE = """usage: orch <command> [args]
   merge <Mn>               squash the milestone, run the check on the result, commit it ONLY if green (CONFLICT 4, CHECK_FAILED 6, HELD 7)
   park <Mn> paused|failed|pending [--lost] [reason]   free the worker, keep its work in a hidden ref (refs/orch/...)
   cooldown <agent> <min> [reason]  bench a worker or the reviewer (reason `gone`: ends once herdr sees it again)
+  bench <worker> off [reason] | on   keep a coder out of the run until you turn it back on (survives restarts)
+  stop [--now]             stop the event manager cleanly (it finishes its current step); `orch resume` starts it again
+  doctor --crash           (in a repo) why the event manager last stopped, and the last crash / lost notes
   set <Mn> <status> [reason] [--force]  manual override: pending/paused/failed/skipped (others need --force)
   approve <Mn>             let a milestone held for risky changes land (works while autopilot runs)
   cleanup                  remove clean worker worktrees
@@ -5004,6 +5568,30 @@ def doctor_kind(kind, v, full=True):
     return out
 
 
+def cmd_doctor_crash(args):
+    """orch doctor --crash -> the last crash, stop and lost notes of this run, and, when the event manager is not
+    running, why it stopped (looked up in the computer's own log, for this run's processes only)."""
+    with state_lock():
+        st = load()
+        dead = None if driver_alive() else note_dead_manager(st)
+    m = (st.get("run") or {}).get("manager") or {}
+    print(f"{run_tag(st)} event manager: " + (f"running ({driver_line(driver_info())})" if driver_alive() else
+          "not running" + (f"; last one ended {_clock(m['ended']['ts'])}: {m['ended'].get('how')}"
+                           + (f" — {m['ended']['reason']}" if m['ended'].get('reason') else "")
+                           if m.get("ended") else "")))
+    if dead:
+        print(dead)
+    lines = last_crash_lines()
+    print("Last notes in .orchestrate/autopilot.log:" if lines else "No crash, stop or lost notes in autopilot.log yet.")
+    for l in lines:
+        print("  " + l)
+    shots = sorted((ORCH / "crash").glob("*.txt"), key=lambda p: p.stat().st_mtime)[-5:] if (ORCH / "crash").is_dir() else []
+    if shots:
+        print("Saved agent screens (.orchestrate/crash/):")
+        for p in shots:
+            print(f"  {p.name}")
+
+
 def cmd_doctor(args):
     """orch doctor [kind...] -> check each installed agent against the real tool (version, launch flags, skills,
     herdr detection). Read-only. Exit 1 if anything is broken."""
@@ -5042,7 +5630,7 @@ if __name__ == "__main__":
     NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents, "doctor": cmd_doctor, "models": cmd_models,
                         "team": cmd_team}
     if (len(sys.argv) >= 2 and sys.argv[1] in NO_REPO_COMMANDS      # work outside a git repo
-            and sys.argv[2:3] != ["up"]):                           # (`orch team up` reads the run's state)
+            and sys.argv[2:3] != ["up"] and sys.argv[2:3] != ["--crash"]):                           # (`orch team up` reads the run's state)
         NO_REPO_COMMANDS[sys.argv[1]](sys.argv[2:])
         sys.exit(0)
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
@@ -5054,8 +5642,13 @@ if __name__ == "__main__":
     STATE = ORCH / "state.json"
     if sys.argv[1] not in LEASE_FREE:
         require_driver()
-    if sys.argv[1] in UNLOCKED:
-        COMMANDS[sys.argv[1]](sys.argv[2:])
-    else:
-        with state_lock():
+    try:
+        if sys.argv[1] in UNLOCKED:
             COMMANDS[sys.argv[1]](sys.argv[2:])
+        else:
+            with state_lock():
+                COMMANDS[sys.argv[1]](sys.argv[2:])
+    except BrokenPipeError:            # `orch status | head`: the reader has what it wanted
+        with contextlib.suppress(OSError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(0)

@@ -74,6 +74,12 @@ COMMIT: feat(api): add the categories endpoint";;
                 (sleep 3; rm -f "$FH/$agent.gone") & exit 0; fi
               echo h > h.txt; finish "built h";;
   M10:task.md) echo boom > boom.txt; finish "built boom";;
+  # herdr restarts: every coder vanishes at once, then comes back
+  M19:task.md) if [ ! -f "$FH/m19-once" ]; then touch "$FH/m19-once" "$FH/claude-1.gone" "$FH/codex-1.gone"
+                 echo idle > "$FH/$agent.status"; (sleep 4; rm -f "$FH/claude-1.gone" "$FH/codex-1.gone") & exit 0; fi
+               echo s > s.txt; finish "built s";;
+  # runs until `orch stop`
+  M20:task.md) sleep 60; finish "built late";;
   M8:task.md) echo blocked > "$FH/$agent.status"; sleep 6; echo f > f.txt; finish "done after approval";;
   # dependency files: M11 changes the lockfile, M12 (after M11) must get a fresh setup, M13 sets a coder up early
   M11:task.md) echo '{"lockfileVersion": 3}' > package-lock.json; finish "added a dependency

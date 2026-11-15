@@ -9,6 +9,8 @@ export HERDR="$ROOT/tests/sim/herdr" ORCH_POLL_STEP_S=1 ORCH_IDLE_GRACE_S=4 ORCH
 WORK=$(mktemp -d); trap 'pkill -f -- "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
 export ORCH_AGENTS_FILE="$WORK/user-agents.toml"   # keep the developer's own agents.toml out of the tests
 export ORCH_MODELS_FILE="$WORK/user-models.toml" ORCH_NO_AUTOSTART=1   # ...and their models.toml; no stray managers
+# the computer's own logs are not read in tests (each crash test gives its own fake), and managers start plainly
+export ORCH_JOURNALCTL=false ORCH_COREDUMPCTL=false ORCH_NO_SCOPE=1 ORCH_TEAM_CONFIRM_S=0.3
 pass=0 fail=0
 ok()   { echo "  ok   $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $*"; fail=$((fail+1)); }
@@ -271,7 +273,7 @@ check "a failed prompt is retried, not a crash or a hang" '[ $code -eq 0 ] && gr
 newrepo gn; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
 printf '# Plan: t\nBranch: feature/gn\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M7: H\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 60 "$ORCH" autopilot > "$WORK/gn.log" 2>&1; code=$?
-check "a GONE coder gets work again as soon as it is back (not 10 h later)" '[ $code -eq 0 ] && grep -q "claude-1 is gone" "$WORK/gn.log" && [ "$(status_of M7)" = merged ]'
+check "a GONE coder gets work again as soon as it is back (not 10 h later)" '[ $code -eq 0 ] && grep -q "LOST claude-1: herdr can.t find it" "$WORK/gn.log" && [ "$(status_of M7)" = merged ]'
 
 newrepo orp; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
 printf '# Plan: t\nBranch: feature/orp\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M5: E\nDepends on: none\nOpen questions:\n- none\n\n## [ ] M6: G\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
@@ -1016,6 +1018,154 @@ echo later > later.txt && git add later.txt && git commit -qm "a change by hand 
 out=$("$ORCH" finish --no-push 2>&1); code=$?
 check "finish runs the check again when the files changed since it passed" '[ $code -eq 0 ] && ! grep -q "^CHECK reused" <<<"$out" && [ "$(wc -l < "$WORK/qk-checks")" -eq 5 ]'
 check "the playbook explains quick runs and how the lead decides" 'grep -q "## 2b. Quick or full" "$ROOT/playbooks/plan.md" && grep -q "Quick because:" "$ROOT/playbooks/plan.md" && grep -q "QUICK RUN" "$ROOT/playbooks/run.md"'
+
+echo "33. a worker with no agent: dispatch --to refuses, status and READY tell the truth"
+newrepo na; WT="$APP/../app-wt"
+printf '%b' "${PRS/ISO/worktree}" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null
+touch "$FH/codex-1.shell" "$FH/claude-1.missing"
+out=$("$ORCH" dispatch M9 --to codex-1 2>&1); code=$?
+check "dispatch --to a worker whose pane only holds a shell is refused, with the fix" '[ $code -ne 0 ] && grep -q "codex-1 has no agent in herdr (SHELL ONLY: only a plain shell is left in its pane). Run \`orch team up\`" <<<"$out"'
+out=$("$ORCH" dispatch M5 --to claude-1 2>&1); code=$?
+check "dispatch --to a worker herdr can't find is refused" '[ $code -ne 0 ] && grep -q "claude-1 has no agent in herdr (NO AGENT)" <<<"$out"'
+check "…and nothing was dispatched" 'python3 -c "import json,sys;t=json.load(open(\".orchestrate/state.json\"))[\"tasks\"];sys.exit(t[\"M9\"].get(\"go\") or t[\"M5\"].get(\"go\"))"'
+out=$("$ORCH" status 2>&1)
+check "status shows SHELL ONLY and NO AGENT, not free" 'grep -q "worker codex-1 .*herdr=SHELL ONLY .*orch team up" <<<"$out" && grep -q "worker claude-1 .*herdr=NO AGENT" <<<"$out" && ! grep -q "worker codex-1 .*herdr=ok" <<<"$out"'
+out=$("$ORCH" ready 2>&1)
+check "READY counts no free slot for coders herdr can't see, and names them" 'grep -q "^SLOTS 0" <<<"$out" && grep -q "^NOAGENT claude-1 codex-1" <<<"$out"'
+out=$("$ORCH" dispatch M5 2>&1); code=$?
+check "a plain dispatch warns when none of its coders is there" '[ $code -eq 0 ] && grep -q "WARN     none of them has an agent in herdr right now" <<<"$out"'
+rm -f "$FH/codex-1.shell" "$FH/claude-1.missing"
+out=$("$ORCH" status 2>&1)
+check "once the agents are back, status says ok and free" 'grep -q "worker codex-1 .*herdr=ok state=free" <<<"$out" && grep -q "worker claude-1 .*herdr=ok state=free" <<<"$out"'
+"$ORCH" prepare M9 codex-1 >/dev/null; "$ORCH" write-task M9 >/dev/null; "$ORCH" send M9 task.md >/dev/null; touch "$FH/codex-1.missing"
+out=$("$ORCH" status 2>&1)
+check "a milestone coding on a worker that vanished says nothing is working on it" 'grep -q "M9 .*coding .*!! but codex-1 has no agent in herdr (NO AGENT): nothing is working on it" <<<"$out"'
+rm -f "$FH/codex-1.missing"; "$ORCH" park M9 pending "codex-1 hit a usage/rate limit" >/dev/null
+check "the parked note shows while it waits" '"$ORCH" status | grep -q "M9 .*pending .*\[codex-1 hit a usage/rate limit\]"'
+"$ORCH" prepare M9 claude-1 >/dev/null
+check "a stale note is cleared once another coder works on it" '"$ORCH" status | grep "M9 " | grep -q coding && ! "$ORCH" status | grep -q "M9 .*hit a usage/rate limit"'
+"$ORCH" park M9 pending "kept" >/dev/null
+
+echo "34. orch bench <worker> off: a coder stays out until the developer says so"
+"$ORCH" dispatch M5 --to claude-1 >/dev/null 2>&1
+out=$("$ORCH" bench claude-1 off "developer: no Claude today" 2>&1)
+check "bench off says what it does and frees milestones assigned to it" 'grep -q "^OFF     claude-1: gets no new work until \`orch bench claude-1 on\` (developer: no Claude today)" <<<"$out" && grep -q "M5 no longer wait for claude-1" <<<"$out"'
+check "status shows the coder as OFF" '"$ORCH" status | grep -q "worker claude-1 .*state=OFF (developer: no Claude today)"'
+check "pick skips it, even for a milestone that prefers it" '[ "$("$ORCH" pick M5)" = codex-1 ]'
+out=$("$ORCH" dispatch M5 --to claude-1 2>&1); code=$?
+check "dispatch --to an off coder is refused" '[ $code -ne 0 ] && grep -q "claude-1 is off (developer: no Claude today): \`orch bench claude-1 on\` first" <<<"$out"'
+"$ORCH" sync >/dev/null
+stpy "st['workers']['claude-1']['cooldown_until'] = 0"
+check "off survives orch sync, resume and the end of any bench" '"$ORCH" status | grep -q "worker claude-1 .*state=OFF" && [ "$("$ORCH" pick M5)" = codex-1 ]'
+"$ORCH" bench codex-1 off >/dev/null
+out=$("$ORCH" pick M5 2>&1); code=$?
+check "with every coder off, nothing is picked" '[ $code -eq 3 ] && grep -q NONE <<<"$out"'
+out=$("$ORCH" bench claude-1 on 2>&1); "$ORCH" bench codex-1 on >/dev/null
+check "bench on brings it back" 'grep -q "^ON      claude-1 takes work again" <<<"$out" && "$ORCH" status | grep -q "worker claude-1 .*state=free"'
+out=$("$ORCH" bench reviewer off 2>&1); code=$?
+check "the reviewer is not benched this way" '[ $code -ne 0 ] && grep -q "change \`Reviewer:\` in plan.md" <<<"$out"'
+
+echo "35. orch team up checks the agent is still running a moment later"
+newrepo tq
+printf '# Plan: t\nBranch: feature/tq\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: codex-1 (codex: gpt-6-luna), codex-2 (codex: gpt-6-sol)\nReviewer: none\n\n## [x] M1: a\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null
+touch "$FH/codex-2.missing" "$FH/codex-2.quits"; printf 'error: unknown option --approve-for-me\n$ ' > "$FH/codex-2.pane"
+out=$(ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1); code=$?
+check "an agent that quits right after it starts is reported (exit 3), not called OPENED and done" '[ $code -eq 3 ] && grep -q "^QUIT    codex-2: codex exited right after it started — only a plain shell is left in pane w1:p2, so nothing will be sent there" <<<"$out" && ! grep -q "^TEAM UP: done" <<<"$out"'
+check "its last screen is kept in .orchestrate/crash/, with the project and run" 'f=$(ls .orchestrate/crash/codex-2-*.txt) && grep -q "^\[app feature/tq\] codex-2: codex quit" "$f" && grep -q "unknown option" "$f"'
+check "the log says it too, with the project and run" 'grep -q "\[app feature/tq\] QUIT codex-2" .orchestrate/autopilot.log'
+rm -f "$FH/codex-2.quits" "$FH/codex-2.shell"
+
+echo "36. a coder that vanishes mid-run: the lead hears it at once, with the fix"
+newrepo wl; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; echo "$APP" > "$FH/lead.dir"
+printf '# Plan: t\nBranch: feature/wl\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M7: H\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" dispatch M7 >/dev/null 2>&1
+timeout 90 "$ORCH" autopilot > "$WORK/wl.log" 2>&1; code=$?
+check "the run still finishes once the coder is back" '[ $code -eq 0 ] && [ "$(status_of M7)" = merged ]'
+check "the lead got a WORKER-LOST event with the exact fix" 'grep -q "WORKER-LOST M7 .*claude-1 is gone: herdr can.t find it .*Fix: run \`orch resume\` if herdr restarted" "$FH/lead-events.log" && grep -q "This is NOT routine" "$FH/lead-events.log"'
+check "the log line names the project and run" 'grep -q "\[app feature/wl\] LOST claude-1" .orchestrate/autopilot.log'
+check "the manager wrote its last line when it finished" 'tail -1 .orchestrate/autopilot.log | grep -q "\[app feature/wl\] STOPPED: the event manager exited (code 0)"'
+
+newrepo hr; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; echo "$APP/../app-wt/codex-1" > "$FH/codex-1.dir"
+printf '# Plan: t\nBranch: feature/hr\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M19: S\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+ORCH_VANISH_CHECK_S=0.5 timeout 90 "$ORCH" autopilot > "$WORK/hr.log" 2>&1; code=$?
+check "most agents vanishing at once is called out as a likely herdr restart, once" '[ $code -eq 0 ] && [ "$(grep -c "HERDR RESTART? 2 of 2 agents vanished at once (claude-1, codex-1)" "$WORK/hr.log")" -eq 1 ] && grep -q "run \`orch resume\`" "$WORK/hr.log"'
+
+echo "37. crash notes: the manager's last line, why it died, this run's processes only"
+newrepo cr; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+printf '%b' "$P1" > .orchestrate/plan.md; printf '## [x] M20: L\nDepends on: none\nOpen questions:\n- none\n' >> .orchestrate/plan.md
+"$ORCH" sync >/dev/null
+timeout 60 "$ORCH" autopilot > "$WORK/cr.log" 2>&1 & ap=$!
+for _ in $(seq 40); do grep -q "M20 -> claude-1" "$WORK/cr.log" 2>/dev/null && break; sleep 0.5; done
+out=$("$ORCH" sync 2>&1); code=$?
+check "while the manager runs, sync still refuses" '[ $code -ne 0 ] && grep -q "driven by" <<<"$out"'
+out=$("$ORCH" stop 2>&1); code=$?; wait $ap
+check "orch stop stops the manager cleanly and says how to go on" '[ $code -eq 0 ] && grep -q "^STOPPED the event manager (pid [0-9]*). Nothing is lost.*orch resume" <<<"$out"'
+check "its last line says it was orch stop, with the project and run" 'grep -q "\[app feature/x\] STOPPED: orch stop — nothing is lost" .orchestrate/autopilot.log'
+check "after orch stop, sync works" '"$ORCH" sync >/dev/null 2>&1'
+check "a stop is not mistaken for a crash later" '! "$ORCH" status | grep -q CRASHED'
+out=$("$ORCH" stop 2>&1)
+check "orch stop with nothing running says so" 'grep -q "the event manager is not running" <<<"$out"'
+# a manager killed without a word (memory guard): the next look finds it and says why, for this run only
+mkfake(){ printf '#!/usr/bin/env bash\n[ "$1" = list ] && exit 0\nfor a in "$@"; do [ "$a" = -k ] && exit 0; done\nprintf "%%s\\n" %s\n' "$1" > "$WORK/journal-$2"; chmod +x "$WORK/journal-$2"; }
+mkfake '"2026-11-15T14:36:02 host systemd-oomd[811]: Killed /user.slice/user-1000.slice/app-term-77.scope due to memory pressure"' oomd
+stpy "st['run']['manager'] = {'pid': 999999, 'host': __import__('socket').gethostname(), 'started': now - 900, 'procs': {'4242': 'opencode'}, 'cgroups': ['/user.slice/user-1000.slice/app-term-77.scope/vte-spawn-1.scope']}; st['run']['beat'] = now - 600"
+out=$(ORCH_JOURNALCTL="$WORK/journal-oomd" ORCH_BOOT_TIME=1 "$ORCH" status 2>&1)
+check "status finds the manager that died without a word, and the memory guard as the reason" 'grep -q "^!! \[app feature/x\] CRASHED: the event manager (pid 999999) stopped without a word; last alive .* Reason: the memory guard (systemd-oomd) closed the terminal" <<<"$out" && grep -q "system log: .*systemd-oomd.*Killed /user.slice" <<<"$out"'
+check "the note and the system log line are written to autopilot.log" 'grep -q "\[app feature/x\] CRASHED: .*memory guard" .orchestrate/autopilot.log && grep -q "\[app feature/x\]   system log: .*systemd-oomd" .orchestrate/autopilot.log'
+out=$(ORCH_JOURNALCTL="$WORK/journal-oomd" ORCH_BOOT_TIME=1 "$ORCH" status 2>&1)
+check "it is said once, not on every status" '! grep -q CRASHED <<<"$out"'
+mkfake '"2026-11-15T14:36:02 host systemd-oomd[811]: Killed /user.slice/user-1000.slice/app-other-12.scope due to memory pressure"' other
+stpy "st['run']['manager'].pop('ended')"
+out=$(ORCH_JOURNALCTL="$WORK/journal-other" ORCH_BOOT_TIME=1 "$ORCH" doctor --crash 2>&1)
+check "a kill of another project's terminal is not blamed on this run" 'grep -q "Reason: unknown — the system log shows 1 kill(s) then, but not of this run.s processes (another project or app)" <<<"$out"'
+mkfake '"2026-11-15T14:36:02 host kernel: Out of memory: Killed process 4242 (opencode) total-vm:9000kB"' koom
+stpy "st['run']['manager'].pop('ended')"
+out=$(ORCH_JOURNALCTL="$WORK/journal-koom" ORCH_BOOT_TIME=1 "$ORCH" doctor --crash 2>&1)
+check "the kernel killing one of this run's processes is named" 'grep -q "Reason: out of memory: the system killed opencode (pid 4242)" <<<"$out"'
+check "doctor --crash lists the last crash notes" 'grep -q "^Last notes in .orchestrate/autopilot.log:" <<<"$out" && grep -q "STOPPED: orch stop" <<<"$out"'
+stpy "st['run']['manager'].pop('ended')"
+out=$(ORCH_BOOT_TIME=$(( $(date +%s) - 60 )) "$ORCH" doctor --crash 2>&1)
+check "a reboot after the last heartbeat is named as the reason" 'grep -q "Reason: the computer was restarted (it booted at" <<<"$out"'
+stpy "st['run']['manager'].pop('ended')"
+out=$(ORCH_BOOT_TIME=1 "$ORCH" doctor --crash 2>&1)
+check "when the system log can't be read, it says so" 'grep -q "Reason: unknown — the system log could not be read" <<<"$out"'
+ORCH_FAULT=autopilot-error timeout 30 "$ORCH" autopilot > "$WORK/cr2.log" 2>&1; code=$?
+check "a Python error in the manager is logged with its traceback, then raised" '[ $code -ne 0 ] && grep -q "\[app feature/x\] CRASHED: ValueError: test crash" .orchestrate/autopilot.log && grep -q "\[app feature/x\]   Traceback" .orchestrate/autopilot.log'
+check "…and is not reported as a silent death later" '! "$ORCH" status | grep -q "stopped without a word"'
+
+echo "38. logs stay small"
+head -c 300000 /dev/zero | tr '\0' 'x' > .orchestrate/autopilot.log
+stpy "st['run']['manager'].pop('ended', None); st['run']['manager']['pid'] = 999998"
+ORCH_LOG_MAX_MB=0.1 ORCH_BOOT_TIME=1 "$ORCH" status >/dev/null 2>&1
+check "past its size autopilot.log becomes autopilot.log.1 and starts again" '[ -f .orchestrate/autopilot.log.1 ] && [ "$(wc -c < .orchestrate/autopilot.log)" -lt 5000 ] && grep -q CRASHED .orchestrate/autopilot.log'
+head -c 300000 /dev/zero | tr '\0' 'x' > .orchestrate/autopilot.log; echo old > .orchestrate/autopilot.log.1
+stpy "st['run']['manager'].pop('ended', None)"
+ORCH_LOG_MAX_MB=0.1 ORCH_BOOT_TIME=1 "$ORCH" status >/dev/null 2>&1
+check "only one old copy is kept" '! grep -q "^old$" .orchestrate/autopilot.log.1 && [ ! -f .orchestrate/autopilot.log.2 ]'
+echo "screen" > "$FH/claude-1.pane"
+for i in 1 2 3; do python3 - "$ORCH" <<'PY'
+import runpy, sys, time
+from pathlib import Path
+g = runpy.run_path(sys.argv[1], run_name="orch_test")
+g["ROOT"] = Path("."); g["ORCH"] = Path(".orchestrate"); g["STATE"] = Path(".orchestrate/state.json")
+g["save_screen"].__globals__.update(ROOT=Path(".").resolve(), ORCH=Path(".orchestrate"), STATE=Path(".orchestrate/state.json"), CRASH_KEEP=2)
+g["save_screen"]("claude-1", "test"); time.sleep(1.1)
+PY
+done
+check "only the newest saved screens are kept" '[ "$(ls .orchestrate/crash/claude-1-*.txt | wc -l)" -eq 2 ]'
+
+echo "39. the event manager starts in its own scope when it can, plainly when it can't"
+mkdir -p "$WORK/sdbin"; printf '#!/usr/bin/env bash\necho "$@" >> "%s/systemd-run.log"\nexit 1\n' "$WORK" > "$WORK/sdbin/systemd-run"; chmod +x "$WORK/sdbin/systemd-run"
+newrepo scope; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+{ printf '%b' "$P1"; printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+"$ORCH" sync >/dev/null
+out=$(PATH="$WORK/sdbin:$PATH" ORCH_NO_SCOPE=0 ORCH_NO_AUTOSTART=0 "$ORCH" dispatch M6 2>&1)
+check "it tries systemd-run --user --scope first, then starts it the plain way" 'grep -q "^--user --scope --quiet --collect --unit=orch-app-[0-9]* .*orch autopilot" "$WORK/systemd-run.log" && grep -q "started the event manager" <<<"$out"'
+for _ in $(seq 60); do grep -q "ALL_DONE" .orchestrate/autopilot.log 2>/dev/null && break; sleep 1; done
+check "…and that run finishes" '[ "$(status_of M6)" = merged ]'
+check "the playbook, README and usage explain bench, stop, crash notes and logs" 'grep -q "orch bench" "$ROOT/playbooks/run.md" && grep -q "orch stop" "$ROOT/playbooks/run.md" && grep -q "WORKER-LOST" "$ROOT/playbooks/run.md" && grep -q "orch doctor --crash" "$ROOT/README.md" && "$ORCH" 2>&1 | grep -q "bench <worker> off"'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

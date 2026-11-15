@@ -19,6 +19,9 @@ Run `orch` with no arguments for the full help.
 | `orch set <Mn> <status> [reason]` | Manual override; accepts `pending`, `paused`, `failed` and `skipped` |
 | `orch park <Mn> paused\|failed\|pending [reason]` | Free the worker and keep its work in a hidden ref (also what its coder wrote after an earlier park). A coder still working on a paused or failed milestone is told to stop |
 | `orch cooldown <agent> <min> [reason]` | Bench a worker or the reviewer; reason `gone` ends once Herdr sees it again |
+| `orch bench <worker> off [reason]` / `on` | Keep a coder out of the run until you turn it back on. Holds across restarts, `orch sync` and `orch resume` |
+| `orch stop [--now]` | Stop the event manager cleanly: it finishes its current step and exits, nothing is lost. Then change the plan (`orch sync`, `orch team up`) and `orch resume` |
+| `orch doctor --crash` | Why the event manager last stopped (the reason found in the computer's own log), the last crash and lost notes, and saved agent screens |
 | `orch cleanup` | Remove clean worker worktrees |
 | `orch version` | The installed version |
 
@@ -26,7 +29,7 @@ Run `orch` with no arguments for the full help.
 
 | Command | What it does |
 |---|---|
-| `orch dispatch <Mn>... [--to <worker>] [--tier <tier>]` | Start or restart milestones. Starts the event manager when none is running |
+| `orch dispatch <Mn>... [--to <worker>] [--tier <tier>]` | Start or restart milestones. Starts the event manager when none is running. `--to` refuses a worker with no agent in herdr or one that is benched off |
 | `orch events [--peek]` | What the lead was woken for, what is ready, who is free. Reading acknowledges it; `--peek` does not |
 | `orch answer <Mn> "<text>"` | The developer's answer: written under the milestone's "Notes from user", and the milestone goes back to the same coder |
 | `orch fix <Mn> "<change>" [--to <worker>]` | A change to something Mn already landed: one small follow-up milestone in the plan, sent straight to the coder who built Mn. Check, review and summary still apply. Works after ALL_DONE; you or the lead can run it |

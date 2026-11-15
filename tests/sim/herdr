@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Fake herdr for tests: agents are background scripts (behave.sh); state lives in $FH.
 # Panes addressed by id (@pane:<id>) map to an agent name through $FH/pane-<id>.name.
+# $FH/<name>.shell: herdr knows the name, but only a shell is left in its pane (no agent field, no status).
 FH=${FH:?}
 case "$1 $2" in
   "agent get")  [ -f "$FH/$3.gone" ] || [ -f "$FH/$3.missing" ] && { echo "no such agent $3" >&2; exit 1; }
+                [ -f "$FH/$3.shell" ] && { echo "{\"name\":\"$3\",\"pane_id\":\"$(cat "$FH/$3.paneid" 2>/dev/null)\",\"agent\":null}"; exit 0; }
                 echo "{\"name\":\"$3\",\"pane_id\":\"$(cat "$FH/$3.paneid" 2>/dev/null)\",\"status\":\"$(cat "$FH/$3.status" 2>/dev/null || echo idle)\"}";;
   "agent prompt") [ -f "$FH/$3.deaf" ] && { echo "agent $3 unreachable" >&2; exit 1; }
                   echo "$3 <- $4" >> "$FH/prompts.log"; echo working > "$FH/$3.status"
@@ -32,5 +34,6 @@ case "$1 $2" in
   "pane rename") echo "pane-rename $3 $4" >> "$FH/team.log";;
   "agent rename") [ -f "$FH/pane-$3.cmd" ] && [ ! -f "$FH/nodetect" ] || { echo "no agent detected in $3" >&2; exit 1; }
                   echo "rename $3 $4" >> "$FH/team.log"; rm -f "$FH/$4.missing"; cp "$FH/pane-$3.cwd" "$FH/$4.dir"
-                  echo "$3" > "$FH/$4.paneid";;
+                  echo "$3" > "$FH/$4.paneid"; rm -f "$FH/$4.shell"
+                  if [ -f "$FH/$4.quits" ]; then touch "$FH/$4.shell"; fi;;   # the agent quits right after it starts
 esac
