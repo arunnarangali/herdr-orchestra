@@ -8,6 +8,7 @@ import BranchFlow from '../components/BranchFlow.astro';
 import AgentStrip from '../components/AgentStrip.astro';
 import Modes from '../components/Modes.astro';
 import AutopilotLog from '../components/AutopilotLog.astro';
+import QuickRun from '../components/QuickRun.astro';
 import { REPO_URL, version, models, tierInfo, deniedModels } from '../lib/repo';
 import type { Tier } from '../lib/repo';
 
@@ -52,13 +53,16 @@ const handles = [
   { trigger: 'QUESTION:', title: 'Wakes the lead', body: 'That task pauses. The lead answers from the plan or asks you, and the same coder carries on.', limit: 'orch answer' },
   { trigger: 'after the summary', title: 'Sends it to the coder who built it', body: 'Tell the lead what to change. One small follow-up job goes to the same coder, with the check and review, and no new plan.', limit: 'orch fix' },
   { trigger: 'out of rounds', title: 'Moves it up a tier', body: 'A milestone a model could not finish gets one fresh round on a stronger model, with the work so far.', limit: 'once' },
+  { trigger: 'risky change', title: 'Holds it for you', body: 'Deleted files, a migration, CI, secrets, an unlisted package or a very large diff wait for your approval; the rest lands.', limit: 'orch approve' },
+  { trigger: 'computer restarted', title: 'Picks up where it was', body: 'Agents get their names back, unsaved work is saved, tasks in progress are sent again. The time it was down is not counted.', limit: 'orch resume' },
+  { trigger: 'took longer', title: 'Says why, and who', body: 'The summary sets each estimate next to the real time and lists where the extra time went: fix rounds, the reviewer, your answer, a usage limit.', limit: 'orch report' },
 ];
 ---
 <Base structuredData>
   <section class="first">
     <div class="wrap hero">
       <div>
-        <a class="version-pill" href="/changelog"><b>{version()}</b> The lead picks a model for every step and coordinates the run</a>
+        <a class="version-pill" href="/changelog"><b>{version()}</b> New: quick runs for small changes, UI or backend</a>
         <p class="eyebrow">herdr-orchestra · AI agent orchestration for Herdr</p>
         <h1>Your AI agents, <span>working as a team.</span></h1>
         <p class="lede">herdr-orchestra runs an orchestrated agent workflow for coding. A lead writes the orchestration plan and picks the right level of model for every step. Coders build in parallel, a reviewer checks every diff, and the lead coordinates the run. You get one clean pull request.</p>
@@ -95,6 +99,18 @@ const handles = [
       </div>
       <div class="diagram reveal" style="margin-top:16px"><RunFlow /></div>
       <p class="diagram-note"><a href="/how-it-works">Walk through a full run, step by step →</a></p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Small changes, quick runs</p>
+        <h2>A button colour or a new API field doesn't need a big plan.</h2>
+        <p class="lede">For a small, clear change, in the UI or the backend, the lead writes a five-line plan and one coder builds it. The checks still run before it lands, you still get one branch and one PR, and it is usually done in a fraction of the time.</p>
+      </div>
+      <QuickRun />
+      <p class="diagram-note"><a href="/docs/quick-runs/">Quick runs: when the lead uses them, and what stays the same →</a></p>
     </div>
   </section>
 
@@ -167,9 +183,10 @@ const handles = [
         <p class="lede">For each pair of milestones the lead asks: could B be built and pass its checks if A never existed? If yes, two coders build them at the same time in separate git worktrees, each on its own model.</p>
       </div>
       <div class="diagram reveal"><BranchFlow /></div>
-      <div class="grid cols-3" style="margin-top:16px">
+      <div class="grid cols-2" style="margin-top:16px">
         <div class="card"><h3>Contract first</h3><p>Parallel milestones that must fit together depend on a small milestone that defines the shared types or API.</p></div>
         <div class="card"><h3>Scaffold first</h3><p>Routes, nav, <code>package.json</code> and other hotspot files change in one early milestone, so parallel work never collides.</p></div>
+        <div class="card"><h3>The right specialist</h3><p>Every milestone names a <code>Role</code>, such as a frontend engineer with a designer's eye or a database engineer careful with migrations, so each coder works to that standard.</p></div>
         <div class="card"><h3>A normal branch and PR</h3><p>One <code>feature/&lt;name&gt;</code> branch, one commit per milestone with a real message, and <code>orch finish</code> opens the pull request.</p></div>
       </div>
     </div>
@@ -241,6 +258,7 @@ const handles = [
       <p class="reqs">Runs in <a href="https://herdr.dev">Herdr</a> with Node (for npx), git and python3. No Node? <a href="/docs/installation/#without-node">Install with curl</a>. <a href="/docs/installation/">Requirements</a></p>
       <div class="first-run">
         <span><b>/orch-plan &lt;feature&gt;</b> &nbsp;# the lead writes the orchestration plan</span>
+        <span><b>/orch-plan quick: &lt;small change&gt;</b> &nbsp;# or a five-line plan for a small change</span>
         <span><b>/orch-run</b> &nbsp;# the lead dispatches, the team builds it</span>
         <span><b>orch finish</b> &nbsp;# push the branch, open the PR</span>
       </div>

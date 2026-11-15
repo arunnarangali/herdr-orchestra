@@ -37,6 +37,7 @@ export default defineConfig({
             { label: 'How a run works', slug: 'docs/workflow' },
             { label: 'Writing a feature request', slug: 'docs/feature-request' },
             { label: 'The orchestration plan', slug: 'docs/planning' },
+            { label: 'Quick runs for small changes', slug: 'docs/quick-runs' },
             { label: 'The orchestration run', slug: 'docs/driving' },
             { label: 'The lead and the event manager', slug: 'docs/lead' },
             { label: 'Models and tiers', slug: 'docs/models' },

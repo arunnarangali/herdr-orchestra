@@ -1,0 +1,99 @@
+---
+// Full run vs quick run, side by side: the same request, the steps each one takes.
+const full = [
+  { t: 'Full research of the codebase and team', skip: true },
+  { t: 'A plan with breakdown, role, tier, model why, estimate per milestone', skip: true },
+  { t: 'You say go', keep: true },
+  { t: 'Worktrees and setup, coder and reviewer windows', skip: true },
+  { t: 'Check before work', keep: true },
+  { t: 'Coder builds it', keep: true },
+  { t: 'Check after the coder', keep: true },
+  { t: 'Reviewer reads the diff', skip: true },
+  { t: 'Final check, then another one in orch finish', skip: true },
+  { t: 'Long summary with design notes', skip: true },
+];
+const quick = [
+  'Reads only the files the change touches',
+  'Short plan: one milestone, one acceptance criterion per change, and the reason it is small',
+  'You say go',
+  'Your folder, one coder window, no reviewer',
+  'Check before work',
+  'Coder builds it, with tests for backend changes',
+  'Check after the coder: it lands',
+  'Final check and orch finish reuse that result when the files are the same',
+  'Short summary: what changed, and what to look at',
+];
+const questions = [
+  ['One coder, one go', 'Nothing in it is worth its own milestone.'],
+  ['Clear', 'No open questions about what you want.'],
+  ['Out of risky areas', 'No database schema or migration, auth, payments, new packages, CI or secrets.'],
+  ['Follows what is there', 'It copies an existing pattern and does not change how two parts talk to each other.'],
+];
+---
+<div class="qr">
+  <div class="qr-cols">
+    <div class="qr-col full">
+      <p class="qr-head"><span class="dot"></span>Full run <code>full:</code></p>
+      <ol>
+        {full.map((s) => <li class={s.skip ? 'dropped' : ''}>{s.t}</li>)}
+      </ol>
+      <p class="qr-foot">For features: milestones, parallel coders, a reviewer on every risky diff.</p>
+    </div>
+    <div class="qr-col quick">
+      <p class="qr-head"><span class="dot"></span>Quick run <code>quick:</code></p>
+      <ol>
+        {quick.map((s) => <li>{s}</li>)}
+      </ol>
+      <p class="qr-foot">For small, clear changes, UI or backend. Want a second pair of eyes anyway? <code>quick review:</code></p>
+    </div>
+  </div>
+
+  <div class="qr-decide">
+    <p class="qr-sub">How the lead decides, after reading the code. All four must be true; no rules about file counts.</p>
+    <div class="qr-q">
+      {questions.map(([h, p], i) => (
+        <div><span class="n">{i + 1}</span><b>{h}</b><p>{p}</p></div>
+      ))}
+    </div>
+    <div class="qr-ex">
+      <div class="yes"><code>add createdAt to GET /orders</code><p>The column exists; only the response changes.</p><span>quick</span></div>
+      <div class="no"><code>add discount to GET /orders</code><p>No column yet: a migration and a new calculation.</p><span>full</span></div>
+    </div>
+    <p class="qr-sub">The plan shows the reason (<code>Quick because: …</code>) and you can say <b>full</b>. If the change still turns out bigger, orch holds it for your <code>orch approve</code>, as in any run.</p>
+  </div>
+</div>
+
+<style>
+  .qr { display: grid; gap: 16px; }
+  .qr-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .qr-col, .qr-decide { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; }
+  .qr-head { margin: 0 0 12px; font-weight: 600; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+  .qr-head code { font-size: 13px; color: var(--muted); font-weight: 400; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .full .dot { background: var(--auto); }
+  .quick .dot { background: var(--coder); }
+  .qr ol { list-style: none; margin: 0; padding: 0; counter-reset: s; display: grid; gap: 6px; }
+  .qr li { counter-increment: s; position: relative; padding: 7px 10px 7px 38px; border-radius: 8px; background: var(--surface-2); font-size: 15px; }
+  .qr li::before { content: counter(s); position: absolute; left: 10px; top: 8px; width: 19px; height: 19px; border-radius: 50%; font-size: 11.5px; font-weight: 700; display: grid; place-items: center; color: var(--bg); background: var(--auto); }
+  .quick li::before { background: var(--coder); }
+  .full li.dropped { color: var(--faint); }
+  .full li.dropped::after { content: 'skipped in a quick run'; display: block; font-size: 12px; color: var(--faint); font-family: var(--font-mono); }
+  .qr-foot { margin: 14px 0 0; color: var(--muted); font-size: 14.5px; }
+  .qr-sub { margin: 0; color: var(--muted); font-size: 15px; }
+  .qr-q { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+  .qr-q div { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .qr-q .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--surface-2); font-size: 12px; font-weight: 700; margin-right: 8px; }
+  .qr-q b { font-size: 15px; }
+  .qr-q p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+  .qr-ex { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  .qr-ex div { border-radius: 10px; padding: 12px 14px; background: var(--surface-2); }
+  .qr-ex p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+  .qr-ex span { display: inline-block; margin-top: 8px; font-family: var(--font-mono); font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; }
+  .qr-ex .yes span { color: var(--good); }
+  .qr-ex .no span { color: var(--lead); }
+  @media (max-width: 860px) {
+    .qr-cols, .qr-ex { grid-template-columns: 1fr; }
+    .qr-q { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 520px) { .qr-q { grid-template-columns: 1fr; } }
+</style>

@@ -106,10 +106,19 @@ Reviewer: reviewer (agy)
 
   <section>
     <div class="wrap">
+      <p class="eyebrow">Small changes</p>
+      <h2>A small change takes the short way.</h2>
+      <p class="lede">Everything above is for features. For a small, clear change (a button colour, a new field in an API response, a validation rule, a one-function bug fix) the lead decides after reading the code that it is a <b>quick run</b>: a five-line plan with its reason, one coder, no reviewer, your folder as it is. You still say go, the check still runs before and after the coder, and you still get one branch and one PR. Start the request with <code>quick:</code> or <code>full:</code> to choose yourself. <a href="/docs/quick-runs/">Quick runs →</a></p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
       <p class="eyebrow">When it needs you</p>
       <h2>You answer, the same coder carries on.</h2>
       <p class="lede">If a coder asks something the plan and the code don't answer, the lead is woken and asks you in its pane. Your answer goes into the plan with <code>orch answer</code> and back to the coder that asked, which continues from its saved work. Other milestones keep running, and no event is lost while anyone is away. <a href="/docs/when-it-stops/">When a run needs you →</a></p>
       <p class="lede">After the summary, ask the lead for any change you want. It runs <code>orch fix M1 "the login button should be blue"</code>: one small follow-up job goes straight to the coder who built M1, the check and review run as usual, and the summary is written again. <a href="/docs/lead/">The lead and the event manager →</a></p>
+      <p class="lede">Computer restarted, or herdr closed mid-run? Run <code>orch resume</code> (or tell the lead). It gives the agents their names back, saves unsaved work, sends the tasks in progress again and starts the event manager; the time it was down is left out of every estimate and budget. <a href="/docs/when-it-stops/">When a run needs you →</a></p>
     </div>
   </section>
 

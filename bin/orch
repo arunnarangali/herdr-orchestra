@@ -13,7 +13,7 @@ Task status flow (every change goes through move(), which checks TRANSITIONS)
   side states: needs-answer, paused, failed, conflict, needs-fix, held (waiting for `orch approve`), skipped
 Also: .orchestrate/events.jsonl (one line per transition), driver.lock (held by autopilot while it drives).
 """
-import contextlib, fcntl, fnmatch, hashlib, json, os, re, shlex, shutil, signal, socket, subprocess, sys, time
+import contextlib, fcntl, fnmatch, hashlib, json, os, re, shlex, shutil, signal, socket, subprocess, sys, tempfile, time
 from pathlib import Path
 
 HERDR = os.environ.get("HERDR", "herdr")
@@ -59,6 +59,12 @@ RISK_RULES = [
     (re.compile(r"(^|/)\.env(\.(?!example$|sample$|template$)[^/]+)?$|(^|/)[^/]*\.(pem|key|p12)$", re.I),
      "secrets or environment file"),
 ]
+# quick runs (`Mode: quick`): small, clear changes only. Files that always need the full process...
+QUICK_NEVER = RISK_RULES + [(LOCKFILE_RE, "dependency file")]
+# ...and names that usually mean auth or payment code: the lead should be sure before calling it quick
+QUICK_CAREFUL_RE = re.compile(r"auth|login|logout|password|session|token|oauth|permission|rbac|acl|payment|billing|"
+                              r"invoice|checkout|stripe|paypal|razorpay|subscription|schema\.(prisma|sql|rb)|models?\.py$",
+                              re.I)
 RISK_MAX_LINES = int(os.environ.get("ORCH_RISK_MAX_LINES", "1500"))
 CHECK_TIMEOUT_S = int(os.environ.get("ORCH_CHECK_TIMEOUT_MIN", "30")) * 60
 ACTIVE = {"coding", "verifying", "awaiting-review", "reviewing", "reviewed", "committed", "conflict", "needs-fix",
@@ -709,7 +715,12 @@ def cmd_sync(args):
     if commits not in ("per-milestone", "single"):
         errors.append(f"Commits must be per-milestone or single, got {commits!r}")
     title_m = re.search(r"(?m)^# Plan:\s*(.+?)\s*$", plan_text)
-    isolation = get("isolation", "worktree").split()[0].lower()
+    mode = (get("mode", "full").split() or ["full"])[0].lower()
+    if mode not in ("quick", "full"):
+        errors.append(f"Mode must be quick or full, got {mode!r}")
+    quick = mode == "quick"
+    quick_because = get("quick because")
+    isolation = get("isolation", "shared" if quick else "worktree").split()[0].lower()
     if isolation not in ("worktree", "shared"):
         errors.append(f"Isolation must be worktree or shared, got {isolation!r}")
     try:
@@ -930,6 +941,28 @@ def cmd_sync(args):
             if not field(by_id[tid], "why separate"):
                 warns.append(f"{tid} has no `Why separate:` — say why it is its own milestone (parallel work, a "
                              f"foundation others build on, too big for one sitting), or merge it into another")
+    # a quick run: one small, clear milestone, the lead says why it is small, and nothing that needs the full process
+    if quick:
+        if not quick_because:
+            errors.append("`Mode: quick` needs `Quick because: <what you found in the code that makes this small>` "
+                          "— e.g. `Quick because: the column already exists, only the response changes`")
+        if len(enabled) > 1:
+            errors.append(f"`Mode: quick` is one milestone, and this plan has {len(enabled)} — put the small changes "
+                          f"in one milestone (one acceptance criterion each), or use `Mode: full`")
+        if isolation == "worktree":
+            warns.append("`Mode: quick` with `Isolation: worktree`: one milestone needs no separate folder — "
+                         "`Isolation: shared` skips the worktree and its setup")
+        for tid in enabled:
+            never = sorted({f"{what}: {f}" for f in files[tid] for rx, what in QUICK_NEVER if rx.search(f)})
+            if never:
+                errors.append(f"{tid} lists {', '.join(never)} — a quick run never touches these; use `Mode: full`")
+            careful = sorted(f for f in files[tid] if QUICK_CAREFUL_RE.search(f))
+            if careful:
+                warns.append(f"{tid} lists {', '.join(careful)}, which looks like auth, payment or schema code — "
+                             f"those take the full process; keep `Mode: quick` only if the change does not touch them")
+            if has_open_questions(by_id[tid]):
+                errors.append(f"{tid} has open questions — a quick run needs a clear change; answer them or use "
+                              f"`Mode: full`")
     max_tasks = int(os.environ.get("ORCH_MAX_TASKS", "0") or 0)     # no limit unless you set one
     if max_tasks and len(enabled) > max_tasks:
         warns.append(f"{len(enabled)} enabled milestones (> ORCH_MAX_TASKS={max_tasks}). Merge coupled milestones "
@@ -956,6 +989,9 @@ def cmd_sync(args):
         "base": base.split()[0] if base else None,
         "title": title_m.group(1) if title_m else branch,
         "commits": commits,
+        "mode": mode,
+        "quick_because": quick_because if quick else None,
+        "green_tree": old.get("green_tree"),
         "integration_broken": old.get("integration_broken"),
         "schema": STATE_SCHEMA,
         "notified": old.get("notified", []),
@@ -1050,7 +1086,7 @@ def cmd_sync(args):
     save(st)
     for w in warns:
         print("WARN:", w)
-    print(f"OK: {len(tasks)} tasks, isolation={isolation}, max_parallel={max_par}, "
+    print(f"OK: {len(tasks)} tasks, " + ("mode=quick, " if quick else "") + f"isolation={isolation}, max_parallel={max_par}, "
           f"workers={list(workers)}, reviewer={reviewer}" + (f", lead={lead[0]}" if lead else ""))
 
 
@@ -1327,6 +1363,35 @@ def run_check(st, cwd):
     except subprocess.TimeoutExpired:
         ok, tail = False, f"check command timed out after {CHECK_TIMEOUT_S // 60} min"
     return ok, tail, round(time.time() - t0, 1)
+
+
+def tree_of(d):
+    """Hash of the files git sees in d (tracked and untracked, not ignored), without touching the real index.
+    Two checks of the same tree give the same answer, so a green check on it can be reused."""
+    try:
+        real = Path(git("rev-parse", "--path-format=absolute", "--git-path", "index", cwd=d).stdout.strip())
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td) / "index"
+            if real.exists():
+                shutil.copyfile(real, tmp)
+            env = {**os.environ, "GIT_INDEX_FILE": str(tmp)}
+            subprocess.run(["git", "add", "-A"], cwd=d, env=env, capture_output=True, timeout=120)
+            r = subprocess.run(["git", "write-tree"], cwd=d, env=env, capture_output=True, text=True, timeout=60)
+            return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    except (OSError, subprocess.SubprocessError, SystemExit):
+        return None
+
+
+def note_green(st, d, ok):
+    """Remember the tree a passing check ran on in the main folder (a failing one forgets it)."""
+    if Path(d).resolve() != ROOT.resolve():
+        return
+    st["green_tree"] = tree_of(d) if ok else None
+
+
+def green_still(st, d):
+    """True when the main folder holds exactly the tree the last passing check ran on: no need to run it again."""
+    return bool(st.get("check") and st.get("green_tree")) and tree_of(d) == st["green_tree"]
 
 
 def path_allowed(path, patterns):
@@ -2291,6 +2356,7 @@ def cmd_merge(args):
             st["merging"] = None
             _integration_failed(st, tid, tail)
         git("commit", "-q", "-m", commit_message(st, tid), cwd=ROOT)
+        note_green(st, ROOT, True)
         fault("after-merge-commit")
     git("update-ref", "-d", task_ref(st, tid), cwd=ROOT, check=False)
     _finish(st, tid)
@@ -2486,6 +2552,8 @@ def cmd_status(args):
               + (f" since {_clock(beat)} ({_dur(now() - beat)} ago)" if beat else "")
               + " — nothing is watching this run, so it will not move.\n"
               "!! Run `orch resume` (after a restart it also finds the agents again and re-sends their tasks).")
+    if st.get("mode") == "quick":
+        print(f"QUICK RUN because: {st.get('quick_because') or '-'}")
     print(f"branch={st['branch']} base={st.get('base')} isolation={st['isolation']} "
           f"max_parallel={st['max_parallel']} reviewer={st['reviewer']} (busy: {st.get('reviewer_busy')})")
     if st.get("integration_broken"):
@@ -2547,7 +2615,8 @@ def github_compare_url(remote, base, branch):
 
 
 def cmd_finish(args):
-    """orch finish [--no-push] -> final check, drop hidden refs and worktrees, push the feature branch, open a PR."""
+    """orch finish [--no-push] [--recheck] -> final check (reused when it already passed on exactly these files;
+    --recheck runs it anyway), drop hidden refs and worktrees, push the feature branch, open a PR."""
     st = load()
     left = [f"{k} ({v['status']})" for k, v in st["tasks"].items() if v["status"] not in ("merged", "skipped")]
     if left:
@@ -2555,7 +2624,9 @@ def cmd_finish(args):
     if git("rev-parse", "--abbrev-ref", "HEAD", cwd=ROOT).stdout.strip() != st["branch"] or is_dirty(ROOT):
         die(f"main tree must be clean and on {st['branch']}")
     base = st.get("base") or default_base(st)
-    if st.get("check"):
+    if "--recheck" not in args and green_still(st, ROOT):
+        print(f"CHECK reused: it already passed on exactly these files ({st['green_tree'][:10]}), not run again")
+    elif st.get("check"):
         r = subprocess.run(st["check"], shell=True, cwd=ROOT, text=True, capture_output=True)
         if r.returncode != 0:
             die(f"the check fails on {st['branch']} — fix it before finishing:\n"
@@ -3083,6 +3154,7 @@ def cmd_autopilot(args):
 
     def check(cwd, tid=None, where="worktree"):
         ok, tail, secs = run_check(st, cwd)
+        patch_state(lambda s_: note_green(s_, cwd, ok))
         if tid:
             patch_state(lambda s_: s_["tasks"][tid].setdefault("checks", []).append(
                 {"where": where, "ok": ok, "secs": secs, "ts": now()}))
@@ -3553,7 +3625,11 @@ def cmd_autopilot(args):
         st = load()
         tasks = st["tasks"]
         if all(t["status"] in ("merged", "skipped") for t in tasks.values()):
-            ok, tail = check(ROOT)
+            if green_still(st, ROOT):          # the last passing check ran on exactly these files
+                ok, tail = True, ""
+                say("final check: the check already passed on exactly these files, not run again")
+            else:
+                ok, tail = check(ROOT)
             if not ok:
                 patch_state(lambda s_: s_.update(integration_broken="the final check"))
             patch_state(lambda s_: s_["run"].update(ended=now()))
@@ -3576,12 +3652,14 @@ def cmd_autopilot(args):
                     models.append(f"| {k} | {v.get('tier') or 'any'} | {ran} | "
                                   f"{'yes' if v.get('escalated') else 'no'} | {v.get('model_why') or '-'} |")
             lead_ = lead_on(st)
+            quick_run = st.get("mode") == "quick"
             prev = ORCH / "summary.md"
             if prev.exists():                      # a fix after ALL_DONE writes the summary again: keep the lead's notes
                 shutil.copyfile(prev, ORCH / "summary.prev.md")
             (ORCH / "summary.md").write_text(
                 f"# Summary: {st.get('title') or st['branch']}\n\nBranch `{st['branch']}` into `{base}`. "
                 f"Final check on the branch: {'PASS' if ok else 'FAIL'}\n\n"
+                + (f"Quick run because: {st.get('quick_because') or '-'}\n\n" if quick_run else "") +
                 "## Tasks\n" + "\n".join(f"- {k}: {v['title']} ({v['status']}, last coder {v.get('worker') or v.get('last_worker') or '-'})"
                                          for k, v in tasks.items()) +
                 f"\n\n## Commits\n```\n{log_}```\n\n## Files changed\n```\n{stat}```\n\n"
@@ -3594,10 +3672,12 @@ def cmd_autopilot(args):
                 f"{auto_checked(st, ok)}\n\n"
                 f"## Run report\n```\n{report}\n```\n\n"
                 + ("## Still to write (the lead was woken to write these)\n" if lead_ else
-                   "## Still to write (ask the lead: 'use the orch-run skill' to finish the summary)\n") +
-                "- Design decisions & study notes\n"
-                "- Checked by the lead: what you verified yourself by running a command or reading the code, with the "
-                "evidence\n"
+                   "## Still to write (ask the lead: 'use the orch-run skill' to finish the summary)\n")
+                + ("" if quick_run else "- Design decisions & study notes\n")
+                + ("- What changed: one line per change, in the developer's words, and how it was checked\n"
+                   if quick_run else
+                   "- Checked by the lead: what you verified yourself by running a command or reading the code, with "
+                   "the evidence\n") +
                 "- Manual verification checklist: only what a person must see or do (how the UI looks and behaves, a "
                 "real device, an outside account). Nothing a command or a look at the code can settle.\n"
                 + ("\nThe summary before this one is in `.orchestrate/summary.prev.md`: carry its notes and checklist "
@@ -4480,7 +4560,7 @@ USAGE = """usage: orch <command> [args]
   set <Mn> <status> [reason] [--force]  manual override: pending/paused/failed/skipped (others need --force)
   approve <Mn>             let a milestone held for risky changes land (works while autopilot runs)
   cleanup                  remove clean worker worktrees
-  finish [--no-push]       final check, drop hidden refs + worktrees, push the feature branch, open a PR into base
+  finish [--no-push] [--recheck]  final check (reused if it passed on these exact files), push, open a PR
   write-task <Mn>          generate TASKDIR/task.md from plan.md (+ reports of merged dependencies)
   nudge <Mn>               re-send the current prompt once to an agent that stopped early
   autopilot                the event manager: watches agents, checks, merges, wakes the lead; exits 0 ALL_DONE, 3 when it needs you
