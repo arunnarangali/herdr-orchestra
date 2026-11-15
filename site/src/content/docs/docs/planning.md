@@ -7,6 +7,8 @@ The lead researches and plans; coders own the how. Each milestone is written as 
 
 The result is the **orchestration plan**: what will be built, in what order, by which coder on which level of model, and why. The run then does what the plan says, and the summary shows where it didn't.
 
+> **Small change?** A UI tweak, a new field in an API response or a one-function fix doesn't need all of this. The lead makes it a [quick run](/docs/quick-runs/): a five-line plan, one coder, no reviewer.
+
 ## Milestones fit the feature
 
 There is no target number. The feature decides how many milestones there are, not the size of the team.

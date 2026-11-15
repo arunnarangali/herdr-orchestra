@@ -14,6 +14,8 @@ Load the `herdr` skill for exact CLI syntax if you have it (otherwise `herdr --s
 
 Feature request = the user's message that asked you to run this playbook.
 
+**Small change? There is a quick path.** After research (step 2) you decide whether this is a **quick run** (step 2b) or the full process. A quick run is for any small, clear change: a UI tweak, a new field in an API response, a validation rule, a bug fix in one function, a config or docs change, or several of these together. It skips the parts of planning and running that only big features need. The developer can decide for you by starting the request with `quick:` (quick run), `quick review:` (quick run that keeps a reviewer) or `full:` (the full process).
+
 ## 1. Preflight (stop and report if any check fails)
 - `orch lead check` prints `OK`. If it fails, show the user its message (it says how to fix it), then stop. Do not test `$HERDR_ENV` yourself: some agents (Hermes) run their shell tool outside the pane's environment, so it can be empty inside a real Herdr pane.
 - Inside a git repo, and `git status --porcelain` is empty. If not, ask the user to commit or stash first.
@@ -26,6 +28,60 @@ Feature request = the user's message that asked you to run this playbook.
 - Find the **shared hotspot files** this feature will need to change: `package.json`/lockfiles, `pubspec.yaml`, `go.mod`, routes/router, `App.tsx`, nav/menu, global store, `docker-compose.yml`, `Makefile`, shared types.
 - Use web docs only for facts the repo can't answer (a library's API, a protocol).
 - Keep notes short: you'll put the relevant facts into each milestone's **Context**. List anything you could not determine as an open question; never assume.
+
+## 2b. Quick or full: decide from what you found, not from how the request sounds
+A request that sounds small can be big ("add `discount` to the orders API" when there is no discount column yet), and one that sounds big can be small. Decide from your research. It is a **quick run** only when all four are true:
+1. **One coder can do it in one go.** Nothing in it earns its own milestone (step 4b): no parallel part, no foundation, not too big for one sitting.
+2. **It is clear.** You have no open questions for the developer about what they want.
+3. **It stays out of risky areas:** no database schema or migration, no auth, login, permissions or sessions, no payments or billing, no new or upgraded packages, no CI, no secrets or `.env` files.
+4. **It follows what is already there.** It copies a pattern the code already has, and it does not change how two parts talk to each other (an API shape another app or team depends on, shared types).
+
+If any is false, use the full process (steps 3 to 10). There is no rule about how many files or lines; it is your judgement, and you write it down: `Quick because: <what you found in the code that makes it small>`, e.g. `Quick because: orders.created_at already exists and the serializer lists fields; only the GET /orders response changes, no schema, auth or payment code`.
+
+- The developer wrote `quick:` but one of the four is false: say which one and why in one line, and plan it in full unless they insist. Never take a risky change (point 3) as quick: `orch sync` refuses those files in a quick plan anyway.
+- The developer wrote `full:`: plan in full, even for a small change.
+
+**A quick run, step by step** (in place of steps 3 to 10):
+- **Team: one coder, no reviewer.** Run `orch lead whoami` and name yourself `lead`. Pick ONE coder pane whose model fits the tier (a free pane of any kind; if only you are open, `orch team <your kind> --coders 1 --no-reviewer`). `Reviewer: none`, unless the developer wrote `quick review:`: then one reviewer pane and `Review: yes`. Why no reviewer: a quick change is small and stays out of risky areas, the check command (lint, types, tests) still has to pass before it lands, and the developer looks at UI changes in the browser anyway; the reviewer is often the slowest step of a small run.
+- **One milestone** that holds every change in the request, with **one acceptance criterion per change**, so the coder and the summary go through them one by one.
+- **Fields:** only `Tier`, `Estimate`, `Likely files`, `Goal`, `Acceptance criteria` and the `Context` facts the coder needs to find their way. Leave out `Feature breakdown`, `Why separate`, `Needs`, `Model why`, `Role`, `Interfaces` (none) and `Prefer` unless one really helps. A backend change gets an acceptance criterion a test can prove (e.g. "GET /orders returns `createdAt` as ISO 8601; a test covers it").
+- **Header:** `Mode: quick`, your `Quick because:` line, `Isolation: shared`, `Setup command: none` (shared mode uses your folder as it is), the `Check command`, `Estimate` = the milestone's.
+- **Don't run the check yourself.** The event manager runs it before any work starts and tells you if it is already red (then handle it as in `orch lead run`, "Red baseline").
+- Write the plan (format below), run `orch sync` and fix every ERROR, then show the developer five lines at most: the changes (one per line), the coder and model, the estimate, your `Quick because:`, and "Say **go**, or **full** if you want the normal process." **STOP** and wait for go, as in a full plan: the developer sees the short plan before anything changes.
+
+```
+# Plan: <short title>
+Mode: quick
+Quick because: <what you found in the code that makes this small>
+Branch: feature/<slug> | fix/<slug>
+Check command: <command>
+Setup command: none
+Isolation: shared
+Estimate: 20m
+Lead: lead (<your kind>: <your model>)
+Workers: claude-1 (claude: sonnet)
+Reviewer: none
+
+## Global instructions
+none
+
+## [x] M1: <short title>
+Depends on: none
+Tier: small | medium | high
+Estimate: 20m
+Review: no
+Likely files: src/a.ts, src/b.ts
+Goal: <the changes, in one or two sentences>
+Acceptance criteria:
+- <change 1, observable>
+- <change 2, observable>
+Context:
+- <where things live>
+Open questions:
+- none
+```
+
+Then the run is the same as any run (`orch lead run`): the coder builds it, the check runs, and it lands on the branch; when the check already passed on exactly the files on the branch, the final check and `orch finish` reuse that result instead of running it again. The summary is short (step 3 of `orch lead run`). The risk hold still applies: if the coder's change turns out to touch a migration, CI, secrets, a package or many lines, it waits for the developer's `orch approve`. After it lands, more small changes go straight to the same coder with `orch fix M1 "<change>"`.
 
 ## 3. Discover the team
 - Run `orch lead whoami`. It shows YOUR pane. Name yourself `lead` with the rename command it prints, and never prompt your own pane.
@@ -112,7 +168,7 @@ Write the role from what you learned in research (the design system the app uses
 ## 8. Check and setup commands; baseline
 - **Check command**: one command for lint + typecheck + unit tests, taken from the repo's scripts (package.json, Makefile, pubspec.yaml, Cargo.toml, pyproject.toml…). No dev servers, no fixed ports.
 - **Setup command**: what a fresh worktree needs, or `none`.
-- Run the check yourself. It must pass before any work: autopilot checks it at the start (and records `.orchestrate/baseline.txt` itself), and runs it on every merge before committing. If it already fails, list what fails and propose to the developer a narrower check command that passes today and still covers the feature. Never plan on "no new failures" being judged by eye.
+- Run the check yourself (in a quick run, skip this: the event manager's baseline does it). It must pass before any work: autopilot checks it at the start (and records `.orchestrate/baseline.txt` itself), and runs it on every merge before committing. If it already fails, list what fails and propose to the developer a narrower check command that passes today and still covers the feature. Never plan on "no new failures" being judged by eye.
 
 ## 9. Write `.orchestrate/plan.md` in EXACTLY this format (`orch sync` parses it)
 

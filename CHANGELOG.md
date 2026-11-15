@@ -2,6 +2,20 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.6.0] - 2026-11-15
+
+A small change (a few UI tweaks, a new field in an API response, a validation rule) went through the same process as a big feature: full research, a plan with a breakdown, roles and model reasons, worktrees and setup, a reviewer for every UI change, a long summary, and the check command run four or five times. For a 10-minute change most of the time went on the process around it.
+
+### Added
+- **Quick runs for small changes, UI or backend.** After reading the code, the lead makes a change a quick run when all four hold: one coder can do it in one go, nothing about it is unclear, it stays out of risky areas (schema or migrations, auth, payments, new packages, CI, secrets), and it follows a pattern the code already has. No rule about file or line counts: "add `createdAt` to GET /orders" is quick when the column exists, "add `discount`" is not when it needs a migration. The plan is short: `Mode: quick`, `Quick because: <what the lead found>`, one milestone with one acceptance criterion per change, one coder, `Reviewer: none`, `Isolation: shared`, no setup. You still see the plan and say go. The summary is what changed plus your checklist. Start the request with `quick:`, `quick review:` (keep a reviewer) or `full:` to choose yourself.
+- **`orch sync` checks a quick plan**: it needs `Quick because:`, has one milestone and no open questions, and may not list migrations, CI, secrets or dependency files (use `Mode: full`). A file that looks like auth, payment or schema code gets a warning. `orch status` starts with `QUICK RUN because: …`.
+
+### Changed
+- **A green check is not run again on the same files.** orch remembers the exact files (a git tree hash) the last passing check ran on in your folder. The final check at ALL_DONE and `orch finish` reuse that result when nothing changed since, and run the check when anything did. `orch finish --recheck` runs it anyway. In a quick run the check now runs twice (before work and after the coder) instead of four times; a full run saves one or two runs too.
+- Website: a quick-run section on the home page and a new docs page, plus home page tiles for things that were only in the docs: risky changes held for `orch approve`, `orch resume` after a restart, estimate vs actual time, and a `Role` for every milestone.
+
+Tested with simulated agents only (fake herdr and coders), not in a real run.
+
 ## [5.5.0] - 2026-11-14
 
 Found in a real run: the developer closed herdr and switched the computer off in the middle of a run, and came back 2 hours later. The panes were back, but the agents had no names and no conversations. The event manager was started again and paused the milestone at once as "over its time budget (121 min)". Dispatching it again failed with "has uncommitted changes — park or clean that worker first", and the work had to be saved with git by hand.

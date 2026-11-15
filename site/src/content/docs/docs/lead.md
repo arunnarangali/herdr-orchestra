@@ -28,7 +28,7 @@ The lead never watches or polls the agents. It works like a function on a call s
 | A milestone **failed** after its rounds | Reads the report, adds the missing fact to the plan, dispatches it again (with a stronger model if the work was harder than planned) |
 | A milestone is **held** for a risky change | Shows you the reasons. Only you can run `orch approve Mn` |
 | An agent **stopped**, timed out or is blocked | Tells you what to look at, then dispatches the milestone again |
-| **All done** | Finishes the summary: design notes, what it checked itself (by running commands and reading the code, with the evidence), and a manual checklist of only what a person must see or do |
+| **All done** | Finishes the summary: design notes, what it checked itself (by running commands and reading the code, with the evidence), and a manual checklist of only what a person must see or do. In a [quick run](/docs/quick-runs/): only what changed and the checklist |
 
 Routine recovery does not wake the lead: a failed check goes back to its coder, a rate-limited or vanished agent is benched and its work moves on, and a milestone out of fix rounds gets one fresh round on a stronger model.
 

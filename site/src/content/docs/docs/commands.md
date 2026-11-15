@@ -15,7 +15,7 @@ Run `orch` with no arguments for the full help.
 | `orch autopilot` | The event manager: runs the plan as a script and wakes the lead; exits 0 when done, 3 when it needs you |
 | `orch approve <Mn>` | Let a milestone held for risky changes land |
 | `orch report [--json]` | Estimated vs actual time per milestone and for the feature (and, when it took longer, where the time went and who it waited on), rounds, first-pass rate and wasted work, and how each model did |
-| `orch finish [--no-push]` | Final check, clean up, push the feature branch, open a PR |
+| `orch finish [--no-push] [--recheck]` | Final check, clean up, push the feature branch, open a PR. The check is reused when it already passed on exactly these files; `--recheck` runs it anyway |
 | `orch set <Mn> <status> [reason]` | Manual override; accepts `pending`, `paused`, `failed` and `skipped` |
 | `orch park <Mn> paused\|failed\|pending [reason]` | Free the worker and keep its work in a hidden ref (also what its coder wrote after an earlier park). A coder still working on a paused or failed milestone is told to stop |
 | `orch cooldown <agent> <min> [reason]` | Bench a worker or the reviewer; reason `gone` ends once Herdr sees it again |

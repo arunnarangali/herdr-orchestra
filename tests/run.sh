@@ -984,5 +984,38 @@ PY
 ) > "$WORK/est-down.txt" 2>&1 && grep -q "Whole feature: estimated 1h30m, actual 1h30m, on time" "$WORK/est-down.txt" && grep -q "^Not counted: 10m while orch was not running" "$WORK/est-down.txt" && grep -q "| M1 | 40m | 1h30m | +50m |" "$WORK/est-down.txt" && grep -qF "10m developer / lead: paused" "$WORK/est-down.txt"'
 check "the playbook and the README tell what to do after a restart" 'grep -q "orch resume" "$ROOT/playbooks/run.md" && grep -q "orch resume" "$ROOT/README.md"'
 
+echo "30. quick runs: a small change without the full ceremony"
+newrepo qk; echo "$APP" > "$FH/claude-1.dir"
+QK='# Plan: Small things\nMode: quick\nQuick because: g.txt already exists as a pattern; one file, no schema, auth or payment code\nBranch: feature/qk\nCheck command: echo x >> '"$WORK"'/qk-checks; true\nEstimate: 15m\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M6: G\nDepends on: none\nTier: small\nEstimate: 15m\nLikely files: g.txt\nAcceptance criteria:\n- g.txt exists\nOpen questions:\n- none\n'
+printf "$QK" | sed '/^Quick because:/d' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "quick plan without a reason is refused" '[ $code -eq 2 ] && grep -q "needs .Quick because:" <<<"$out"'
+{ printf "$QK"; printf '\n## [x] M7: H\nDepends on: none\nLikely files: h.txt\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "quick plan with two milestones is refused" '[ $code -eq 2 ] && grep -q "is one milestone, and this plan has 2" <<<"$out"'
+printf "$QK" | sed 's#^Likely files: g.txt#Likely files: g.txt, db/migrations/001.sql, package.json#' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "quick plan that lists a migration or a dependency file is refused" '[ $code -eq 2 ] && grep -q "database migration: db/migrations/001.sql" <<<"$out" && grep -q "dependency file: package.json" <<<"$out"'
+printf "$QK" | sed 's#^Likely files: g.txt#Likely files: g.txt, src/auth/login.ts#' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "quick plan that lists auth code warns" '[ $code -eq 0 ] && grep -q "WARN: M6 lists src/auth/login.ts, which looks like auth, payment or schema code" <<<"$out"'
+printf "$QK" > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "quick plan: shared folder by default, mode shown" '[ $code -eq 0 ] && grep -q "^OK: 1 tasks, mode=quick, isolation=shared" <<<"$out" && "$ORCH" status | grep -q "^QUICK RUN because: g.txt already exists"'
+rm -f "$WORK/qk-checks"
+timeout 90 "$ORCH" autopilot > "$WORK/qk.log" 2>&1; code=$?
+check "quick run lands" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ] && [ -f g.txt ] && [ ! -d "$APP/../app-wt" ]'
+check "…the check ran twice (before and after the coder), the final check reused it" '[ "$(wc -l < "$WORK/qk-checks")" -eq 2 ] && grep -q "final check: the check already passed on exactly these files" "$WORK/qk.log"'
+check "…short summary: the reason, what changed, no design notes" 'grep -q "^Quick run because: g.txt" .orchestrate/summary.md && grep -q "^- What changed" .orchestrate/summary.md && ! grep -q "Design decisions" .orchestrate/summary.md'
+out=$("$ORCH" finish --no-push 2>&1); code=$?
+check "finish reuses the green check on the same files" '[ $code -eq 0 ] && grep -q "^CHECK reused" <<<"$out" && [ "$(wc -l < "$WORK/qk-checks")" -eq 2 ]'
+newrepo qk2; echo "$APP" > "$FH/claude-1.dir"
+printf "$QK" | sed 's/feature\/qk/feature\/qk2/' > .orchestrate/plan.md
+timeout 90 "$ORCH" autopilot > "$WORK/qk2.log" 2>&1
+echo later > later.txt && git add later.txt && git commit -qm "a change by hand after the run"
+out=$("$ORCH" finish --no-push 2>&1); code=$?
+check "finish runs the check again when the files changed since it passed" '[ $code -eq 0 ] && ! grep -q "^CHECK reused" <<<"$out" && [ "$(wc -l < "$WORK/qk-checks")" -eq 5 ]'
+check "the playbook explains quick runs and how the lead decides" 'grep -q "## 2b. Quick or full" "$ROOT/playbooks/plan.md" && grep -q "Quick because:" "$ROOT/playbooks/plan.md" && grep -q "QUICK RUN" "$ROOT/playbooks/run.md"'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

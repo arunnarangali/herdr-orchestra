@@ -61,6 +61,8 @@ Notes from user:
 
 | Field | Meaning |
 |---|---|
+| `Mode:` | Optional. `full` (default) or `quick`: a [quick run](/docs/quick-runs/) for a small, clear change. A quick plan has one milestone, needs `Quick because:`, defaults to `Isolation: shared`, and may not list migrations, CI, secrets or dependency files |
+| `Quick because:` | Needed with `Mode: quick`: what the lead found in the code that makes the change small, e.g. `the column already exists, only the response changes` |
 | `Branch:` | The run's one branch, `feature/<slug>` (or `fix/<slug>`). Created by `orch start` |
 | `Base:` | Optional. The branch the PR goes into; defaults to the branch you start from |
 | `Commits:` | Optional. `per-milestone` (default) or `single` to squash the run into one commit at finish |
