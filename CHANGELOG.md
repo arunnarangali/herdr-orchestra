@@ -2,6 +2,14 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.8.1] - 2026-11-16
+
+A new docs page on the website, **Questions and how-tos** (`/docs/how-to/`): short answers in plain words, each with an example, to the questions people ask most. No change to how orch works.
+
+### Added
+- **Questions and how-tos.** How a small change is handled (`quick:`, `quick review:`, `full:`: the lead still reads the code, writes a one-milestone plan, waits for your go, then one coder builds it with no reviewer; risky changes get full planning), several small changes in one quick run, how a feature is split and estimated, answering a coder's question (`orch answer`), a `held` milestone (`orch approve`), sending a milestone to one coder (`orch dispatch --to`), keeping a coder out (`orch bench ... off`), swapping a coder, stopping a run (`orch stop`), one more change after the summary (`orch fix`), getting the PR and what the `<repo>-wt` folder is, carrying on after a restart (`orch resume`), a closed pane (`orch team up`), why a run stopped (`orch doctor --crash`), a team from one tool, which models it uses, and updates (`orch update`, auto-update).
+- The page is in the docs sidebar under Getting started, and the Introduction links to it.
+
 ## [5.8.0] - 2026-11-16
 
 orch now tells you when a new version is out, and can keep itself up to date. It also fixes the `<repo>-wt` folder that stayed on disk after `orch finish`.

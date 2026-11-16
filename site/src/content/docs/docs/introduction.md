@@ -38,3 +38,4 @@ The team runs in [Herdr](https://herdr.dev), a terminal workspace for coding age
 
 - [Install it](/docs/installation/)
 - [Run your first feature](/docs/quick-start/)
+- [Questions and how-tos](/docs/how-to/): small changes, fixes after a run, restarts, updates, with examples
