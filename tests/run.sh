@@ -80,6 +80,8 @@ check "the run made one branch, no milestone branches" '[ "$(git branch --format
 check "parked M4 keeps its work in a hidden ref only" '! git branch -a | grep -q M4'
 check "a conflict fix on an approved milestone is reviewed again, with the resolution" '[ -s .orchestrate/review/M2/resolution.patch ] && grep -q "MERGE-CONFLICT RESOLUTION" .orchestrate/review/M2/review-task-3.md'
 
+out=$("$ORCH" finish --no-push 2>&1); code=$?
+check "finish refuses while a milestone is still open, and keeps every coder folder" '[ $code -ne 0 ] && grep -q "not every milestone has landed: M4 (paused)" <<<"$out" && [ -d "$APP/../app-wt/claude-1" ] && [ -d "$APP/../app-wt/codex-1" ]'
 echo "2. resume after the developer answers"
 python3 - "$APP/.orchestrate/plan.md" <<'PY'
 import sys; p=sys.argv[1]; s=open(p).read()
@@ -94,11 +96,20 @@ check "summary written" 'grep -q "Final check on the branch: PASS" .orchestrate/
 git init -q --bare "$WORK/remote.git"; git remote add origin "$WORK/remote.git"
 git update-ref refs/orch/feature-cat/M9 HEAD   # a leftover hidden ref
 "$ORCH" sync >/dev/null   # a second sync keeps the reviewer's state readable
+mkdir -p "$APP/../app-wt/claude-1/.claude" && echo '{}' > "$APP/../app-wt/claude-1/.claude/settings.local.json"
+git worktree add -q --detach "$APP/../app-wt/gone-1" HEAD   # a coder that is no longer in the plan
 out=$("$ORCH" finish 2>&1); code=$?
 check "finish pushes the feature branch" '[ $code -eq 0 ] && git --git-dir="$WORK/remote.git" rev-parse -q --verify feature/cat >/dev/null'
 check "finish removes hidden refs and worktrees" '[ -z "$(git for-each-ref refs/orch)" ] && [ ! -d "$APP/../app-wt/claude-1" ]'
+check "finish removes a coder folder that holds only an agent's settings file" 'grep -q "REMOVED .*app-wt/claude-1 (only agent files: .claude/)" <<<"$out"'
+check "finish removes the folder of a coder no longer in the plan" '[ ! -d "$APP/../app-wt/gone-1" ] && ! git worktree list | grep -q gone-1'
+check "finish removes the empty app-wt folder" '[ ! -e "$APP/../app-wt" ] && grep -q "REMOVED .*/app-wt$" <<<"$out" && [ "$(git worktree list | wc -l)" -eq 1 ]'
 check "finish says how to open the PR" 'grep -q "OPEN A PR from feature/cat into main" <<<"$out"'
 check "only the feature branch was pushed" '[ "$(git --git-dir="$WORK/remote.git" for-each-ref --format="%(refname)" | tr "\n" " ")" = "refs/heads/feature/cat " ]'
+git worktree add -q --detach "$APP/../app-wt/keep-1" HEAD && echo "not in any milestone" >> "$APP/../app-wt/keep-1/shared.txt"
+out=$("$ORCH" finish --no-push 2>&1); code=$?
+check "finish keeps a coder folder with real changes, names it and says how to delete it" '[ $code -eq 0 ] && grep -q "KEPT .*app-wt/keep-1: changes no milestone has (shared.txt)" <<<"$out" && grep -q "git worktree remove --force" <<<"$out" && grep -q "not in any milestone" "$APP/../app-wt/keep-1/shared.txt"'
+git worktree remove --force "$APP/../app-wt/keep-1" && rmdir "$APP/../app-wt"
 
 echo "3. rate limit moves the task (and its partial work) to the other coder"
 newrepo rl

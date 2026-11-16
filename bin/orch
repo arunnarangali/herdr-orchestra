@@ -2952,6 +2952,41 @@ def remove_worktrees(st):
     git("worktree", "prune", cwd=ROOT)
 
 
+# files agents and orch leave in a coder's folder that are not work: settings an agent saves when a permission
+# is approved, its local skills, orch's task files. `orch finish` removes a folder that holds only these.
+AGENT_LEFTOVERS = (".claude/", ".codex/", ".agents/", ".opencode/", ".gemini/", ".hermes/", ".amp/", ".agy/",
+                   ".orchestrate/", f"{TASK_DIR}/")
+
+
+def finish_worktrees():
+    """orch finish (every milestone landed): remove every coder folder under <repo>-wt, the folders of coders no
+    longer in the plan too, then the empty <repo>-wt folder. A folder that holds only agent or orch files goes;
+    one with real changes no milestone has is kept and named, with the command that deletes it."""
+    top = ROOT.parent / f"{ROOT.name}-wt"
+    git("worktree", "prune", cwd=ROOT)
+    if not top.is_dir():
+        return
+    listed = git("worktree", "list", "--porcelain", cwd=ROOT).stdout.splitlines()
+    paths = [Path(x[len("worktree "):]) for x in listed if x.startswith("worktree ")]
+    for p in sorted(x for x in paths if x.resolve().parent == top.resolve()):
+        lines = git("status", "--porcelain", "--untracked-files=all", cwd=p).stdout.splitlines()
+        real = [x[3:] for x in lines if not (x.startswith("?? ") and x[3:].startswith(AGENT_LEFTOVERS))]
+        if real:
+            print(f"KEPT {p}: changes no milestone has ({', '.join(real[:5])}{', ...' if len(real) > 5 else ''}) "
+                  f"— look, then delete it with `git worktree remove --force {p}`")
+            continue
+        git("worktree", "remove", "--force", str(p), cwd=ROOT)
+        junk = sorted({x[3:].split("/", 1)[0] + "/" for x in lines})
+        print(f"REMOVED {p}" + (f" (only agent files: {', '.join(junk)})" if junk else ""))
+    git("worktree", "prune", cwd=ROOT)
+    with contextlib.suppress(OSError):
+        top.rmdir()                       # only when nothing is left in it
+    if top.exists():
+        print(f"KEPT {top}: still holds {', '.join(sorted(x.name for x in top.iterdir()))}")
+    else:
+        print(f"REMOVED {top}")
+
+
 def cmd_cleanup(args):
     st = load()
     if st["isolation"] != "worktree":
@@ -2995,8 +3030,7 @@ def cmd_finish(args):
             print(f"SQUASHED {len(subjects)} commits into one (Commits: single)")
     refs = git("for-each-ref", "--format=%(refname)", f"{REF_NS}/{st['branch'].replace('/', '-')}/",
                cwd=ROOT).stdout.split()
-    if st["isolation"] == "worktree":
-        remove_worktrees(st)
+    finish_worktrees()                            # every milestone landed: no coder folder is needed any more
     rescued = [r for r in refs if "/rescue-" in r]
     refs = [r for r in refs if r not in rescued]
     for ref in refs:
@@ -5130,7 +5164,8 @@ USAGE = """usage: orch <command> [args]
   set <Mn> <status> [reason] [--force]  manual override: pending/paused/failed/skipped (others need --force)
   approve <Mn>             let a milestone held for risky changes land (works while autopilot runs)
   cleanup                  remove clean worker worktrees
-  finish [--no-push] [--recheck]  final check (reused if it passed on these exact files), push, open a PR
+  finish [--no-push] [--recheck]  final check (reused if it passed on these exact files), remove the <repo>-wt
+                           coder folders, push, open a PR
   write-task <Mn>          generate TASKDIR/task.md from plan.md (+ reports of merged dependencies)
   nudge <Mn>               re-send the current prompt once to an agent that stopped early
   autopilot                the event manager: watches agents, checks, merges, wakes the lead; exits 0 ALL_DONE, 3 when it needs you
