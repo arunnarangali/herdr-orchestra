@@ -2,6 +2,16 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.7.1] - 2026-11-16
+
+A check that quick runs (5.6.0) and the stalled-run fixes (5.7.0) did not change how a real feature is planned. They did not: a plan with no `Mode:` line, or `Mode: full`, is planned and run as before (worktrees, reviewer, `Why separate:`, `Role:`, tier and estimate per milestone, and the same warnings). The check found one bug in quick runs.
+
+### Fixed
+- **`orch sync` refused a quick run after `orch fix`.** The follow-up milestone that `orch fix M1 "..."` adds was counted as a second planned milestone, so `orch sync` stopped with "`Mode: quick` is one milestone, and this plan has 2". Follow-ups from `orch fix` no longer count; a second milestone you plan by hand is still refused.
+
+### Tests
+- New tests lock in full feature planning: a three-milestone feature with no `Mode:` line stays full (worktrees, reviewer, review per milestone, role, tier, estimate and dependencies kept), none of the quick-run rules touch it (a migration or `package.json` is fine), `Why separate` and `Estimate` warnings still appear, `Mode: full` is the same as no line, an unknown `Mode` is refused, and the planning playbook keeps steps 3 to 10.
+
 ## [5.7.0] - 2026-11-15
 
 Found in a real run (orch 5.4.0): a coder hit its usage limit, then the terminal closed and herdr restarted. The event manager had been started from a herdr pane, so it died too. For 2.5 hours `orch status` still said "M3 coding on rs-opencode-1" for a pane that no longer existed, and nobody was told. After that, `orch team up` opened an OpenCode pane that quit at once and left a plain shell, and the task was typed into that shell. `dispatch --to rs-agy-1` said "ok" for a worker with no pane. The developer's "no more Claude" was forgotten as soon as Claude's pane came back. Swapping a coder meant killing the event manager by hand, and a dead manager left no trace of why it died.
