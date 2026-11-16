@@ -17,6 +17,7 @@ Feature request = the user's message that asked you to run this playbook.
 **Small change? There is a quick path.** After research (step 2) you decide whether this is a **quick run** (step 2b) or the full process. A quick run is for any small, clear change: a UI tweak, a new field in an API response, a validation rule, a bug fix in one function, a config or docs change, or several of these together. It skips the parts of planning and running that only big features need. The developer can decide for you by starting the request with `quick:` (quick run), `quick review:` (quick run that keeps a reviewer) or `full:` (the full process).
 
 ## 1. Preflight (stop and report if any check fails)
+- **Lines above this playbook about a version.** `UPDATED herdr-orchestra X -> Y`: orch updated itself before this plan; tell the developer in one line and carry on. `herdr-orchestra Y is out (you have X)`: tell the developer once, with the command it names (`orch update`), and carry on with the plan. Never run `orch update` yourself: it is the developer's call. A `WARN auto-update ... failed` line: pass it on and carry on.
 - `orch lead check` prints `OK`. If it fails, show the user its message (it says how to fix it), then stop. Do not test `$HERDR_ENV` yourself: some agents (Hermes) run their shell tool outside the pane's environment, so it can be empty inside a real Herdr pane.
 - Inside a git repo, and `git status --porcelain` is empty. If not, ask the user to commit or stash first.
 - `mkdir -p .orchestrate`.

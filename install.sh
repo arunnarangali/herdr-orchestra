@@ -23,7 +23,8 @@ BIN="$HOME/.local/bin"
 SKILLS="$HOME/.agents/skills"
 OC_CMDS=("$HOME/.config/opencode/commands" "$HOME/.config/opencode/command")
 MANIFEST="$SHARE/manifest.txt"   # files installed outside $SHARE, removed by --uninstall
-SHIP=(bin skills opencode-commands claude-commands playbooks agents.default.toml models.default.toml VERSION)
+SETTINGS="$SHARE/settings.json"  # this machine's choices (auto-update); every installed version reads it
+SHIP=(bin skills opencode-commands claude-commands playbooks agents.default.toml models.default.toml VERSION CHANGELOG.md)
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
@@ -39,11 +40,13 @@ Options:
   --current            show the installed version
   --uninstall          remove herdr-orchestra (keeps the herdr skill and your projects' .orchestrate/)
   --no-herdr-skill     don't install/refresh the official herdr skill via npx
+  --auto-update        keep herdr-orchestra up to date automatically (no question asked)
+  --no-auto-update     never update by itself (also: ORCH_AUTO_UPDATE=1 or 0)
   -h, --help           this help
 EOF
 }
 
-VERSION_ARG="" ACTION="install" HERDR_SKILL=1
+VERSION_ARG="" ACTION="install" HERDR_SKILL=1 AUTO_UPDATE="${ORCH_AUTO_UPDATE:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION_ARG="${2:?--version needs a value}"; shift 2;;
@@ -52,6 +55,8 @@ while [[ $# -gt 0 ]]; do
     --current) ACTION="current"; shift;;
     --uninstall) ACTION="uninstall"; shift;;
     --no-herdr-skill) HERDR_SKILL=0; shift;;
+    --auto-update) AUTO_UPDATE=1; shift;;
+    --no-auto-update) AUTO_UPDATE=0; shift;;
     -h|--help) usage; exit 0;;
     *) die "unknown option: $1 (see --help)";;
   esac
@@ -211,6 +216,54 @@ if [[ $HERDR_SKILL -eq 1 ]]; then
   fi
 fi
 
+# ---------------------------------------------------------------- auto-update: asked once, the answer is kept
+setting() {  # setting get <key> | setting set <key> <true|false>
+  python3 - "$SETTINGS" "$@" <<'PYEOF'
+import json, os, sys
+path, op, key = sys.argv[1:4]
+try:
+    data = json.load(open(path))
+    if not isinstance(data, dict):
+        data = {}
+except (OSError, ValueError):
+    data = {}
+if op == "get":
+    v = data.get(key)
+    print("" if v is None else ("1" if v else "0"))
+else:
+    data[key] = sys.argv[4] == "true"
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, path)
+PYEOF
+}
+case "$AUTO_UPDATE" in
+  1|on|true|yes) setting set auto_update true;;
+  0|off|false|no) setting set auto_update false;;
+  *)
+    if [[ -z "$(setting get auto_update)" ]]; then      # never answered on this machine (a new or an older install)
+      TTY="${ORCH_TTY:-}"                              # under `curl | bash` stdin is this script: ask the terminal
+      if [[ -z "$TTY" ]]; then
+        if [[ -t 0 ]]; then TTY=/dev/stdin; elif { : < /dev/tty; } 2>/dev/null; then TTY=/dev/tty; fi
+      fi
+      ans=""
+      if [[ -n "$TTY" ]]; then
+        {
+          printf '\033[1;32m==>\033[0m Keep herdr-orchestra up to date automatically? [Y/n]\n'
+          printf '    (orch installs new versions by itself, never during a run. Change it later: orch config auto-update off)\n    > '
+        } >&2
+        IFS= read -r ans < "$TTY" 2>/dev/null || true
+      fi
+      case "$ans" in n|N|no|No|NO) setting set auto_update false;; *) setting set auto_update true;; esac
+    fi;;
+esac
+if [[ "$(setting get auto_update)" == 1 ]]; then
+  say "auto-update: on (turn it off with: orch config auto-update off)"
+else
+  say "auto-update: off (turn it on with: orch config auto-update on; update by hand with: orch update)"
+fi
+
 case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH — add: export PATH=\"\$HOME/.local/bin:\$PATH\"";; esac
 
 say "herdr-orchestra $VER is active"
@@ -220,6 +273,7 @@ cat <<'MSG'
   Run         orch autopilot        (or ask the lead: /orch-run, or "Run `orch lead run` and follow it")
   Agents      orch agents           New agent installed later?  orch agents sync
   Status      orch status           Version  orch version
+  Update      orch update           Auto-update  orch config auto-update on|off
 
   Restart running agents (or start a new thread) so they pick up the new skills and commands.
 MSG

@@ -24,6 +24,8 @@ Run `orch` with no arguments for the full help.
 | `orch doctor --crash` | Why the event manager last stopped (the reason found in the computer's own log), the last crash and lost notes, and saved agent screens |
 | `orch cleanup` | Remove clean worker worktrees |
 | `orch version` | The installed version |
+| `orch update [--check] [--version vX.Y.Z]` | Install the latest release (or that one) and show what is new; `--check` only looks |
+| `orch config [auto-update on\|off]` | This machine's settings: update by itself when a new plan starts, or only be told |
 
 ## The lead, during a run
 

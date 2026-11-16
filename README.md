@@ -73,6 +73,29 @@ orch agents sync
 
 It finds every installed agent (binary on `PATH`), copies the `orch-plan` / `orch-run` skills and slash commands into that agent's folders, and records them so `--uninstall` still removes exactly what was installed. `orch agents` prints a hint when a new agent is missing its skills.
 
+## Updates
+
+**Already installed (5.7 or older)? Run `npx herdr-orchestra@latest` once.** That install asks the question below, and from then on orch keeps itself up to date.
+
+The installer asks once: `Keep herdr-orchestra up to date automatically? [Y/n]`. Enter means yes. The answer is saved for this machine (`~/.local/share/herdr-orchestra/settings.json`) and is not asked again. With no keyboard (CI, a script) it does not ask and turns it on; `--auto-update` / `--no-auto-update` or `ORCH_AUTO_UPDATE=1|0` answer it for a script.
+
+```bash
+orch update                    # install the latest release now and show what is new
+orch update --check            # only say whether a new version is out
+orch update --version v5.8.0   # install that exact version (this is also how you go back)
+orch config                    # auto-update on/off, the installed version, the last check
+orch config auto-update off    # or: on
+```
+
+- **The check.** At most once a day, at `orch lead plan` or `orch version`, orch asks GitHub for the latest release (3 seconds at most; nothing about you or your project is sent). With no internet it stays silent and asks again the next day. `ORCH_NO_UPDATE_CHECK=1` turns the check off.
+- **Auto-update on.** When a new plan starts (`orch lead plan`) and a newer release is out, orch installs it first and the plan runs on the new version: `UPDATED herdr-orchestra 5.8.0 -> 5.8.1`, with what is new.
+- **Never during a run.** While an event manager is running anywhere on this machine nothing is installed; it happens at the next plan with no run going. A run that was started on the old version finishes on the new one.
+- **Not installed by itself:** a major version (5.x to 6.0: read its changelog, then `orch update`), a repo pinned with `.orch-version`, and a git checkout.
+- **A failed update** keeps the version you have, prints one warning, writes the reason to `~/.local/share/herdr-orchestra/update.log` and tries again the next day.
+- **Auto-update off.** `orch lead plan`, `orch status` and `orch version` show one line instead: `herdr-orchestra 5.8.1 is out (you have 5.8.0). Run orch update.`
+
+The skills are thin wrappers that call `orch`, so an updated `orch` is new logic for every agent at once.
+
 ## Versions
 
 Every release is a git tag (`v4.2.0`) with a GitHub Release that carries its own `install.sh`. Every installed version is kept side by side, so switching back is instant.
@@ -300,7 +323,7 @@ Every status change is written to `.orchestrate/events.jsonl`, and `orch report 
 Optional plan header lines: `Lead mode: events | off` (default `events` when the plan has a `Lead:` line) · `Scope: warn | strict` · `Risk hold: on | off` · `Budget: 3h` (autopilot stops when its running time is used up) · `Estimate: 1h30m` (the lead's estimate for the feature) · `Setup inputs: <globs>` (which files mean "run setup again"; default: lockfiles and manifests). Per milestone: `Why separate` (why it is its own milestone; needed when the plan has more than one) · `Tier`, `Needs`, `Model why` (see [Models and tiers](#models-and-tiers)) · `Estimate: 40m` (dispatch to landed if nothing goes wrong) · `Parallel: allow` lets it run next to a milestone that shares its `Likely files`.
 
 ### Commands
-`orch status` · `orch resume` · `orch report` · `orch approve Mn` · `orch models [show|check <id>]` · `orch events [--peek]` · `orch dispatch Mn... [--to <worker>] [--tier <tier>]` · `orch answer Mn "<answer>"` · `orch fix Mn "<change>" [--to <worker>]` · `orch doctor [kind]` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind> [--model <id>]|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch bench claude-1 off|on` · `orch stop [--now]` · `orch doctor --crash` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch` (full help)
+`orch status` · `orch resume` · `orch report` · `orch approve Mn` · `orch models [show|check <id>]` · `orch events [--peek]` · `orch dispatch Mn... [--to <worker>] [--tier <tier>]` · `orch answer Mn "<answer>"` · `orch fix Mn "<change>" [--to <worker>]` · `orch doctor [kind]` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind> [--model <id>]|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch bench claude-1 off|on` · `orch stop [--now]` · `orch doctor --crash` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch update [--check] [--version vX.Y.Z]` · `orch config [auto-update on|off]` · `orch` (full help)
 
 Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (unset: no limit) · `ORCH_GONE_COOLDOWN_MIN` (10) · `ORCH_SEND_RETRY_S` (120) · `ORCH_HERDR_TIMEOUT_S` (30) · `ORCH_MAX_LOST` (4) · `ORCH_UNREACHABLE_MIN` (30) · `ORCH_CONFIRM_S` (30) · `ORCH_DOWN_MIN_S` (120: an event manager silent for longer was down, and that time is not counted) · `ORCH_RISK_MAX_LINES` (1500) · `ORCH_LEAD_WAIT_MIN` (15: ready work the lead hasn't dispatched starts by itself) · `ORCH_LEAD_CONFIRM_S` (30: a wake-up the lead did not pick up is sent again, doubling) · `ORCH_LEAD_REWAKE_S` (300) · `ORCH_LEAD_MAX_WAKES` (3) · `ORCH_LEAD_IDLE_MAX_MIN` (720: how long the event manager waits for an answer) · `ORCH_NO_AUTOSTART=1` (the lead's commands never start the event manager)
 
