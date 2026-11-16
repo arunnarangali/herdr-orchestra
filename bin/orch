@@ -219,6 +219,7 @@ def take_lease():
     f.flush()
     os.environ["ORCH_DRIVER"], os.environ["ORCH_DRIVER_PID"] = token, str(os.getpid())
     _LEASE = f
+    sign_in_manager()
 
 
 def task(st, tid):
@@ -2938,6 +2939,7 @@ def cmd_status(args):
     elif not any(t["status"] in ACTIVE for t in st["tasks"].values()) and not any(
             t["status"] == "pending" and deps_met(st, t) for t in st["tasks"].values()):
         print("STUCK — nothing running and nothing ready; resolve paused/needs-answer/failed tasks with the developer")
+    update_notice(network=False)       # from the last daily check only: status never waits for the network
 
 
 def remove_worktrees(st):
@@ -5120,6 +5122,8 @@ UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "fix", "team", 
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
+  update [--check] [--version vX.Y.Z]  install the latest release (or that one) and show what is new
+  config [auto-update on|off]  this machine's settings: keep orch up to date by itself, or only be told
   lead plan|run            print the lead playbook (any agent can lead: "Run `orch lead plan` and follow it")
   lead check               preflight: is this agent in a Herdr pane / can it reach herdr?
   lead whoami              show the lead's own herdr pane and how to name it `lead`
@@ -5216,6 +5220,8 @@ def cmd_lead(args):
     sub = args[0] if args else ""
     if sub in ("plan", "run"):
         pb = asset(f"playbooks/{sub}.md") or die(f"playbooks/{sub}.md not found next to orch or in the install")
+        if sub == "plan":
+            auto_update_at_plan()       # a new feature starts on the newest release (never during a run)
         print(f"herdr-orchestra {installed_version()} — lead playbook: {sub}\n")
         print(pb.read_text(), end="")
         return
@@ -5664,15 +5670,377 @@ def installed_version():
     return "unknown"
 
 
+# ---------------------------------------------------------------- updates: notice, `orch update`, auto-update
+UPDATE_REPO = os.environ.get("ORCH_REPO") or "arunnarangali/herdr-orchestra"
+UPDATE_CHECK_S = 24 * 3600      # ask for the latest release at most once a day
+UPDATE_NET_S = 3                # ...and never wait longer than this for the answer
+
+
+def share_dir():
+    return Path(os.environ.get("ORCH_SHARE") or Path.home() / ".local/share/herdr-orchestra")
+
+
+def settings_load():
+    try:
+        data = json.loads((share_dir() / "settings.json").read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def settings_save(data):
+    with contextlib.suppress(OSError):
+        share_dir().mkdir(parents=True, exist_ok=True)
+        tmp = share_dir() / "settings.json.tmp"
+        tmp.write_text(json.dumps(data, indent=1))
+        os.replace(tmp, share_dir() / "settings.json")
+
+
+def auto_update_on():
+    env = os.environ.get("ORCH_AUTO_UPDATE", "").lower()
+    if env in ("0", "off", "false", "no"):
+        return False
+    if env in ("1", "on", "true", "yes"):
+        return True
+    return settings_load().get("auto_update") is True
+
+
+def ver_tuple(v):
+    m = re.match(r"v?(\d+)\.(\d+)\.(\d+)$", (v or "").strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def release_install():
+    """True when this orch is an installed release (~/.local/share/herdr-orchestra/vX.Y.Z), not a git checkout or
+    a -dev install: only a release looks for, and moves to, a newer release."""
+    here = Path(__file__).resolve().parent.parent
+    return here.parent == share_dir().resolve() and here.name == f"v{installed_version()}"
+
+
+def update_source():
+    """Tests: ORCH_UPDATE_SOURCE is a folder with `latest` (a tag) and one release tree per tag (<tag>/install.sh)."""
+    src = os.environ.get("ORCH_UPDATE_SOURCE")
+    return Path(src) if src else None
+
+
+def fetch_latest(thorough=False):
+    """The newest released version as 'X.Y.Z', or None when it can't be reached within UPDATE_NET_S. The daily
+    check asks GitHub's API once; `orch update` (thorough) also tries the tag list when the API says no."""
+    src = update_source()
+    if src:
+        try:
+            tag = (src / "latest").read_text().strip()
+        except OSError:
+            return None
+        return tag.lstrip("v") if ver_tuple(tag) else None
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+                                     headers={"Accept": "application/vnd.github+json", "User-Agent": "herdr-orchestra"})
+        with urllib.request.urlopen(req, timeout=UPDATE_NET_S) as r:
+            tag = json.loads(r.read().decode()).get("tag_name", "")
+        if ver_tuple(tag):
+            return tag.lstrip("v")
+    except Exception:
+        pass
+    if not thorough:
+        return None
+    try:
+        r = subprocess.run(["git", "ls-remote", "--tags", "--refs", f"https://github.com/{UPDATE_REPO}.git"],
+                           text=True, capture_output=True, timeout=20,
+                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        tags = [t for t in (x.rsplit("/", 1)[-1] for x in r.stdout.split()) if ver_tuple(t)]
+        return max(tags, key=ver_tuple).lstrip("v") if r.returncode == 0 and tags else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def latest_known(force=False):
+    """The newest release orch knows of. Asks the network at most once a day (always with force); with no answer
+    it stays quiet and asks again a day later. ORCH_NO_UPDATE_CHECK=1: never asks."""
+    if os.environ.get("ORCH_NO_UPDATE_CHECK") == "1":
+        return None
+    s = settings_load()
+    if not force and now() - int(s.get("last_check") or 0) < UPDATE_CHECK_S:
+        return s.get("latest_seen")
+    latest = fetch_latest(thorough=force)
+    s = settings_load()
+    s["last_check"] = now()
+    if latest:
+        s["latest_seen"] = latest
+    settings_save(s)
+    return latest or (None if force else s.get("latest_seen"))
+
+
+def newer(latest):
+    a, b = ver_tuple(latest), ver_tuple(installed_version())
+    return bool(a and b and a > b)
+
+
+def update_notice(network=True):
+    """One line when a newer release is out (installed releases only). Never raises, never waits long."""
+    try:
+        if not release_install() or os.environ.get("ORCH_NO_UPDATE_CHECK") == "1":
+            return
+        latest = latest_known() if network else settings_load().get("latest_seen")
+        if newer(latest):
+            print(f"herdr-orchestra {latest} is out (you have {installed_version()}). Run `orch update`.")
+    except Exception:
+        pass
+
+
+def active_runs():
+    """Repos whose event manager is running on this machine right now (each manager signs in under active/)."""
+    live = []
+    d = share_dir() / "active"
+    for f in (sorted(d.glob("*.json")) if d.is_dir() else []):
+        try:
+            root = json.loads(f.read_text()).get("root") or ""
+            lock = Path(root) / ".orchestrate" / "driver.lock"
+            held = False
+            if root and lock.exists():
+                with open(lock, "a") as fh:
+                    try:
+                        fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        fcntl.flock(fh, fcntl.LOCK_UN)
+                    except OSError:
+                        held = True
+            if held:
+                live.append(root)
+            else:
+                f.unlink(missing_ok=True)          # that manager is gone
+        except (OSError, ValueError):
+            continue
+    return live
+
+
+def sign_in_manager():
+    """The event manager tells the machine it is running, so no auto-update happens under a run."""
+    with contextlib.suppress(OSError):
+        d = share_dir() / "active"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{os.getpid()}.json"
+        f.write_text(json.dumps({"pid": os.getpid(), "root": str(ROOT), "started": now()}))
+        import atexit
+        atexit.register(lambda: f.unlink(missing_ok=True))
+
+
+def changelog_lines(version, limit=8):
+    """The headline of each changelog entry for a version, from the installed CHANGELOG.md."""
+    p = share_dir() / "current" / "CHANGELOG.md"
+    if not p.exists():
+        return []
+    out, on, tests = [], False, False
+    for line in p.read_text(errors="replace").splitlines():
+        if line.startswith("## "):
+            if on:
+                break
+            on = line.startswith(f"## [{version}]")
+            continue
+        if line.startswith("### "):
+            tests = line.strip().lower() == "### tests"
+            continue
+        if on and not tests and line.startswith("- "):
+            m = re.match(r"- \*\*(.+?)\*\*", line)
+            out.append((m.group(1) if m else line[2:]).rstrip(".")[:110])
+    return out[:limit] + ([f"... ({len(out) - limit} more: CHANGELOG.md)"] if len(out) > limit else [])
+
+
+def update_log(msg):
+    with contextlib.suppress(OSError):
+        with open(share_dir() / "update.log", "a") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+
+
+def install_version(version, quiet=False):
+    """Install release `version` ('X.Y.Z') with that release's own install.sh. Returns (ok, message). The installer
+    switches the `current` link only at its end, so a failed install leaves the old version active."""
+    tag = f"v{version}"
+    before = installed_version()
+    env = {k: v for k, v in os.environ.items() if k not in ("ORCH_VERSION", "ORCH_AUTO_UPDATE")}
+    env["ORCH_TTY"] = "/dev/null"             # an update never stops to ask a question
+    s = settings_load()
+    if "auto_update" not in s:                # ...so the installer's question is answered here, as it stands now
+        s["auto_update"] = auto_update_on()
+        settings_save(s)
+    tmp = None
+    try:
+        src = update_source()
+        if src:
+            script = src / tag / "install.sh"
+            if not script.exists():
+                return False, f"version {tag} not found"
+            cmd, env = ["bash", str(script), "--no-herdr-skill"], {**env, "ORCH_PACKAGE": "1"}
+        else:
+            if not shutil.which("curl"):
+                return False, "curl is needed to download a release — or run: npx herdr-orchestra@latest"
+            import urllib.request
+            tmp = Path(tempfile.mkdtemp(prefix="orch-update-"))
+            script = tmp / "install.sh"
+            try:
+                with urllib.request.urlopen(f"https://github.com/{UPDATE_REPO}/releases/download/{tag}/install.sh",
+                                            timeout=30) as r:
+                    script.write_bytes(r.read())
+            except Exception as e:
+                return False, f"could not download {tag} ({e})"
+            cmd = ["bash", str(script), "--version", tag, "--no-herdr-skill"]
+        try:
+            r = subprocess.run(cmd, text=True, capture_output=True, timeout=600, env=env, cwd=str(Path.home()),
+                               stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return False, f"the installer did not finish ({e})"
+        if r.returncode != 0:
+            tail = " | ".join((r.stdout + r.stderr).strip().splitlines()[-3:])
+            return False, f"the installer failed (exit {r.returncode}): {tail}"
+        cur = share_dir() / "current" / "VERSION"
+        got = cur.read_text().strip() if cur.exists() else "?"
+        if got != version:
+            return False, f"the installer ran but {got} is active, not {version}"
+        if not quiet:
+            print((r.stdout + r.stderr).strip())
+        return True, f"herdr-orchestra {before} -> {version}"
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def cmd_update(args):
+    """orch update [--check] [--version vX.Y.Z] -> install the latest release (or that one) and say what is new."""
+    want = None
+    if "--version" in args:
+        i = args.index("--version")
+        want = args[i + 1] if len(args) > i + 1 else die("--version needs a value, e.g. --version v5.8.0")
+        if not ver_tuple(want):
+            die(f"{want!r} is not a version — use the form v5.8.0")
+        want = want.lstrip("v")
+    cur = installed_version()
+    if not want:
+        latest = latest_known(force=True)
+        if not latest:
+            die("could not reach GitHub to look for a new version" + (" (ORCH_NO_UPDATE_CHECK=1 is set)"
+                if os.environ.get("ORCH_NO_UPDATE_CHECK") == "1" else "") + " — try again later, or run: "
+                "npx herdr-orchestra@latest")
+        if "--check" in args:
+            print(f"herdr-orchestra {latest} is out (you have {cur}). Run `orch update`." if newer(latest)
+                  else f"herdr-orchestra {cur} is the latest version.")
+            return
+        if not newer(latest):
+            print(f"herdr-orchestra {cur} is the latest version. Nothing to do.")
+            return
+        want = latest
+    elif "--check" in args:
+        die("--check looks for the latest version: leave out --version")
+    live = active_runs()
+    if live:
+        print(f"NOTE a run is going ({', '.join(live)}). It keeps working, but its next steps use the new version.")
+    ok, msg = install_version(want)
+    if not ok:
+        update_log(f"orch update {cur} -> {want} FAILED: {msg}")
+        die(f"update failed, herdr-orchestra {cur} is still active: {msg}")
+    update_log(f"orch update: {msg}")
+    print(f"UPDATED {msg}")
+    lines = changelog_lines(want)
+    if lines:
+        print(f"New in {want}:")
+        for x in lines:
+            print(f"  - {x}")
+    if ver_tuple(cur):
+        print(f"Go back any time: orch update --version v{cur}")
+
+
+def cmd_config(args):
+    """orch config -> this machine's settings; orch config auto-update on|off."""
+    if args[:1] == ["auto-update"] and args[1:2] and args[1].lower() in ("on", "off"):
+        s = settings_load()
+        s["auto_update"] = args[1].lower() == "on"
+        settings_save(s)
+        print(f"auto-update: {args[1].lower()}" + (" — orch installs new versions by itself when a new plan starts, "
+              "never during a run" if s["auto_update"] else " — orch only tells you when a new version is out; "
+              "update with `orch update`"))
+        return
+    if args:
+        die("usage: orch config | orch config auto-update on|off")
+    s = settings_load()
+    env = os.environ.get("ORCH_AUTO_UPDATE")
+    print(f"auto-update: {'on' if auto_update_on() else 'off'}"
+          + (f" (ORCH_AUTO_UPDATE={env} overrides the saved setting)" if env else "")
+          + ("" if "auto_update" in s or env else " (never asked: `orch config auto-update on` turns it on)"))
+    print(f"installed: {installed_version()}" + ("" if release_install() else " (not a release install: no update checks)"))
+    lc = int(s.get("last_check") or 0)
+    print("last check: " + (time.strftime("%Y-%m-%d %H:%M", time.localtime(lc)) if lc else "never")
+          + (f", latest seen: {s['latest_seen']}" if s.get("latest_seen") else "")
+          + (" (ORCH_NO_UPDATE_CHECK=1: checks are off)" if os.environ.get("ORCH_NO_UPDATE_CHECK") == "1" else ""))
+    print(f"settings file: {share_dir() / 'settings.json'}")
+
+
+def auto_update_at_plan():
+    """Start of a new plan (`orch lead plan`): with auto-update on, move to the newest release first and carry on
+    as that version. Skipped (with one line saying why) during any run on this machine, for a major jump, in a repo
+    pinned with .orch-version, and for a checkout. A failed update keeps the version that is here."""
+    try:
+        if os.environ.get("ORCH_UPDATED") == "1" or not release_install():
+            return
+        latest = latest_known()
+        if not newer(latest):
+            return
+        cur = installed_version()
+        note = f"herdr-orchestra {latest} is out (you have {cur})."
+        if not auto_update_on():
+            print(f"{note} Run `orch update`.\n")
+            return
+        if ver_tuple(latest)[0] > ver_tuple(cur)[0]:
+            print(f"{note} It is a major version, so it is not installed by itself: read its changelog, then run "
+                  f"`orch update`.\n")
+            return
+        if Path(".orch-version").exists():
+            print(f"{note} Not installed: this repo pins its version in .orch-version.\n")
+            return
+        if now() - int(settings_load().get("last_auto_fail") or 0) < UPDATE_CHECK_S:
+            print(f"{note} Auto-update failed earlier today (see {share_dir() / 'update.log'}); it tries again "
+                  f"tomorrow, or run `orch update`.\n")
+            return
+        live = active_runs()
+        if live:
+            print(f"{note} Not installed now: a run is going ({', '.join(live)}). It installs when a plan starts "
+                  f"with no run going.\n")
+            return
+        ok, msg = install_version(latest, quiet=True)
+        if not ok:
+            update_log(f"auto-update {cur} -> {latest} FAILED: {msg}")
+            print(f"WARN auto-update to {latest} failed, {cur} is still active: {msg} (it tries again tomorrow; "
+                  f"or run `orch update`)\n")
+            s = settings_load()
+            s["last_auto_fail"] = now()       # one try a day, not one per plan
+            settings_save(s)
+            return
+        update_log(f"auto-update: {msg}")
+        print(f"UPDATED {msg} (auto-update; turn it off with `orch config auto-update off`)")
+        for x in changelog_lines(latest, 5):
+            print(f"  - {x}")
+        print()
+        sys.stdout.flush()
+        new = share_dir() / "current" / "bin" / "orch"
+        os.environ["ORCH_UPDATED"] = "1"
+        os.execv(sys.executable, [sys.executable, str(new), *sys.argv[1:]])
+    except Exception as e:                    # an update problem never stops the plan
+        update_log(f"auto-update error: {e!r}")
+
+
 if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] in ("version", "--version", "-v"):
         print(f"herdr-orchestra {installed_version()}")
+        update_notice()
         sys.exit(0)
     NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents, "doctor": cmd_doctor, "models": cmd_models,
-                        "team": cmd_team}
+                        "team": cmd_team, "update": cmd_update, "config": cmd_config}
     if (len(sys.argv) >= 2 and sys.argv[1] in NO_REPO_COMMANDS      # work outside a git repo
             and sys.argv[2:3] != ["up"] and sys.argv[2:3] != ["--crash"]):                           # (`orch team up` reads the run's state)
-        NO_REPO_COMMANDS[sys.argv[1]](sys.argv[2:])
+        try:
+            NO_REPO_COMMANDS[sys.argv[1]](sys.argv[2:])
+            sys.stdout.flush()
+        except BrokenPipeError:        # `orch config | head`: the reader has what it wanted
+            with contextlib.suppress(OSError):
+                os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         sys.exit(0)
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(USAGE)

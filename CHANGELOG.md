@@ -2,19 +2,33 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
-## [5.7.2] - 2026-11-16
+## [5.8.0] - 2026-11-16
 
-Found by the developer: after `orch finish`, a `<repo>-wt` folder was still on disk.
+orch now tells you when a new version is out, and can keep itself up to date. It also fixes the `<repo>-wt` folder that stayed on disk after `orch finish`.
+
+**Already installed? Run `npx herdr-orchestra@latest` once.** Versions before 5.8.0 cannot see new releases, so this one update is by hand. It asks the auto-update question, and after that updates come by themselves.
+
+### Added
+- **The installer asks once about auto-update, and the default is on.** `Keep herdr-orchestra up to date automatically? [Y/n]`. The answer is saved in `~/.local/share/herdr-orchestra/settings.json` and not asked again; an install that has no saved answer (every install older than 5.8.0) is asked too. With no keyboard it does not ask and turns it on. `--auto-update`, `--no-auto-update` and `ORCH_AUTO_UPDATE=1|0` answer it for scripts. Under `curl | bash` the question is read from the terminal.
+- **`orch update [--check] [--version vX.Y.Z]`.** Installs the latest release with that release's own installer and prints the headline of each changelog entry. `--check` only looks. `--version` installs one exact version, which is also how you go back. A failed update leaves the old version active.
+- **`orch config [auto-update on|off]`.** Shows or changes the setting, the installed version and the last check.
+- **A new-version notice.** `herdr-orchestra 5.8.1 is out (you have 5.8.0). Run orch update.` at `orch lead plan`, `orch version` and `orch status`. orch asks GitHub at most once a day, waits 3 seconds at most, sends nothing about you or the project, and stays silent with no internet. `orch status` reads the last answer and never waits for the network. `ORCH_NO_UPDATE_CHECK=1` turns the check off.
+- **Auto-update when a new plan starts.** With auto-update on, `orch lead plan` installs a newer release first and then runs the plan on it. It installs nothing while an event manager is running anywhere on this machine (each manager signs in under `~/.local/share/herdr-orchestra/active/`), for a major version, in a repo pinned with `.orch-version`, or from a git checkout. A failed update warns once, is logged to `update.log` and is tried again the next day. A run started on the old version finishes on the new one.
+- The plan playbook tells the lead to pass the update lines on to the developer and never to run `orch update` itself.
+- Installs now ship `CHANGELOG.md`, so `orch update` can say what is new.
 
 ### Fixed
 - **`orch finish` leaves no `<repo>-wt` folder behind.** It removed each coder folder inside `../<repo>-wt` but never the `-wt` folder itself, so an empty one stayed after every worktree run. Now it goes too.
 - **A coder folder is no longer kept for an agent's own files.** One untracked file, such as the `.claude/settings.local.json` that Claude Code writes when you approve a permission, made finish print `SKIP ... has uncommitted changes` and keep the whole folder, though all its work had landed. A folder that holds only agent or orch files (`.claude/`, `.codex/`, `.agents/`, `.opencode/`, `.gemini/`, `.hermes/`, `.amp/`, `.agy/`, `.orch-task/`) is now removed. A folder with real changes no milestone has is kept and named, with the command that deletes it.
 - **Folders of coders no longer in the plan are removed.** A coder renamed or taken out of `Workers:` was forgotten by `orch sync`, so its folder stayed. Finish now cleans every coder folder under `<repo>-wt`, not only today's team.
+- `orch lead ... | head` (and the other commands that work outside a repo) no longer print a traceback when the reader closes the pipe.
 
 Folders are removed only by `orch finish`, which runs only when every milestone has landed. A stopped, crashed or unfinished run keeps its folders for `orch resume`, and quick runs make none.
 
 ### Tests
+- Updates (sections 40 to 42, with a fake release on disk, no network): the installer question and its flags, `orch config`, `orch update` with `--check` and `--version`, one check a day, silence with no network, the notice, every case where auto-update holds back (a run going, a major version, a pinned repo, a checkout, a failed install), and a run started on the old version that finishes on the new one.
 - Finish removes a coder folder holding only an agent settings file, the folder of a coder no longer in the plan, and the empty `-wt` folder; it keeps a folder with real changes and says how to delete it; and it refuses (keeping every folder) while a milestone is still open.
+- No test asks the network for a version, waits for a keyboard, or writes into the developer's own install.
 
 ## [5.7.1] - 2026-11-16
 

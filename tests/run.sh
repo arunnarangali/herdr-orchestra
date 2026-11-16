@@ -11,6 +11,8 @@ export ORCH_AGENTS_FILE="$WORK/user-agents.toml"   # keep the developer's own ag
 export ORCH_MODELS_FILE="$WORK/user-models.toml" ORCH_NO_AUTOSTART=1   # ...and their models.toml; no stray managers
 # the computer's own logs are not read in tests (each crash test gives its own fake), and managers start plainly
 export ORCH_JOURNALCTL=false ORCH_COREDUMPCTL=false ORCH_NO_SCOPE=1 ORCH_TEAM_CONFIRM_S=0.3
+# no test asks the network for a new version, waits for a keyboard, or writes into the developer's own install
+export ORCH_NO_UPDATE_CHECK=1 ORCH_TTY=/dev/null ORCH_SHARE="$WORK/share"
 pass=0 fail=0
 ok()   { echo "  ok   $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $*"; fail=$((fail+1)); }
@@ -1209,6 +1211,139 @@ check "it tries systemd-run --user --scope first, then starts it the plain way" 
 for _ in $(seq 60); do grep -q "ALL_DONE" .orchestrate/autopilot.log 2>/dev/null && break; sleep 1; done
 check "…and that run finishes" '[ "$(status_of M6)" = merged ]'
 check "the playbook, README and usage explain bench, stop, crash notes and logs" 'grep -q "orch bench" "$ROOT/playbooks/run.md" && grep -q "orch stop" "$ROOT/playbooks/run.md" && grep -q "WORKER-LOST" "$ROOT/playbooks/run.md" && grep -q "orch doctor --crash" "$ROOT/README.md" && "$ORCH" 2>&1 | grep -q "bench <worker> off"'
+
+echo "40. installer asks about auto-update once (default on) and keeps the answer"
+UH="$WORK/uhome"; USHARE="$UH/.local/share/herdr-orchestra"; UO="$UH/.local/bin/orch"; mkdir -p "$UH"
+UPATH="/usr/local/bin:/usr/bin:/bin"
+uinstall() { HOME="$UH" PATH="$UPATH" ORCH_PACKAGE=1 ORCH_SHARE="$USHARE" bash "$ROOT/install.sh" --no-herdr-skill "$@"; }
+uset() { python3 -c "import json;print(json.load(open('$USHARE/settings.json')).get('$1'))" 2>/dev/null; }
+V=$(cat "$ROOT/VERSION")
+echo "" > "$WORK/tty-enter"; echo "n" > "$WORK/tty-no"
+out=$(ORCH_TTY="$WORK/tty-enter" uinstall 2>&1); code=$?
+check "first install asks, and Enter turns auto-update on" '[ $code -eq 0 ] && grep -q "Keep herdr-orchestra up to date automatically? \[Y/n\]" <<<"$out" && [ "$(uset auto_update)" = True ] && grep -q "auto-update: on" <<<"$out"'
+out=$(ORCH_TTY="$WORK/tty-no" uinstall 2>&1)
+check "a reinstall does not ask again and keeps the answer" '! grep -q "Keep herdr-orchestra up to date" <<<"$out" && [ "$(uset auto_update)" = True ]'
+rm -f "$USHARE/settings.json"
+out=$(ORCH_TTY="$WORK/tty-no" uinstall 2>&1)
+check "an install with no saved answer (an older install) is asked, and n turns it off" 'grep -q "Keep herdr-orchestra up to date" <<<"$out" && [ "$(uset auto_update)" = False ] && grep -q "auto-update: off" <<<"$out"'
+out=$(ORCH_TTY="$WORK/tty-no" uinstall --auto-update 2>&1)
+check "--auto-update sets it without asking" '! grep -q "Keep herdr-orchestra up to date" <<<"$out" && [ "$(uset auto_update)" = True ]'
+out=$(ORCH_TTY="$WORK/tty-enter" ORCH_AUTO_UPDATE=0 uinstall 2>&1)
+check "ORCH_AUTO_UPDATE=0 sets it off without asking" '! grep -q "Keep herdr-orchestra up to date" <<<"$out" && [ "$(uset auto_update)" = False ]'
+rm -f "$USHARE/settings.json"
+if command -v setsid >/dev/null; then
+  out=$(HOME="$UH" PATH="$UPATH" ORCH_PACKAGE=1 ORCH_TTY="" setsid -w bash "$ROOT/install.sh" --no-herdr-skill </dev/null 2>&1)
+  check "with no keyboard it does not ask and turns auto-update on" '! grep -q "Keep herdr-orchestra up to date" <<<"$out" && [ "$(uset auto_update)" = True ] && grep -q "auto-update: on (turn it off with: orch config auto-update off)" <<<"$out"'
+else
+  uinstall --auto-update >/dev/null 2>&1
+fi
+check "the install ships the changelog and is a release install" '[ -f "$USHARE/current/CHANGELOG.md" ] && [ "$(readlink "$USHARE/current")" = "$USHARE/v$V" ]'
+
+echo "41. orch config, orch update, and the new-version notice"
+uo() { HOME="$UH" PATH="$UPATH" ORCH_SHARE="$USHARE" ORCH_NO_UPDATE_CHECK=0 ORCH_UPDATE_SOURCE="$WORK/usrc" "$UO" "$@"; }
+mkrel() {  # mkrel <X.Y.Z>: a fake release of this checkout with that version number
+  mkdir -p "$WORK/usrc/v$1"
+  (cd "$ROOT" && cp -r bin skills opencode-commands claude-commands playbooks agents.default.toml models.default.toml CHANGELOG.md install.sh "$WORK/usrc/v$1/")
+  echo "$1" > "$WORK/usrc/v$1/VERSION"
+  printf '# Changelog\n\n## [%s] - 2026-01-01\n\n### Added\n- **A thing new in %s.** Details.\n\n### Tests\n- a test line\n\n## [0.0.1] - 2025-01-01\n- **old**\n' "$1" "$1" > "$WORK/usrc/v$1/CHANGELOG.md"
+}
+IFS=. read -r VMAJ VMIN VPAT <<<"$V"; N1="$VMAJ.$VMIN.$((VPAT+1))"; N2="$VMAJ.$VMIN.$((VPAT+2))"; N3="$VMAJ.$VMIN.$((VPAT+3))"; NMAJ="$((VMAJ+1)).0.0"
+mkdir -p "$WORK/usrc"; mkrel "$N1"; mkrel "$V"; echo "v$V" > "$WORK/usrc/latest"
+out=$(uo config auto-update off 2>&1)
+check "orch config auto-update off saves it" 'grep -q "^auto-update: off" <<<"$out" && [ "$(uset auto_update)" = False ]'
+out=$(uo config 2>&1)
+check "orch config shows the setting, the version and the settings file" 'grep -q "^auto-update: off" <<<"$out" && grep -q "^installed: $V$" <<<"$out" && grep -q "settings.json" <<<"$out"'
+check "ORCH_AUTO_UPDATE overrides the saved setting for that shell" 'ORCH_AUTO_UPDATE=1 uo config | grep -q "^auto-update: on (ORCH_AUTO_UPDATE=1 overrides"'
+check "an unknown config is refused" '! uo config auto-update maybe >/dev/null 2>&1'
+out=$(uo update --check 2>&1)
+check "orch update --check: already the latest" 'grep -q "herdr-orchestra $V is the latest version" <<<"$out"'
+out=$(uo version 2>&1)
+check "no notice when nothing newer is out" '[ "$out" = "herdr-orchestra $V" ]'
+echo "v$N1" > "$WORK/usrc/latest"
+out=$(uo version 2>&1)
+check "the latest release is asked for at most once a day" '[ "$out" = "herdr-orchestra $V" ]'
+python3 - "$USHARE/settings.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p)); s["last_check"] = 0; json.dump(s, open(p, "w"))
+PY
+out=$(uo version 2>&1)
+check "a day later the notice names the new version and the command" 'grep -qx "herdr-orchestra $N1 is out (you have $V). Run \`orch update\`." <<<"$out"'
+mkdir -p "$WORK/urepo" && (cd "$WORK/urepo" && git init -q -b main && git config user.email t@t && git config user.name t && echo x > f && git add . && git commit -qm init && mkdir .orchestrate && printf '%b' "$P1" > .orchestrate/plan.md && printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n' >> .orchestrate/plan.md)
+out=$(cd "$WORK/urepo" && uo sync >/dev/null 2>&1; uo status 2>&1)
+check "orch status shows the notice from the last check" 'grep -q "herdr-orchestra $N1 is out" <<<"$out"'
+out=$(cd "$WORK/urepo" && HOME="$UH" PATH="$UPATH" ORCH_SHARE="$USHARE" ORCH_NO_UPDATE_CHECK=1 "$UO" version 2>&1; HOME="$UH" PATH="$UPATH" ORCH_SHARE="$USHARE" ORCH_NO_UPDATE_CHECK=1 "$UO" status 2>&1)
+check "ORCH_NO_UPDATE_CHECK=1: no notice anywhere" '! grep -q "is out" <<<"$out"'
+out=$(cd "$WORK" && uo lead plan 2>&1)
+check "auto-update off: a new plan only shows the notice, nothing is installed" 'grep -q "herdr-orchestra $N1 is out (you have $V). Run \`orch update\`." <<<"$out" && grep -q "lead playbook: plan" <<<"$out" && [ "$(cat "$USHARE/current/VERSION")" = "$V" ]'
+out=$("$ORCH" version 2>&1; cd "$WORK" && HOME="$UH" ORCH_SHARE="$USHARE" ORCH_NO_UPDATE_CHECK=0 ORCH_AUTO_UPDATE=1 ORCH_UPDATE_SOURCE="$WORK/usrc" "$ORCH" lead plan 2>&1 | head -3)
+check "a git checkout never checks or updates itself" '! grep -q "is out\|UPDATED" <<<"$out" && [ "$(cat "$USHARE/current/VERSION")" = "$V" ]'
+out=$(uo update --check 2>&1)
+check "orch update --check says a new version is out and installs nothing" 'grep -q "herdr-orchestra $N1 is out" <<<"$out" && [ "$(cat "$USHARE/current/VERSION")" = "$V" ]'
+out=$(uo update 2>&1); code=$?
+check "orch update installs the new version and shows what is new" '[ $code -eq 0 ] && grep -q "^UPDATED herdr-orchestra $V -> $N1" <<<"$out" && grep -q "  - A thing new in $N1" <<<"$out" && ! grep -q "a test line" <<<"$out" && [ "$(uo version)" = "herdr-orchestra $N1" ]'
+check "…keeps the auto-update answer, and says how to go back" '[ "$(uset auto_update)" = False ] && grep -q "orch update --version v$V" <<<"$out"'
+out=$(uo update 2>&1)
+check "orch update with nothing newer does nothing" 'grep -q "is the latest version. Nothing to do" <<<"$out"'
+out=$(uo update --version "v$V" 2>&1); code=$?
+check "orch update --version goes back to an older version" '[ $code -eq 0 ] && [ "$(HOME="$UH" PATH="$UPATH" ORCH_SHARE="$USHARE" "$UO" version)" = "herdr-orchestra $V" ]'
+out=$(uo update --version v0.0.9 2>&1); code=$?
+check "an unknown version fails and the old one stays active" '[ $code -ne 0 ] && grep -q "update failed, herdr-orchestra $V is still active" <<<"$out" && [ "$(cat "$USHARE/current/VERSION")" = "$V" ]'
+out=$(HOME="$UH" PATH="$UPATH" ORCH_SHARE="$USHARE" ORCH_NO_UPDATE_CHECK=0 ORCH_UPDATE_SOURCE="$WORK/nowhere" "$UO" update 2>&1); code=$?
+check "orch update with no network says so" '[ $code -ne 0 ] && grep -q "could not reach GitHub" <<<"$out"'
+python3 - "$USHARE/settings.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p)); s["last_check"] = 0; s.pop("latest_seen", None); json.dump(s, open(p, "w"))
+PY
+out=$(HOME="$UH" PATH="$UPATH" ORCH_SHARE="$USHARE" ORCH_NO_UPDATE_CHECK=0 ORCH_UPDATE_SOURCE="$WORK/nowhere" "$UO" version 2>&1)
+check "the daily check with no network is silent, and waits a day before the next try" '[ "$out" = "herdr-orchestra $V" ] && [ "$(uset last_check)" != 0 ]'
+
+echo "42. auto-update at the start of a new plan, never during a run"
+uo config auto-update on >/dev/null
+reset_check() { python3 - "$USHARE/settings.json" <<'PY'
+import json, sys
+p = sys.argv[1]; s = json.load(open(p)); s["last_check"] = 0; s.pop("last_auto_fail", None); json.dump(s, open(p, "w"))
+PY
+}
+# a run going in another repo: its event manager holds the lease and has signed in
+mkdir -p "$WORK/busy/.orchestrate" "$USHARE/active"
+python3 - "$WORK/busy/.orchestrate/driver.lock" <<'PY' &
+import fcntl, sys, time
+f = open(sys.argv[1], "a+"); fcntl.flock(f, fcntl.LOCK_EX); time.sleep(600)
+PY
+holder=$!
+printf '{"pid": %s, "root": "%s"}' "$holder" "$WORK/busy" > "$USHARE/active/$holder.json"
+sleep 1; reset_check
+out=$(cd "$WORK" && uo lead plan 2>&1)
+check "a run going anywhere on the machine: not installed, and the plan still starts" 'grep -q "Not installed now: a run is going ($WORK/busy)" <<<"$out" && grep -q "lead playbook: plan" <<<"$out" && [ "$(cat "$USHARE/current/VERSION")" = "$V" ]'
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+mkdir -p "$WORK/pinned" && echo "v$V" > "$WORK/pinned/.orch-version"
+out=$(cd "$WORK/pinned" && uo lead plan 2>&1)
+check "a repo pinned with .orch-version is left alone" 'grep -q "this repo pins its version in .orch-version" <<<"$out" && [ "$(cat "$USHARE/current/VERSION")" = "$V" ]'
+echo "v$NMAJ" > "$WORK/usrc/latest"; reset_check
+out=$(cd "$WORK" && uo lead plan 2>&1)
+check "a major version is not installed by itself" 'grep -q "herdr-orchestra $NMAJ is out (you have $V). It is a major version" <<<"$out" && grep -q "lead playbook: plan" <<<"$out" && [ "$(cat "$USHARE/current/VERSION")" = "$V" ]'
+mkdir -p "$WORK/usrc/v$N3"; printf '#!/usr/bin/env bash\necho "download cut" >&2; exit 1\n' > "$WORK/usrc/v$N3/install.sh"
+echo "v$N3" > "$WORK/usrc/latest"; reset_check
+out=$(cd "$WORK" && uo lead plan 2>&1)
+check "a failed update keeps the old version, warns once, and the plan still starts" 'grep -q "WARN auto-update to $N3 failed, $V is still active" <<<"$out" && grep -q "download cut" <<<"$out" && grep -q "lead playbook: plan" <<<"$out" && [ "$(uo version | head -1)" = "herdr-orchestra $V" ] && grep -q "FAILED" "$USHARE/update.log"'
+out=$(cd "$WORK" && uo lead plan 2>&1)
+check "…and it is not tried again on every plan that day" 'grep -q "Auto-update failed earlier today" <<<"$out" && ! grep -q "^WARN" <<<"$out"'
+# a run started on the old version...
+(cd "$WORK/urepo" && HOME="$UH" ORCH_SHARE="$USHARE" "$UO" sync >/dev/null 2>&1 && HOME="$UH" ORCH_SHARE="$USHARE" "$UO" start > "$WORK/urepo-start.log" 2>&1)
+mkrel "$N2"; echo "v$N2" > "$WORK/usrc/latest"; reset_check
+out=$(cd "$WORK" && uo lead plan 2>&1)
+check "auto-update installs the new version when a plan starts" 'grep -q "^UPDATED herdr-orchestra $V -> $N2 (auto-update" <<<"$out" && grep -q "  - A thing new in $N2" <<<"$out" && [ "$(cat "$USHARE/current/VERSION")" = "$N2" ]'
+check "…and that plan already runs on the new version" 'grep -q "herdr-orchestra $N2 — lead playbook: plan" <<<"$out" && [ "$(grep -c "lead playbook: plan" <<<"$out")" -eq 1 ]'
+out=$(cd "$WORK" && uo lead plan 2>&1)
+check "the next plan has nothing to install" '! grep -q "^UPDATED\|^WARN\|^herdr-orchestra .* is out" <<<"$out" && grep -q "herdr-orchestra $N2 — lead playbook: plan" <<<"$out"'
+# ...finishes on the new one
+export FH="$WORK/ufh"; mkdir -p "$FH"; echo "$WORK/urepo-wt/claude-1" > "$FH/claude-1.dir"
+(cd "$WORK/urepo" && HOME="$UH" ORCH_SHARE="$USHARE" ORCH_BIN="$UO" timeout 120 "$UO" autopilot > "$WORK/urepo.log" 2>&1); code=$?
+check "a run started on the old version finishes on the new one" '[ $code -eq 0 ] && grep -q "ALL_DONE" "$WORK/urepo.log" && (cd "$WORK/urepo" && HOME="$UH" ORCH_SHARE="$USHARE" "$UO" status | grep -q "M6 .*merged")'
+check "the event manager signs out of the active list when it stops" '[ -z "$(ls "$USHARE/active" 2>/dev/null)" ]'
+HOME="$UH" PATH="$UPATH" bash "$ROOT/install.sh" --uninstall >/dev/null 2>&1
+check "uninstall removes the settings too" '[ ! -e "$USHARE" ]'
+check "README, usage and the plan playbook explain updating" 'grep -q "orch update" "$ROOT/README.md" && grep -q "orch config auto-update off" "$ROOT/README.md" && "$ORCH" 2>&1 | grep -q "update \[--check\]" && grep -q "orch update" "$ROOT/playbooks/plan.md"'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]
