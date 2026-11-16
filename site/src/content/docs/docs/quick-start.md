@@ -58,4 +58,4 @@ Read `.orchestrate/summary.md` and do its manual checklist: it lists only what n
 orch finish
 ```
 
-It re-runs the check, removes the worktrees, pushes the feature branch and opens a pull request (with `gh`, or prints the compare link). Review and merge it like any other PR.
+It re-runs the check, removes the coders' worktrees and the `<repo>-wt` folder, pushes the feature branch and opens a pull request (with `gh`, or prints the compare link). Review and merge it like any other PR.

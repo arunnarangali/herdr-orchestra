@@ -2,6 +2,20 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.7.2] - 2026-11-16
+
+Found by the developer: after `orch finish`, a `<repo>-wt` folder was still on disk.
+
+### Fixed
+- **`orch finish` leaves no `<repo>-wt` folder behind.** It removed each coder folder inside `../<repo>-wt` but never the `-wt` folder itself, so an empty one stayed after every worktree run. Now it goes too.
+- **A coder folder is no longer kept for an agent's own files.** One untracked file, such as the `.claude/settings.local.json` that Claude Code writes when you approve a permission, made finish print `SKIP ... has uncommitted changes` and keep the whole folder, though all its work had landed. A folder that holds only agent or orch files (`.claude/`, `.codex/`, `.agents/`, `.opencode/`, `.gemini/`, `.hermes/`, `.amp/`, `.agy/`, `.orch-task/`) is now removed. A folder with real changes no milestone has is kept and named, with the command that deletes it.
+- **Folders of coders no longer in the plan are removed.** A coder renamed or taken out of `Workers:` was forgotten by `orch sync`, so its folder stayed. Finish now cleans every coder folder under `<repo>-wt`, not only today's team.
+
+Folders are removed only by `orch finish`, which runs only when every milestone has landed. A stopped, crashed or unfinished run keeps its folders for `orch resume`, and quick runs make none.
+
+### Tests
+- Finish removes a coder folder holding only an agent settings file, the folder of a coder no longer in the plan, and the empty `-wt` folder; it keeps a folder with real changes and says how to delete it; and it refuses (keeping every folder) while a milestone is still open.
+
 ## [5.7.1] - 2026-11-16
 
 A check that quick runs (5.6.0) and the stalled-run fixes (5.7.0) did not change how a real feature is planned. They did not: a plan with no `Mode:` line, or `Mode: full`, is planned and run as before (worktrees, reviewer, `Why separate:`, `Role:`, tier and estimate per milestone, and the same warnings). The check found one bug in quick runs.
