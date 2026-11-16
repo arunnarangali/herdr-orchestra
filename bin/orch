@@ -1204,8 +1204,14 @@ def cmd_sync(args):
         if not quick_because:
             errors.append("`Mode: quick` needs `Quick because: <what you found in the code that makes this small>` "
                           "— e.g. `Quick because: the column already exists, only the response changes`")
-        if len(enabled) > 1:
-            errors.append(f"`Mode: quick` is one milestone, and this plan has {len(enabled)} — put the small changes "
+        # follow-ups added by `orch fix` after the quick milestone landed are not extra planned milestones
+        try:
+            fixes = {k for k, v in json.loads(STATE.read_text()).get("tasks", {}).items() if v.get("fix_of")}
+        except (OSError, ValueError, AttributeError):
+            fixes = set()
+        planned = [tid for tid in enabled if tid not in fixes]
+        if len(planned) > 1:
+            errors.append(f"`Mode: quick` is one milestone, and this plan has {len(planned)} — put the small changes "
                           f"in one milestone (one acceptance criterion each), or use `Mode: full`")
         if isolation == "worktree":
             warns.append("`Mode: quick` with `Isolation: worktree`: one milestone needs no separate folder — "

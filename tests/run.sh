@@ -1019,6 +1019,38 @@ out=$("$ORCH" finish --no-push 2>&1); code=$?
 check "finish runs the check again when the files changed since it passed" '[ $code -eq 0 ] && ! grep -q "^CHECK reused" <<<"$out" && [ "$(wc -l < "$WORK/qk-checks")" -eq 5 ]'
 check "the playbook explains quick runs and how the lead decides" 'grep -q "## 2b. Quick or full" "$ROOT/playbooks/plan.md" && grep -q "Quick because:" "$ROOT/playbooks/plan.md" && grep -q "QUICK RUN" "$ROOT/playbooks/run.md"'
 
+echo "30b. feature planning is not changed by quick runs"
+newrepo ff
+FULL='# Plan: Discounts\nBranch: feature/disc\nCheck command: true\nSetup command: none\nEstimate: 1h10m\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: reviewer (agy)\n\n## Feature breakdown\n- a discount column, the API that applies it, and the checkout UI\n\n## [x] M1: Discount column\nDepends on: none\nWhy separate: a foundation the API and the UI build on\nTier: medium\nEstimate: 30m\nRole: database engineer: reversible migration\nReview: yes\nLikely files: db/migrations/002_discount.sql, src/models.py\nOpen questions:\n- none\n\n## [x] M2: Apply discount in the API\nDepends on: M1\nWhy separate: the API shape must be fixed before the UI\nTier: high\nEstimate: 40m\nRole: backend engineer\nReview: yes\nLikely files: src/orders.py, package.json\nOpen questions:\n- none\n\n## [x] M3: Checkout UI\nDepends on: M2\nWhy separate: built by another coder once the API is fixed\nTier: medium\nEstimate: 30m\nRole: frontend engineer\nReview: yes\nLikely files: web/checkout.tsx\nOpen questions:\n- none\n'
+printf "$FULL" > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "a feature plan with no Mode line is a full plan: worktrees, reviewer, every milestone" '[ $code -eq 0 ] && grep -q "^OK: 3 tasks, isolation=worktree" <<<"$out" && grep -q "reviewer=reviewer" <<<"$out" && ! grep -q "mode=quick" <<<"$out"'
+check "…none of the quick-run rules touch it (migration, package.json, models.py are fine)" '! grep -qi "quick" <<<"$out"'
+check "…state: full mode, review on, role, tier and estimate kept per milestone" 'python3 -c "
+import json,sys; st=json.load(open(\".orchestrate/state.json\")); t=st[\"tasks\"]
+sys.exit(0 if st[\"mode\"]==\"full\" and st.get(\"quick_because\") is None and all(t[m][\"review\"] for m in (\"M1\",\"M2\",\"M3\"))
+ and t[\"M1\"][\"role\"].startswith(\"database\") and t[\"M2\"][\"tier\"]==\"high\" and t[\"M2\"][\"deps\"]==[\"M1\"] and t[\"M3\"][\"estimate_s\"]==1800 else 1)"'
+check "…status does not call it a quick run" '! "$ORCH" status | grep -q "QUICK RUN"'
+printf "$FULL" | sed '/^Why separate:/d; /^Estimate: 30m/d' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "…a full plan still warns about a missing Why separate and Estimate" '[ "$(grep -c "has no .Why separate:" <<<"$out")" -eq 3 ] && grep -q "M1 has no .Estimate:" <<<"$out"'
+printf "$FULL" | sed 's/^Branch: feature\/disc/Mode: full\nBranch: feature\/disc/' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "Mode: full is the same as no Mode line" '[ $code -eq 0 ] && grep -q "^OK: 3 tasks, isolation=worktree" <<<"$out"'
+printf "$FULL" | sed 's/^Branch: feature\/disc/Mode: fast\nBranch: feature\/disc/' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "an unknown Mode is refused, never guessed" '[ $code -eq 2 ] && grep -q "Mode must be quick or full" <<<"$out"'
+check "the playbook keeps the full feature steps and sends anything not clearly small to them" 'for h in "## 3. Discover the team" "## 4. Milestones: as many as the feature needs" "## 5. Decide dependencies" "## 6. Give every milestone a tier" "## 7. Choose the isolation mode" "## 8. Check and setup commands" "## 9. Write" "## 10. Validate and show the plan"; do grep -qF "$h" "$ROOT/playbooks/plan.md" || exit 1; done; grep -q "If any is false, use the full process" "$ROOT/playbooks/plan.md" && grep -q "Why separate:" "$ROOT/playbooks/plan.md" && grep -q "^Role:" "$ROOT/playbooks/plan.md" && grep -q "as many milestones as the feature needs" "$ROOT/skills/orch-plan/SKILL.md"'
+newrepo qk3; echo "$APP" > "$FH/claude-1.dir"
+printf "$QK" | sed 's/feature\/qk/feature\/qk3/' > .orchestrate/plan.md
+timeout 90 "$ORCH" autopilot > "$WORK/qk3.log" 2>&1
+"$ORCH" fix M6 "make g.txt say hi" >/dev/null 2>&1
+out=$("$ORCH" sync 2>&1); code=$?
+check "a quick run with an orch fix follow-up still syncs (the fix is not a second planned milestone)" '[ $code -eq 0 ] && grep -q "^OK: 2 tasks, mode=quick" <<<"$out"'
+printf '\n## [x] M9: Another\nDepends on: none\nLikely files: k.txt\nOpen questions:\n- none\n' >> .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "…but a second planned milestone is still refused" '[ $code -eq 2 ] && grep -q "is one milestone, and this plan has 2" <<<"$out"'
+
 echo "33. a worker with no agent: dispatch --to refuses, status and READY tell the truth"
 newrepo na; WT="$APP/../app-wt"
 printf '%b' "${PRS/ISO/worktree}" > .orchestrate/plan.md
