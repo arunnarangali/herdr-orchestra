@@ -11,7 +11,8 @@ if [[ $prompt == orch:* ]]; then                        # the lead being woken b
   out=$(ORCH_NO_AUTOSTART=1 "$ORCH_BIN" events 2>&1); printf '%s\n' "$out" >> "$FH/lead-events.log"
   # a scripted lead: answer a coder's question with what the developer said, dispatch what is ready
   for tid in $(grep -oE '^#[0-9]+ PAUSED M[0-9]+' <<<"$out" | grep -oE 'M[0-9]+'); do
-    [ -f "$FH/lead-answer" ] && ORCH_NO_AUTOSTART=1 "$ORCH_BIN" answer "$tid" "$(cat "$FH/lead-answer")" >> "$FH/lead-events.log" 2>&1
+    # shellcheck disable=SC2046  # no --defer at all when there is no lead-defer file
+    [ -f "$FH/lead-answer" ] && ORCH_NO_AUTOSTART=1 "$ORCH_BIN" answer "$tid" $([ -f "$FH/lead-defer" ] && echo --defer "$(cat "$FH/lead-defer")") "$(cat "$FH/lead-answer")" >> "$FH/lead-events.log" 2>&1
   done
   ready=$(grep -oE 'orch dispatch M[0-9]+$' <<<"$out" | grep -oE 'M[0-9]+' | sort -u | tr '\n' ' ')
   # shellcheck disable=SC2086
@@ -46,7 +47,9 @@ if [[ $file == .orchestrate/review/* ]]; then           # reviewer
   [ -f "$FH/slow-review" ] && sleep 4
   k=$(grep -oE 'review-task-[0-9]+' <<<"$base" | grep -oE '[0-9]+')
   out=.orchestrate/review/$tid/review-$k
-  if [ "$tid" = M2 ] && [ "$k" = 1 ]; then
+  if [ "$tid" = M21 ]; then     # the deferred criterion is not met, as agreed: not a blocker
+    echo '{"verdict":"approve","criteria":[{"id":"AC1","met":true,"note":"w.txt"},{"id":"AC2","met":false,"note":"deferred: no API"}],"findings":[]}' > $out.json
+  elif [ "$tid" = M2 ] && [ "$k" = 1 ]; then
     if [ -f "$FH/review-md" ]; then echo "BLOCKER: b.txt must say validated" > $out.md; echo "SUGGESTION: add docs" >> $out.md
     else echo '{"verdict":"changes","criteria":[],"findings":[{"severity":"blocker","file":"b.txt","line":1,"problem":"b.txt must say validated","why":"AC1"},{"severity":"suggestion","file":"b.txt","line":1,"problem":"add docs","why":"readers"}]}' > $out.json; fi
   elif [ -f "$FH/review-md" ]; then echo "NO FINDINGS" > $out.md
@@ -100,5 +103,12 @@ COMMIT: build: add a dependency";;
   M18:task.md) echo r > r.txt; if [ "$agent" = codex-1 ]; then touch broken.txt; else rm -f broken.txt; fi; finish "built r";;
   M18:fix-*) finish "tried again";;
   M17:criteria-fix-*) echo t > p.test; finish "added the test" '{"status":"done","commit":"feat: p","criteria":[{"id":"AC1","met":true,"evidence":"p.test"}]}';;
+  # an outside API is missing: asks first; once AC2 is deferred, builds the rest and reports AC2 honestly as not met
+  M21:task.md) if grep -q "AC2: .*DEFERRED by the developer" .orch-task/M21/task.md; then echo w > w.txt
+                 finish "built the watch screen" '{"status":"done","commit":"feat: watch","criteria":[{"id":"AC1","met":true,"evidence":"w.txt"},{"id":"AC2","met":false,"evidence":"the watch API does not exist"}]}'
+               else finish "QUESTION: AC2 needs a watch API that does not exist. Build the rest and defer AC2?"; fi;;
+  M21:criteria-fix-*) finish "still no API" '{"status":"done","commit":"feat: watch","criteria":[{"id":"AC1","met":true},{"id":"AC2","met":false}]}';;
+  # without a deferral the same honest result goes back for fix rounds
+  M22:task.md|M22:criteria-fix-*) echo v > v.txt; finish "no API" '{"status":"done","commit":"feat: v","criteria":[{"id":"AC1","met":false,"evidence":"no API"}]}';;
   *) finish "nothing to do for $tid:$base";;
 esac

@@ -161,8 +161,8 @@ def state_lock():
 
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
-LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "fix",
-              "team", "resume", "bench", "stop", "doctor"}
+LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "defer",
+              "fix", "team", "resume", "bench", "stop", "doctor"}
 _LEASE = None
 
 
@@ -1606,8 +1606,12 @@ def review_findings(tid, k):
             if f.get("criterion"):
                 line += f" ({f['criterion']})"
             (blockers if str(f.get("severity", "")).lower().startswith("block") else sugg).append(line)
+        try:
+            dfr = deferred_of(load()["tasks"].get(tid, {}))
+        except (OSError, ValueError, KeyError, SystemExit):
+            dfr = {}
         for c in d.get("criteria", []) if isinstance(d.get("criteria", []), list) else []:
-            if isinstance(c, dict) and c.get("met") is False:
+            if isinstance(c, dict) and c.get("met") is False and str(c.get("id")) not in dfr:
                 blockers.append(f"{c.get('id', '?')} not met — {c.get('note', '')}")
         return [f"BLOCKER: {b}" for b in blockers], [f"SUGGESTION: {s}" for s in sugg], True
     rp = rd / f"review-{k}.md"
@@ -2307,10 +2311,16 @@ def cmd_review(args):
         shutil.copy(task_json, rd / "task.json")
     k = t["review_round"] + 1
     rel = f".orchestrate/review/{tid}"
+    dfr = deferred_of(t)
+    deferred_txt = ("DEFERRED by the developer (approved; NOT part of this milestone): "
+                    + "; ".join(f"{c} \"{v.get('text', '')}\" (why: {v.get('reason', '')})" for c, v in dfr.items())
+                    + ". Report each as `met: false` with a note; it is not a blocker. Don't raise a blocker for the "
+                    "missing deferred part. Do review everything that WAS built, including partial work on it.\n\n"
+                    ) if dfr else ""
     (rd / f"review-task-{k}.md").write_text(
         f"# Review {tid}: {t['title']} (round {k})\n\n"
         f"Spec and acceptance criteria: {rel}/task.md (criteria ids AC1, AC2… in {rel}/task.json)\n"
-        f"Changes: {rel}/diff.patch\n\n" + resolution.replace("{rel}", rel) +
+        f"Changes: {rel}/diff.patch\n\n" + resolution.replace("{rel}", rel) + deferred_txt +
         "Review for correctness against the acceptance criteria, API/contract consistency, UI/UX, security, "
         "edge cases and missing tests. Do NOT edit any code.\n"
         "Report PROBLEMS, not solutions: the coder decides how to fix. At most 15 findings. A `blocker` must be "
@@ -3105,6 +3115,7 @@ WORKER_RULES = """## Rules for you (the coder)
 - Finish with a result file (the prompt names it) in the `result_format` shape from task.json: `status` done / question / blocked, `commit`, `files_changed`, the `check` you ran, one entry per acceptance criterion (`id`, `met`, `evidence`), and `usage` if your tool shows tokens or cost. orch reads it, so keep it valid JSON.
 - The commit message (`commit` in the result, and the last report line `COMMIT: <commit message>`) says what changed, in the repo's commit style (for example `feat(api): add categories endpoint`). It becomes the commit message, so describe the change, not the milestone.
 - If anything is ambiguous, do not guess: set status `question`, put the question in `questions` and on a report line starting `QUESTION:`, finish the files and the done file, and stop.
+- If an acceptance criterion can't be met in this repo (it needs an outside API, service or account that doesn't exist), don't keep trying: ask (status `question`), name the criterion and why, and offer to build the rest. A criterion marked DEFERRED above was approved to stay undone: don't build it, and report it `met: false`.
 - Before finishing, run the check command below and record the result (pass/fail + the failing lines).
 """
 
@@ -3143,7 +3154,10 @@ def cmd_write_task(args):
     contract = task_contract(st, tid)
     if contract["acceptance_criteria"]:
         parts += ["## Acceptance criteria ids (for your result file)",
-                  *[f"- {c['id']}: {c['text']}" for c in contract["acceptance_criteria"]], ""]
+                  *[f"- {c['id']}: {c['text']}" + (f" — DEFERRED by the developer: don't build it in this milestone, "
+                                                    f"report it `met: false` (why: {c['deferred']['reason']})"
+                                                    if c.get("deferred") else "")
+                    for c in contract["acceptance_criteria"]], ""]
     if contract["previous_work"]:
         parts += ["## Earlier work", f"An earlier attempt ({contract['previous_work']['by'] or 'another coder'}) left "
                   "work in this folder. Look at it first and continue from it unless it is wrong.", ""]
@@ -3173,7 +3187,11 @@ def task_contract(st, tid):
     return {
         "schema": 1, "task_id": tid, "title": t["title"], "kind": "task",
         "goal": field(pt, "goal"), "why": field(pt, "why"),
-        "acceptance_criteria": [{"id": f"AC{i}", "text": c} for i, c in enumerate(items("acceptance criteria"), 1)],
+        "acceptance_criteria": [{"id": f"AC{i}", "text": c,
+                                 **({"deferred": {"approved_by": "developer",
+                                                  "reason": deferred_of(t)[f"AC{i}"].get("reason", "")}}
+                                    if f"AC{i}" in deferred_of(t) else {})}
+                                for i, c in enumerate(items("acceptance criteria"), 1)],
         "files_allowed": t.get("files") or [], "scope": st.get("scope", "warn"),
         "tier": t.get("tier"), "needs": t.get("needs") or [], "role": t.get("role") or None,
         "interfaces": items("interfaces"), "constraints": items("constraints"), "out_of_scope": items("out of scope"),
@@ -3251,6 +3269,7 @@ def cmd_dispatch(args):
         for tid in args:
             t = st["tasks"][tid]
             t["go"] = True
+            t["go_ts"] = now()
             t.pop("ready_ts", None)
             if opts.get("--to"):
                 t["assign"] = opts["--to"]
@@ -3277,10 +3296,111 @@ def cmd_dispatch(args):
 NOTES_RE = re.compile(r"(?mi)^Notes from user:[ \t]*")
 
 
+def plan_criteria(tid):
+    """[(AC id, text)] of a milestone's acceptance criteria in plan.md, numbered the way task.json numbers them."""
+    try:
+        _, ptasks = parse_plan((ORCH / "plan.md").read_text())
+    except OSError:
+        return []
+    pt = next((x for x in ptasks if x["id"] == tid), {"fields": {}})
+    vals = [v.lstrip("- ").strip() for v in pt["fields"].get("acceptance criteria", [])]
+    return [(f"AC{i}", v) for i, v in enumerate([v for v in vals if v and v.lower() != "none"], 1)]
+
+
+def deferred_of(t):
+    """{AC id: {"text", "reason", "ts"}}: criteria the developer approved leaving undone in this milestone."""
+    d = t.get("deferred")
+    return d if isinstance(d, dict) else {}
+
+
+def parse_defer_ids(tid, raw):
+    """'AC2,AC3' (or 'ac2 3') -> ['AC2', 'AC3'], each checked against the milestone's criteria in plan.md."""
+    crit = dict(plan_criteria(tid))
+    ids = []
+    for p in re.split(r"[,\s]+", raw.strip()):
+        if not p:
+            continue
+        cid = "AC" + p[2:] if p.upper().startswith("AC") else "AC" + p
+        if cid not in crit:
+            die(f"{tid} has no acceptance criterion {p!r} — its criteria: "
+                + (", ".join(f"{k} ({v[:40]})" for k, v in crit.items()) or "none in plan.md"))
+        if cid not in ids:
+            ids.append(cid)
+    return ids or die("name the criteria to defer, for example AC2 or AC2,AC3")
+
+
+def record_deferral(t, tid, ids, reason):
+    """Remember, with the developer's reason, that these criteria are approved to stay undone in this milestone."""
+    crit = dict(plan_criteria(tid))
+    d = dict(deferred_of(t))
+    for cid in ids:
+        d[cid] = {"text": crit.get(cid, ""), "reason": reason, "ts": now()}
+    t["deferred"] = d
+
+
+def add_plan_note(tid, text):
+    """Add `- text` under the milestone's "Notes from user" in plan.md (the line is created when missing)."""
+    plan = ORCH / "plan.md"
+    lines, out, cur, done = plan.read_text().split("\n"), [], None, False
+    note = f"- {text}"
+    for line in lines:
+        m = HEAD_RE.match(line)
+        if (m or line.startswith("## ")) and cur == tid and not done:       # section ended without a notes line
+            while out and not out[-1].strip():
+                out.pop()
+            out += ["Notes from user:", note, ""]
+            done = True
+        if m or line.startswith("## "):
+            cur = m.group(2) if m else None
+        out.append(line)
+        if cur == tid and not done and NOTES_RE.match(line):
+            out.append(note)
+            done = True
+    if not done:
+        if cur != tid:
+            die(f"{tid} not found in plan.md")
+        while out and not out[-1].strip():
+            out.pop()
+        out += ["Notes from user:", note, ""]
+    plan.write_text("\n".join(out))
+
+
+def defer_note(t, ids, reason):
+    return ("Deferred with the developer's approval (NOT built in this milestone, a follow-up): "
+            + "; ".join(f"{c} \"{deferred_of(t).get(c, {}).get('text', '')}\"" for c in ids) + f". Why: {reason}")
+
+
+def cmd_defer(args):
+    """orch defer Mn AC2[,AC3] <the developer's reason> -> the developer approved leaving these criteria undone in
+    Mn. A coder that reports them `met: false` gets no fix round for them (so no escalation either), the reviewer
+    does not block on them, and the summary lists them as NOT done, with a follow-up. Only with the developer's yes."""
+    need(args, 3, "defer <Mn> <AC ids, e.g. AC2,AC3> <the developer's reason>")
+    tid, raw, reason = args[0], args[1], " ".join(" ".join(args[2:]).split())
+    with state_lock():
+        st = load()
+        t = task(st, tid)
+        if t["status"] in ("merged", "skipped"):
+            die(f"{tid} is {t['status']} — nothing left to defer (a later change: `orch fix {tid} \"<text>\"`)")
+        ids = parse_defer_ids(tid, raw)
+        record_deferral(t, tid, ids, reason)
+        add_plan_note(tid, defer_note(t, ids, reason))
+        save(st)
+        print(f"DEFERRED {tid} {','.join(ids)}: no fix rounds for them; the summary lists them as not done "
+              f"(follow-up). Why: {reason}")
+        if t["status"] in ("paused", "failed"):
+            print(f"NEXT     {tid} is {t['status']}: `orch dispatch {tid}` sends it on with the rest of its criteria")
+
+
 def cmd_answer(args):
-    """orch answer Mn <the developer's answer> -> write it under the milestone's "Notes from user" in plan.md and
-    send the milestone back to the SAME coder, which carries on from its saved work."""
-    need(args, 2, "answer <Mn> <answer text>")
+    """orch answer Mn [--defer AC2,AC3] <the developer's answer> -> write it under the milestone's "Notes from user"
+    in plan.md and send the milestone back to the SAME coder, which carries on from its saved work. --defer also
+    records that the developer approved leaving those criteria undone (see `orch defer`)."""
+    defer = None
+    if "--defer" in args:
+        i = args.index("--defer")
+        defer = args[i + 1] if len(args) > i + 1 else die("--defer needs criteria ids, for example AC2 or AC2,AC3")
+        del args[i:i + 2]
+    need(args, 2, "answer <Mn> [--defer AC2,AC3] <answer text>")
     tid, text = args[0], " ".join(args[1:]).strip()
     with state_lock():
         st = load()
@@ -3288,37 +3408,23 @@ def cmd_answer(args):
         if t["status"] != "paused":
             die(f"{tid} is {t['status']}, not paused" + (
                 " — its questions are in plan.md: answer them under \"Notes from user\", set \"Open questions:\" to "
-                "`- none`, then `orch sync`" if t["status"] == "needs-answer" else ""))
-        plan = ORCH / "plan.md"
-        lines, out, cur, done = plan.read_text().split("\n"), [], None, False
-        note = f"- {text}"
-        for i, line in enumerate(lines):
-            m = HEAD_RE.match(line)
-            if (m or line.startswith("## ")) and cur == tid and not done:       # section ended without a notes line
-                while out and not out[-1].strip():
-                    out.pop()
-                out += ["Notes from user:", note, ""]
-                done = True
-            if m or line.startswith("## "):
-                cur = m.group(2) if m else None
-            out.append(line)
-            if cur == tid and not done and NOTES_RE.match(line):
-                out.append(note)
-                done = True
-        if not done:
-            if cur != tid:
-                die(f"{tid} not found in plan.md")
-            while out and not out[-1].strip():
-                out.pop()
-            out += ["Notes from user:", note, ""]
-        plan.write_text("\n".join(out))
+                "`- none`, then `orch sync`" if t["status"] == "needs-answer" else "")
+                + (f" (to record the approved deferral anyway: `orch defer {tid} {defer} \"<reason>\"`)" if defer else ""))
+        ids = parse_defer_ids(tid, defer) if defer else []
+        add_plan_note(tid, text)
+        if ids:
+            record_deferral(t, tid, ids, text)
+            add_plan_note(tid, defer_note(t, ids, text))
         last = t.get("last_worker")
         t["go"] = True
+        t["go_ts"] = now()
         if last in st["workers"]:
             t["assign"] = last
-        t.setdefault("answers", []).append({"ts": now(), "text": text})
+        t.setdefault("answers", []).append({"ts": now(), "text": text, **({"deferred": ids} if ids else {})})
         _park(st, tid, "pending", f"answered: {text[:200]}")
         print(f"ANSWERED {tid}: written to plan.md; it goes back to {last or 'the next free coder'} with its work so far")
+        if ids:
+            print(f"DEFERRED {tid} {','.join(ids)}: no fix rounds for them; the summary lists them as not done (follow-up)")
     print(start_manager())
     print("You will be woken with `orch events` when something needs you. Stop here; do not poll.")
 
@@ -3389,11 +3495,11 @@ def cmd_fix(args):
 
 EVENT_HELP = {
     "paused": "a coder's question, or an agent that stopped. A question only the developer can settle: ask them, "
-              "then `orch answer {t} \"<their answer>\"`. An agent problem: tell the developer what to look at, then "
+              "then `orch answer {t} \"<their answer>\"`. If they approve building the rest and leaving a criterion undone, add `--defer AC<n>` so it costs no fix rounds. An agent problem: tell the developer what to look at, then "
               "`orch dispatch {t}`.",
     "failed": "still failing after its rounds. Read the last report and check or review output, add the missing "
               "FACT or constraint to the plan (never a how-to), then `orch dispatch {t}` (add `--tier high` or "
-              "`--to <worker>` to give it a stronger model).",
+              "`--to <worker>` to give it a stronger model). If a criterion can't be met (a missing outside API) and the developer approves leaving it out: `orch defer {t} AC<n> \"<their reason>\"`, then `orch dispatch {t}`.",
     "held": "risky changes wait for the developer: show them the reasons; they run `orch approve {t}`. Never approve it yourself.",
     "needs-answer": "open questions in plan.md: ask the developer, write the answers under \"Notes from user\", set "
                     "\"Open questions:\" to `- none`, `orch sync`, then `orch dispatch {t}`.",
@@ -3460,6 +3566,8 @@ def cmd_events(args):
         if not peek and new:
             for e in new:
                 e["read"] = now()
+            if st.get("lead_wake"):
+                st["lead_wake"]["read_ts"] = now()        # for the event manager's timing line
             save(st)
 
 
@@ -3538,9 +3646,33 @@ def auto_checked(st, final_ok):
                 ev.append(f"coder: {'met' if c['met'] else 'NOT met'}" + (f" ({c['evidence']})" if c.get("evidence") else ""))
             if r and r.get("met") is not None:
                 ev.append(f"reviewer: {'met' if r['met'] else 'NOT met'}" + (f" ({r['note']})" if r.get("note") else ""))
+            dv = deferred_of(t).get(cid)
+            if dv and not (c and c.get("met")):
+                out.append(f"  - {cid} {text} — DEFERRED, NOT done (approved by the developer: {dv.get('reason', '')}). "
+                           f"See \"Deferred: not done, follow-ups\"")
+                continue
             out.append(f"  - {cid} {text} — " + ("; ".join(ev) if ev else "no evidence recorded: the lead checks it, "
                                                  "or it goes on the manual list"))
     return "\n".join(out)
+
+
+def deferred_lines(st):
+    """The summary's list of criteria the developer approved leaving undone: each is NOT done and needs a follow-up.
+    A deferred criterion the coder reports as met after all is left out (it was done)."""
+    out = []
+    for tid in st["order"]:
+        t = st["tasks"][tid]
+        dfr = deferred_of(t)
+        if not dfr:
+            continue
+        res, _ = read_result(t.get("last_result"))
+        met = {str(c.get("id")) for c in (res or {}).get("criteria", []) if isinstance(c, dict) and c.get("met")}
+        for cid, v in dfr.items():
+            if cid in met:
+                continue
+            out.append(f"- {tid} {cid} \"{v.get('text', '')}\": NOT done. Approved by the developer: "
+                       f"{v.get('reason', '')}. Follow-up: when it can be built, `orch fix {tid} \"{v.get('text', '')}\"`")
+    return out
 
 
 RATE_RE = re.compile(r"usage limit|rate.?limit|quota|too many requests|\b429\b|limit reached|try again (in|at)|out of credits",
@@ -3730,7 +3862,10 @@ def _autopilot(args):
         if not un:
             if lw.get("n") and not lw.get("ack"):
                 patch_state(lambda s2: s2.update(lead_wake={**(s2.get("lead_wake") or {}), "ack": True}))
-                say(f"the lead ({lead}) picked up its events")
+                rt, first = lw.get("read_ts"), lw.get("first_ts") or lw.get("ts")
+                say(f"the lead ({lead}) picked up its events" + (
+                    f" (read {max(0, rt - first)}s after the first wake-up, {max(0, rt - lw['oldest'])}s after the "
+                    f"oldest event; seen here {max(0, now() - rt)}s later)" if rt and first and lw.get("oldest") else ""))
             return
         newest = max(e["id"] for e in un)
         # a wake the lead has not acted on yet covers newer events too: it reads the whole queue when it comes
@@ -3765,14 +3900,18 @@ def _autopilot(args):
             patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now(), "n": n, "wait": SEND_RETRY_S}))
             return
         wait = min(LEAD_REWAKE_S, LEAD_CONFIRM_S * 2 ** n) if watch else LEAD_REWAKE_S
-        patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now(), "n": n + 1, "wait": wait}))
+        oldest = min(e["ts"] for e in un)
+        first_ts = lw.get("first_ts", lw.get("ts")) if n else now()
+        patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now(), "n": n + 1, "wait": wait,
+                                                    "first_ts": first_ts, "oldest": oldest}))
         what = ", ".join(f"{e['kind']}{' ' + e['task'] if e.get('task') else ''}" for e in un[:6])
         if n:
             say(f"the lead ({lead}) did not pick up its wake-up (" + ("idle again, " if watch else "")
                 + f"events still unread after {now() - lw.get('ts', now())}s) -> sent it again "
                 f"({n + 1} of {LEAD_MAX_WAKES}): {len(un)} event(s) — {what}")
         else:
-            say(f"woke the lead ({lead}): {len(un)} event(s) — {what} (sent; it counts once the lead reads them)")
+            say(f"woke the lead ({lead}): {len(un)} event(s) — {what} (sent; it counts once the lead reads them; "
+                f"oldest event {max(0, now() - oldest)}s old)")
 
     def lead_ready():
         """Ready milestones the lead has not dispatched: tell it once per set; start them ourselves after LEAD_WAIT_S."""
@@ -3919,13 +4058,26 @@ def _autopilot(args):
                     hot = [f for f in new if HOTSPOT_RE.search(f)]
                     say(f"{tid} changed files outside its Likely files: {', '.join(new)}" +
                         (f" (shared hotspot files: {', '.join(hot)})" if hot else ""), bool(hot))
-            unmet = [c for c in (res or {}).get("criteria", []) if c.get("met") is False]
+            # a criterion the developer approved leaving undone (`orch defer`, `orch answer --defer`) is not a failure:
+            # no fix round, no escalation; the summary lists it as not done, with a follow-up
+            dfr = deferred_of(load()["tasks"][tid])
+            unmet_all = [c for c in (res or {}).get("criteria", []) if c.get("met") is False]
+            unmet = [c for c in unmet_all if str(c.get("id")) not in dfr]
+            skipped = [str(c["id"]) for c in unmet_all if str(c.get("id")) in dfr]
+            if skipped:
+                say(f"{tid}: {', '.join(skipped)} not met, deferred with the developer's approval -> no fix round for "
+                    f"{'it' if len(skipped) == 1 else 'them'} (listed as not done in the summary)")
             if unmet:
                 say(f"{tid}: the coder reports {', '.join(str(c['id']) for c in unmet)} not met -> fix round")
                 fix_round(tid, "criteria-fix", lambda n: (
                     f"# {tid}: acceptance criteria not met yet (round {n})\n\nYour result says these are not met:\n"
                     + "\n".join(f"- {c['id']}: {c.get('evidence', '')}" for c in unmet)
-                    + f"\n\nFinish them (you decide how), run `{st['check']}`, and write a new result.\n"),
+                    + (f"\n\nAlready deferred by the developer (leave them; keep them `met: false`): "
+                       f"{', '.join(skipped)}." if skipped else "")
+                    + f"\n\nFinish them (you decide how), run `{st['check']}`, and write a new result.\n"
+                    "If one truly can't be met in this repo (for example an outside API or service it needs does not "
+                    "exist), don't try again: set status `question`, say which criterion and why, and offer to "
+                    "build the rest and defer that one. The developer decides.\n"),
                     f"acceptance criteria still not met after {MAX_FIX} fix rounds")
                 return
             ok, tail = check(t["dir"], tid)
@@ -4001,7 +4153,11 @@ def _autopilot(args):
         code, out = run("send-job" if kind == "FIX" else "send", tid, *([] if kind == "FIX" else ["task.md"]),
                         ok=(0, 5))
         if sent(code, out, tid, worker):
-            say(f"{tid} fix job -> {worker}" if kind == "FIX" else f"{tid} -> {worker}")
+            go_ts = load()["tasks"][tid].get("go_ts")
+            if go_ts:
+                patch_state(lambda s_: s_["tasks"][tid].pop("go_ts", None))
+            say(f"{tid} fix job -> {worker}" if kind == "FIX" else f"{tid} -> {worker}"
+                + (f" ({max(0, now() - go_ts)}s after the lead's dispatch or answer)" if go_ts else ""))
 
     def on_event(ev):
         parts = ev.split()
@@ -4249,6 +4405,8 @@ def _autopilot(args):
                 f"\n\n## Commits\n```\n{log_}```\n\n## Files changed\n```\n{stat}```\n\n"
                 "## Changed outside Likely files\n" + ("\n".join(scope) or "none") + "\n\n"
                 "## Reviewer suggestions not applied\n" + ("\n".join(sugg) or "none") + "\n\n"
+                + ("## Deferred: not done, follow-ups\nThe developer approved leaving these out of this run. They were "
+                   "NOT built.\n" + "\n".join(deferred_lines(st)) + "\n\n" if deferred_lines(st) else "")
                 + ("## Models: planned and actual\n| Milestone | Planned tier | Ran on | Escalated | Why this tier |\n"
                    "|---|---|---|---|---|\n" + "\n".join(models) + "\n\n" if models else "") +
                 f"## Time: estimate vs actual\n{timing}\n\n"
@@ -5113,12 +5271,13 @@ COMMANDS = {
     "write-task": cmd_write_task, "nudge": cmd_nudge, "autopilot": cmd_autopilot,
     "send-job": cmd_send_job, "handoff": cmd_handoff, "needs-fix": cmd_needs_fix, "review-ok": cmd_review_ok,
     "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
-    "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer,
+    "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer, "defer": cmd_defer,
     "escalate": cmd_escalate, "fix": cmd_fix, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
     "doctor": lambda a: cmd_doctor_crash(a),
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
-UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "fix", "team", "resume", "bench", "stop", "doctor"}
+UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "defer", "fix", "team", "resume", "bench", "stop",
+            "doctor"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
@@ -5138,7 +5297,10 @@ USAGE = """usage: orch <command> [args]
                            work, re-send the tasks that were in progress and start the event manager
   events [--peek]          (lead) what you were woken for; reading acknowledges it
   dispatch <Mn>... [--to <worker>] [--tier <tier>]   (lead) start or restart milestones; starts the event manager
-  answer <Mn> <text>       (lead) the developer's answer: into plan.md, and back to the same coder
+  answer <Mn> [--defer AC2,AC3] <text>   (lead) the developer's answer: into plan.md, and back to the same coder;
+                           --defer records that the developer approved leaving those criteria undone
+  defer <Mn> <AC2,AC3> <reason>   (lead, only with the developer's yes) these criteria stay undone in Mn: no fix
+                           rounds or escalation for them; the summary lists them as NOT done, with a follow-up
   fix <Mn> <text> [--to <worker>]   a change to something Mn already landed: a small follow-up milestone, sent
                            straight to the coder who built Mn (no new plan; check, review and summary still apply)
   agents sync [kind...]    install the orch-plan / orch-run skills so every installed agent sees each one exactly once,

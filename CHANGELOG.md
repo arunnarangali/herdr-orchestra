@@ -2,6 +2,21 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.9.0] - 2026-11-17
+
+Fixes a bug where a criterion the developer had agreed to leave out kept being sent back for fixes. Example: M7 "the watch syncs with the phone API" can't be built because the API doesn't exist; you say "build the rest, sync later". Before, the coder honestly reported that criterion as `met: false`, and orch sent it back for fix round after fix round, then moved M7 to a stronger model. Your approval was only a note in the plan, and the check never read it.
+
+### Added
+- **`orch answer Mn --defer AC2 "<your words>"`** and **`orch defer Mn AC2 "<reason>"`**: the developer's approval to leave a criterion undone is saved as data, with the reason and the time, in the run state, in `task.json` (`"deferred": {"approved_by": "developer", "reason": ...}`) and as a note in `plan.md`. `orch defer` also works on a milestone that is coding, paused or failed (then `orch dispatch Mn`).
+- The summary has a new section, **"Deferred: not done, follow-ups"**: each deferred criterion is listed as NOT built, with your reason and a suggested `orch fix Mn "..."`. "Checked automatically" marks it `DEFERRED, NOT done`.
+- Timing lines in `.orchestrate/autopilot.log` to diagnose slow event pick-up: how old the oldest event was at the wake-up, when the lead read its events (seconds after the first wake-up and after the oldest event), and seconds from the lead's dispatch or answer to the coder being prompted. Log text only; nothing in how a run behaves changed.
+
+### Changed
+- A deferred criterion reported `met: false` starts no fix round, so it never uses up rounds or triggers a stronger model. Every other criterion is checked exactly as before.
+- The reviewer is told which criteria are deferred; its `met: false` for one of them is not a blocker. Real problems in the work that was built are still blockers.
+- Coders are told to ask (status `question`) instead of retrying when a criterion truly can't be met in the repo, and the criteria fix job says the same.
+- Lead playbook, README and website docs (Commands, When a run needs you, Questions and how-tos) explain deferring.
+
 ## [5.8.1] - 2026-11-16
 
 A new docs page on the website, **Questions and how-tos** (`/docs/how-to/`): short answers in plain words, each with an example, to the questions people ask most. No change to how orch works.
