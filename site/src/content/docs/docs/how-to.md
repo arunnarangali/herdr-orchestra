@@ -62,6 +62,18 @@ orch answer M2 "skip empty rows"
 
 The answer is written under that milestone's "Notes from user", and the **same coder** carries on. Other milestones keep running meanwhile. See [When a run needs you](/docs/when-it-stops/).
 
+### Part of a milestone can't be built yet. Can I ship the rest?
+
+Yes. Say a milestone has two criteria: AC1 "the watch shows the steps" and AC2 "the watch syncs with the phone API", and that API doesn't exist yet. The coder asks, the lead asks you, and you say "build the rest, AC2 later". The lead runs:
+
+```bash
+orch answer M7 --defer AC2 "build the rest; sync when the API exists"
+```
+
+Now when the coder reports AC2 as not met, it is not sent back to fix it, and it is not moved to a stronger model. The reviewer doesn't block on AC2 either. The summary has a "Deferred: not done, follow-ups" section that says AC2 was **not built**, gives your reason, and suggests `orch fix M7 "..."` for later. If the milestone already failed, the lead runs `orch defer M7 AC2 "<your reason>"`, then `orch dispatch M7`.
+
+Only you can agree to leave something out. Writing it in the plan as a note is not enough: the check reads `--defer`.
+
 ### A milestone says `held`. What do I do?
 
 orch holds a milestone when its change looks risky: it deletes files, touches a migration, CI or secrets, changes packages, or is very large. You get a desktop notification. Look at the reasons in `orch status`, then:

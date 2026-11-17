@@ -10,6 +10,7 @@ Most things never reach you: the event manager retries, and the lead decides. A 
 | Reason | What you do |
 |---|---|
 | A coder asked a question the plan and the code don't answer | Answer the lead. It runs `orch answer Mn "<your answer>"`: the answer goes under that milestone's "Notes from user" and the same coder carries on |
+| A criterion can't be met (for example, the outside API it needs does not exist yet) | The lead asks: build the rest and leave it for later, or wait. If you agree, it runs `orch answer Mn --defer AC2 "<your words>"`. The coder is not sent back to fix AC2 again, and the summary lists AC2 as not done, with a follow-up |
 | An open question in the plan | Answer it in the plan and set `Open questions:` to `- none` (or tell the lead) |
 | A permission prompt in an agent's pane | Answer it in that pane |
 | A milestone is `held` for a risky change | Look at the reasons in `orch status`, then `orch approve Mn` (or `orch set Mn paused`) |

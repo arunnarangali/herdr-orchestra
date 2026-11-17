@@ -1345,5 +1345,39 @@ HOME="$UH" PATH="$UPATH" bash "$ROOT/install.sh" --uninstall >/dev/null 2>&1
 check "uninstall removes the settings too" '[ ! -e "$USHARE" ]'
 check "README, usage and the plan playbook explain updating" 'grep -q "orch update" "$ROOT/README.md" && grep -q "orch config auto-update off" "$ROOT/README.md" && "$ORCH" 2>&1 | grep -q "update \[--check\]" && grep -q "orch update" "$ROOT/playbooks/plan.md"'
 
+echo "43. a criterion the developer approved deferring costs no fix rounds and no escalation"
+newrepo df; echo "$APP" > "$FH/lead.dir"
+echo "Build the rest; defer the watch sync until the API exists" > "$FH/lead-answer"; echo AC2 > "$FH/lead-defer"
+DPLAN='# Plan: t\nBranch: feature/df\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: reviewer (agy)\n\n## [x] M21: Watch\nDepends on: none\nTier: small\nModel why: small.\nReview: yes\nAcceptance criteria:\n- the watch shows the steps\n- the watch syncs with the phone API\nOpen questions:\n- none\n'
+printf "$DPLAN" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" dispatch M21 >/dev/null
+timeout 180 "$ORCH" autopilot > "$WORK/df.log" 2>&1; code=$?
+check "the coder asked, the lead answered with --defer, and M21 landed (exit 0)" '[ $code -eq 0 ] && [ "$(status_of M21)" = merged ] && grep -q "^DEFERRED M21 AC2" "$FH/lead-events.log"'
+check "the deferred AC2 reported met:false started no fix round" '! ls "$APP"/../app-wt/*/.orch-task/M21/criteria-fix-* >/dev/null 2>&1 && ! grep -q "M21: the coder reports .* not met -> fix round" "$WORK/df.log" && grep -q "M21: AC2 not met, deferred with the developer.s approval -> no fix round" "$WORK/df.log" && [ "$(python3 -c "import json;print(json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M21\"][\"fix\"])")" = 0 ]'
+check "…and no escalation to a stronger model" '! grep -q "M21: .*gets one fresh round" "$WORK/df.log" && python3 -c "import json,sys;sys.exit(bool(json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M21\"].get(\"escalated\")))"'
+check "the reviewer was told about the deferral, and its AC2 met:false was not a blocker" 'grep -q "DEFERRED by the developer .*AC2 \"the watch syncs with the phone API\"" .orchestrate/review/M21/review-task-1.md && [ "$(python3 -c "import json;print(json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M21\"][\"review_round\"])")" = 1 ]'
+check "task.json and plan.md keep the approval and the reason" 'python3 -c "
+import json; c=json.load(open(\"$APP/../app-wt/codex-1/.orch-task/M21/task.json\"))[\"acceptance_criteria\"]
+assert \"deferred\" not in c[0] and c[1][\"deferred\"][\"approved_by\"] == \"developer\" and \"API exists\" in c[1][\"deferred\"][\"reason\"], c" && grep -q "^- Deferred with the developer.s approval (NOT built in this milestone, a follow-up): AC2" .orchestrate/plan.md'
+check "the summary says AC2 was NOT done and names a follow-up" 'grep -q "^## Deferred: not done, follow-ups" .orchestrate/summary.md && grep -q "^- M21 AC2 \"the watch syncs with the phone API\": NOT done. Approved by the developer: Build the rest; defer the watch sync until the API exists. Follow-up:" .orchestrate/summary.md && grep -q "AC2 the watch syncs with the phone API — DEFERRED, NOT done" .orchestrate/summary.md'
+check "the log says how long the lead took to read its events, and dispatch to start" 'grep -q "picked up its events (read [0-9]*s after the first wake-up, [0-9]*s after the oldest event" "$WORK/df.log" && grep -q "M21 -> codex-1 ([0-9]*s after the lead.s dispatch or answer)" "$WORK/df.log" && grep -q "woke the lead (lead): .*oldest event [0-9]*s old" "$WORK/df.log"'
+# without a deferral, an honest met:false still gets its fix rounds (nothing else changed)
+newrepo dg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+{ printf '%b' "$P1"; printf '## [x] M22: V\nDepends on: none\nAcceptance criteria:\n- v syncs\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+timeout 120 "$ORCH" autopilot > "$WORK/dg.log" 2>&1
+check "with no deferral, met:false still goes to fix rounds and then fails" 'grep -q "M22: the coder reports AC1 not met -> fix round" "$WORK/dg.log" && [ "$(status_of M22)" = failed ]'
+check "the criteria-fix job says to ask instead of retrying what can't be met" 'grep -q "set status .question., say which criterion and why" "$APP/../app-wt/claude-1/.orch-task/M22/criteria-fix-1.md"'
+out=$("$ORCH" defer M22 AC9 "x" 2>&1); code=$?
+check "defer refuses a criterion the milestone does not have" '[ $code -eq 2 ] && grep -q "has no acceptance criterion .AC9." <<<"$out"'
+out=$("$ORCH" defer M22 ac1 "the sync API ships next quarter" 2>&1); code=$?
+check "defer on a failed milestone records it and says to dispatch" '[ $code -eq 0 ] && grep -q "^DEFERRED M22 AC1" <<<"$out" && grep -q "orch dispatch M22" <<<"$out" && python3 -c "import json,sys;d=json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M22\"][\"deferred\"];sys.exit(d[\"AC1\"][\"reason\"]!=\"the sync API ships next quarter\")"'
+check "the deferral survives orch sync" '"$ORCH" sync >/dev/null 2>&1; python3 -c "import json,sys;sys.exit(\"AC1\" not in json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M22\"].get(\"deferred\",{}))"'
+"$ORCH" set M22 pending >/dev/null 2>&1
+timeout 120 "$ORCH" autopilot > "$WORK/dg2.log" 2>&1; code=$?
+check "sent on again, the same honest result lands with no more fix rounds" '[ $code -eq 0 ] && [ "$(status_of M22)" = merged ] && grep -q "M22: AC1 not met, deferred" "$WORK/dg2.log" && ! grep -q "M22: the coder reports" "$WORK/dg2.log"'
+out=$("$ORCH" defer M22 AC1 "x" 2>&1); code=$?
+check "defer refuses a milestone that already landed" '[ $code -eq 2 ] && grep -q "is merged" <<<"$out"'
+check "usage and the run playbook explain defer" '"$ORCH" 2>&1 | grep -q "defer <Mn> <AC2,AC3> <reason>" && grep -q "orch defer" "$ROOT/playbooks/run.md" && grep -q -- "--defer" "$ROOT/playbooks/run.md"'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]
