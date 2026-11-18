@@ -1,5 +1,5 @@
 ---
 description: "Orchestrator step 2 — start the run (dispatch, then pause), handle the events you are woken for, finish the summary"
 ---
-Run `orch lead run` (or `~/.local/bin/orch lead run` if `orch` is not on PATH) and follow its output exactly. You are the lead.
+You are the lead. If you were woken with `orch events`, run only `orch events` (or `~/.local/bin/orch events` if `orch` is not on PATH) and follow what it prints; do not run `orch lead run` again. Otherwise run `orch lead run` and follow its output exactly.
 User input (answers / overrides, may be empty): $ARGUMENTS

@@ -218,6 +218,19 @@ check "lead plan prints version line + playbook" 'grep -q "^herdr-orchestra .* l
 out=$("$ORCH" lead run)
 check "lead run prints version line + playbook" 'grep -q "lead playbook: run" <<<"$out" && grep -q "event manager" <<<"$out" && grep -q "orch dispatch" <<<"$out"'
 check "lead commands work outside a git repo" '(cd "$WORK" && "$ORCH" lead plan >/dev/null && "$ORCH" agents >/dev/null)'
+st=$("$ORCH" lead plan); qu=$("$ORCH" lead plan quick); fu=$("$ORCH" lead plan full)
+check "lead plan prints only the start: the quick-or-full decision and the split test, not steps 3-10" 'grep -q "## 2b. Quick or full" <<<"$st" && grep -q "Step 4b, the split test" <<<"$st" && grep -q "Start from ONE milestone" <<<"$st" && ! grep -q "## 3. Discover the team" <<<"$st" && grep -q "orch lead plan quick" <<<"$st" && grep -q "orch lead plan full" <<<"$st"'
+check "lead plan quick prints the rules a quick plan uses" 'grep -q "lead playbook: plan (quick)" <<<"$qu" && grep -q "Acceptance criteria are observable" <<<"$qu" && grep -q "Likely files is the scope" <<<"$qu" && grep -q "\*\*small\*\*: mechanical" <<<"$qu" && grep -q "Check command\*\*: one command" <<<"$qu" && grep -q "Estimate the time" <<<"$qu" && ! grep -q "## 3. Discover" <<<"$qu"'
+check "lead plan full prints steps 3-10 with no markers" 'grep -q "## 3. Discover the team" <<<"$fu" && grep -q "## 10. Validate and show the plan" <<<"$fu" && ! grep -q "<!--" <<<"$fu$st$qu" && ! grep -q "Start from ONE milestone" <<<"$fu"'
+check "start + full hold every line of the plan playbook (a full feature reads all of it, nothing lost)" 'python3 -c "
+import collections,re,sys
+src=[l for l in open(\"$ROOT/playbooks/plan.md\").read().splitlines() if not re.match(r\"^<!-- \",l)]
+got=collections.Counter(sys.argv[1].splitlines()+sys.argv[2].splitlines())
+sys.exit(any(got[l]<n for l,n in collections.Counter(src).items() if l.strip()))" "$st" "$fu"'
+check "lead plan refuses an unknown part" '! "$ORCH" lead plan fast >/dev/null 2>&1'
+check "lead run --section prints one part of the run playbook" '"$ORCH" lead run --section FAILED | grep -q "^| \`FAILED Mn\`: checks" && "$ORCH" lead run --section ALL_DONE | grep -q "^## 3. ALL_DONE" && "$ORCH" lead run --section rules | grep -q "^## Hard rules"'
+check "a wake-up runs only orch events, not the whole run playbook again" 'for f in "$ROOT/skills/orch-run/SKILL.md" "$ROOT/claude-commands/orch-run.md" "$ROOT/opencode-commands/orch-run.md"; do grep -q "run only \`orch events\`" "$f" && grep -q "do not run \`orch lead run\` again" "$f" || exit 1; done'
+check "the plan playbook spells out the herdr commands instead of loading the herdr skill first" 'grep -q "herdr agent rename <pane id> <name>" "$ROOT/playbooks/plan.md" && grep -q "Load the \`herdr\` skill (or run \`herdr --skill\`) only if one of these fails" "$ROOT/playbooks/plan.md" && ! grep -q "skill for exact CLI syntax if you have it" "$ROOT/playbooks/plan.md"'
 check "lead whoami names the pane" '"$ORCH" lead whoami | grep -q "herdr agent rename w1:p1 lead"'
 check "lead check passes on HERDR_ENV=1" 'HERDR_ENV=1 "$ORCH" lead check | grep -q "^OK inside a Herdr pane"'
 out=$(env -u HERDR_ENV "$ORCH" lead check 2>&1); code=$?
@@ -589,6 +602,8 @@ check "dispatch says the event manager is not running (autostart off in tests)" 
 "$ORCH" set M4 paused "which currency should totals use?" >/dev/null
 check "a pause is queued for the lead with nobody listening" '"$ORCH" events --peek | grep -q "PAUSED M4 .*which currency"'
 check "peek does not acknowledge" '"$ORCH" events --peek | grep -q "1 new"'
+out=$("$ORCH" events --peek)
+check "a wake-up prints the hard rules and the playbook rows for its events, word for word" 'grep -q "^WHAT TO DO" <<<"$out" && grep -q "Never answer a worker.s permission prompt yourself" <<<"$out" && grep -q "orch answer Mn --defer AC<n>" <<<"$out" && grep -qF "$(grep "^| \`PAUSED Mn\` with a coder" "$ROOT/playbooks/run.md")" <<<"$out" && ! grep -q "^| \`HELD" <<<"$out"'
 "$ORCH" events >/dev/null
 check "reading acknowledges; the event stays open until the milestone moves on" '"$ORCH" events | grep -q "0 new, 1 still open"'
 out=$("$ORCH" answer M4 "INR only" 2>&1)
@@ -605,6 +620,9 @@ timeout 180 "$ORCH" autopilot > "$WORK/lr.log" 2>&1; code=$?
 check "ALL_DONE with no human in between (exit 0)" '[ $code -eq 0 ] && [ "$(status_of M1)$(status_of M4)" = mergedmerged ]'
 check "the lead was woken for the question" 'grep -q "woke the lead (lead)" "$WORK/lr.log" && grep -q "PAUSED M4" "$FH/lead-events.log"'
 check "the answer reached plan.md and the task file" 'grep -q "^- INR only" .orchestrate/plan.md && [ -f d.txt ]'
+check "the answer reached the coder: task.md for its second try has it under Notes from user" 'python3 -c "
+import re,sys; t=open(\"$APP/../app-wt/codex-1/.orch-task/M4/task.md\").read()
+sys.exit(not re.search(r\"^Notes from user:\\n(.*\\n)*- INR only\", t, re.M))"'
 check "the same coder got the milestone back" '[ "$(grep -c "^codex-1 <- .*M4/task.md" "$FH/prompts.log")" -eq 2 ] && ! grep -q "^claude-1 <- .*M4/" "$FH/prompts.log"'
 check "the lead was woken at ALL_DONE and finished the summary" 'grep -q "ALL_DONE" "$FH/lead-events.log" && grep -q "check totals by hand" .orchestrate/summary.md'
 check "no duplicate wake-ups: one per batch of events" '[ "$(wc -l < "$FH/lead-wakes.log")" -le 4 ]'
@@ -636,6 +654,7 @@ printf '# Plan: t\nBranch: feature/ls\nCheck command: true\nIsolation: worktree\
 ORCH_LEAD_WAIT_MIN=0 ORCH_LEAD_REWAKE_S=2 timeout 120 "$ORCH" autopilot > "$WORK/lsil.log" 2>&1; code=$?
 check "a lead that never answers: ready work starts by itself" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && grep -q "M5: the lead did not dispatch it" "$WORK/lsil.log"'
 check "its events are still in the queue, unread" '"$ORCH" events --peek | grep -q "AUTO-DISPATCHED M5" && "$ORCH" events --peek | grep -q "ALL_DONE"'
+check "ALL_DONE in orch events carries the whole summary step, so the lead needs no playbook reload" 'out=$("$ORCH" events --peek); grep -q "^## 3. ALL_DONE" <<<"$out" && grep -q "Checked by the lead" <<<"$out" && grep -q "Manual verification checklist" <<<"$out" && grep -q "Run \`orch finish\` yourself only when the developer says so" <<<"$out"'
 check "a wake-up nobody picked up is sent again, then the developer is told" 'grep -q "did not pick up its wake-up .*-> sent it again (2 of 3)" "$WORK/lsil.log" && grep -q "has not read its events after 3 wake-ups" "$WORK/lsil.log"'
 check "status says the wake-up was not picked up" '"$ORCH" status | grep -q "wake-up sent 3x .*not picked up yet"'
 # the bug report: the last wake-up of a run is lost in the lead's pane, and the event manager used to exit right after
@@ -648,6 +667,7 @@ check "the second wake-up became a turn: ALL_DONE was read and the log says so" 
 check "the summary lists what the run already checked, per acceptance criterion" 'grep -q "^## Checked automatically" .orchestrate/summary.md && grep -q "Check command \`true\` on the finished branch: PASS" .orchestrate/summary.md && grep -q "AC1 e.txt exists" .orchestrate/summary.md'
 check "the summary asks for a manual checklist of only what a person must see or do" 'grep -q "Manual verification checklist: only what a person must see or do" .orchestrate/summary.md && grep -q "Checked by the lead" .orchestrate/summary.md'
 check "the coder is given the role the lead wrote, in task.md and task.json" 'grep -q "For this task you are: \*\*senior backend engineer who cares about clear error messages\*\*" ../app-wt/claude-1/.orch-task/M5/task.md && grep -q "\"role\": \"senior backend engineer" ../app-wt/claude-1/.orch-task/M5/task.json'
+check "task.md leaves out the lines only orch uses, and lists the criteria once, with their ids" 'T=../app-wt/claude-1/.orch-task/M5/task.md; ! grep -qE "^(Depends on|Role|Tier|Estimate|Prefer|Review|Model why|Needs|Why separate|Parallel):" $T && [ "$(grep -c "e.txt exists" $T)" -eq 1 ] && grep -q "^- AC1: e.txt exists" $T && grep -q "^Title: e" $T'
 check "the playbooks ask for a role per milestone and a by-hand-only checklist" 'grep -q "^Role:" "$ROOT/playbooks/plan.md" && grep -q "Checked by the lead" "$ROOT/playbooks/run.md"'
 newrepo lgone; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead.gone"
 printf '# Plan: t\nBranch: feature/lg\nCheck command: true\nIsolation: worktree\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md

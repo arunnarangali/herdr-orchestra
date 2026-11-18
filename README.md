@@ -199,7 +199,7 @@ The agent whose pane you start the plan playbook in becomes the lead. It names i
 | Antigravity (`agy`) | "use the orch-plan skill: <feature>" |
 | **any agent** | "Run `orch lead plan` and follow it. Feature: <feature>" |
 
-The skills and slash commands are thin wrappers: the playbooks themselves live in `orch` (`orch lead plan`, `orch lead run`), so every agent follows the same, versioned instructions.
+The skills and slash commands are thin wrappers: the playbooks themselves live in `orch` (`orch lead plan`, `orch lead run`), so every agent follows the same, versioned instructions. They are printed in parts so the lead reads only what it needs: `orch lead plan` prints research and the quick-or-full decision, then `orch lead plan quick` (a quick run's rules) or `orch lead plan full` (steps 3 to 10); on a wake-up, `orch events` prints the rules and steps for those events, so the run playbook is read once.
 
 ### Agent registry
 `orch agents` shows every known kind: installed or not, roles, whether herdr can watch it, and its launch command. Defaults ship in `agents.default.toml`; add or fix kinds in `~/.config/herdr-orchestra/agents.toml` (merged key by key):

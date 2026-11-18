@@ -19,7 +19,7 @@ A run behaves like a call stack. You **dispatch** work and **pause**. The **even
 6. After every step below that ends in **STOP**, stop. Do not sleep, loop or check back: you will be woken.
 
 ## Context budget (credits scale with how much you read and how many turns you take)
-- Your memory is `orch events` + `orch status` + files on disk, not this conversation. Never re-read old reports, diffs or plans "to refresh".
+- Your memory is `orch events` + `orch status` + files on disk, not this conversation. Never re-read old reports, diffs, plans or this playbook "to refresh": `orch events` prints what each wake-up needs.
 - Never print whole files or logs into the conversation: logs → `tail -30 .orchestrate/autopilot.log`; reports → the report or result file only (workers keep them short); never open `diff.patch` yourself — that is the reviewer's job.
 - Everything needed to resume is on disk, so a fresh session can pick up at any time: run `orch events` and carry on.
 
@@ -31,7 +31,7 @@ A run behaves like a call stack. You **dispatch** work and **pause**. The **even
 4. Tell the developer in two lines what is running where (milestone → coder and model). **STOP.**
 
 ## 2. When you are woken (`orch events`)
-Run `orch events`. It lists the new events, the ones still open, the milestones READY for your dispatch, the workers, and whether the event manager is running. Handle each line, then **STOP**.
+Run `orch events`. It lists the new events, the ones still open, the milestones READY for your dispatch, the workers, and whether the event manager is running. Under `WHAT TO DO` it also prints the hard rules above and the rows of the table below for those events (on ALL_DONE, all of section 3), word for word, so on a wake-up you never need to run `orch lead run` again: not even in a fresh session or after your conversation was compacted. `orch lead run --section <EVENT>` prints one row again. Handle each line, then **STOP**.
 
 | Event | What you do |
 |---|---|
