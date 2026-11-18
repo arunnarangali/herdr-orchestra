@@ -2,6 +2,20 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.10.0] - 2026-11-18
+
+The lead reads less text, and coders get a cleaner task, with no change to how a feature is built or checked. Example: a quick run ("make the login button blue") used to read the whole 31 KB planning playbook; now it reads about 15 KB. A run with 15 wake-ups no longer has the lead print the 17 KB run playbook again on each one. The check command, acceptance criteria, reviews, risk hold, fix rounds and summary work exactly as before.
+
+### Changed
+- **Wake-ups.** The orch-run skill and the `/orch-run` commands run only `orch events` when the lead is woken, not `orch lead run` again. `orch events` now prints, under `WHAT TO DO`, the lead's hard rules and the playbook's own rows for the events it shows, word for word (on ALL_DONE: all of section 3). So a lead whose conversation was compacted, or a fresh session, still has every rule it needs.
+- **Planning in parts.** `orch lead plan` prints the start (role, preflight, research, quick or full, and the split test from step 4b). A quick run then runs `orch lead plan quick` (the tiers, estimate, check command and milestone rules, word for word from the full process); a full plan runs `orch lead plan full` (steps 3 to 10). Start + full is every line of the old playbook, so full plans read the same rules as before.
+- **Coder task file.** `task.md` leaves out the lines only orch uses (`Depends on`, `Why separate`, `Prefer`, `Tier`, `Needs`, `Model why`, `Estimate`, `Review`, `Parallel`; `Role` stays at the top as the coder's role) and lists the acceptance criteria once, with their ids. "Notes from user", where the developer's answers go, is kept as written. All of it is still in `plan.md` and `task.json`.
+- **herdr commands.** The plan playbook writes out the three herdr commands the lead uses (`herdr agent list`, `herdr agent rename <pane id> <name>`, `herdr agent read <name> --source recent-unwrapped --lines 60`) and loads the herdr skill only if one of them fails.
+
+### Added
+- `orch lead plan quick|full` and `orch lead run --section <EVENT|ALL_DONE|rules>`.
+- Tests: a developer's answer still reaches the coder's next `task.md`; a wake-up prints the hard rules and its events' rows; ALL_DONE prints the full summary steps; start + full hold every line of the plan playbook; task.md has no lead-only lines and lists each criterion once.
+
 ## [5.9.0] - 2026-11-17
 
 Fixes a bug where a criterion the developer had agreed to leave out kept being sent back for fixes. Example: M7 "the watch syncs with the phone API" can't be built because the API doesn't exist; you say "build the rest, sync later". Before, the coder honestly reported that criterion as `met: false`, and orch sent it back for fix round after fix round, then moved M7 to a stronger model. Your approval was only a note in the plan, and the check never read it.

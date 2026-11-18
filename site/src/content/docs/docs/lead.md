@@ -15,7 +15,7 @@ The lead never watches or polls the agents. It works like a function on a call s
 1. **Plan.** The lead researches the code and writes `.orchestrate/plan.md`. You read it, edit it, and say go.
 2. **Dispatch.** The lead runs `orch dispatch M1 M2`. That starts the event manager if none is running. The lead tells you what is running where, and stops.
 3. **Pause.** No AI is running for the lead now, so it costs nothing. The event manager sends each milestone to a free coder on a model of its tier and looks after checks, reviews, fixes and merges.
-4. **Wake.** When something needs the lead, the event manager types one line into its pane: run `orch events`. The lead reads the events, handles each one, and pauses again.
+4. **Wake.** When something needs the lead, the event manager types one line into its pane: run `orch events`. The lead reads the events, handles each one, and pauses again. `orch events` also prints the lead's rules and the playbook's steps for exactly those events, so the lead never reads the whole run playbook again on a wake-up.
 5. **Repeat** until every milestone has landed. The last wake-up asks the lead to finish the summary.
 
 ## What wakes the lead

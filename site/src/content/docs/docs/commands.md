@@ -49,8 +49,11 @@ Run `orch` with no arguments for the full help.
 
 | Command | What it does |
 |---|---|
-| `orch lead plan` | Print the plan playbook (any agent can lead: ``Run `orch lead plan` and follow it``) |
+| `orch lead plan` | Print the start of the plan playbook: research and the quick-or-full decision (any agent can lead: ``Run `orch lead plan` and follow it``) |
+| `orch lead plan quick` | The rules a quick plan uses (tiers, estimate, check command, criteria, Likely files) |
+| `orch lead plan full` | Steps 3 to 10 of the full planning process |
 | `orch lead run` | Print the run playbook |
+| `orch lead run --section <EVENT\|ALL_DONE\|rules>` | One part of the run playbook; `orch events` prints these for the lead |
 | `orch lead check` | Preflight: is this agent in a Herdr pane, can it reach Herdr? |
 | `orch lead whoami` | The lead's own pane and how to name it `lead` |
 | `orch agents` | The agent registry: kinds, installed or not, roles, launch commands |
