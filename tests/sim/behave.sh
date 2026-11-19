@@ -65,6 +65,7 @@ COMMIT: feat(model): add the category model";;
   M2:task.md) echo "M2 line" > shared.txt; echo b > b.txt; finish "built endpoint
 COMMIT: feat(api): add the categories endpoint";;
   M2:review-fix-*) echo "b validated" > b.txt; finish "fixed blocker";;
+  M2:fix-*) echo "b validated" > b.txt; finish "fixed the check and the blocker";;
   M2:conflict-*) git merge --no-commit "$(grep -oE 'git merge --no-commit [^`]+' "$file" | head -1 | cut -d' ' -f4)" >/dev/null 2>&1
                   printf 'M1 line\nM2 line\n' > shared.txt; git add shared.txt; finish "resolved";;
   M3:task.md) grep -q "M1 line" shared.txt && grep -q validated b.txt && echo deps-ok > c.txt; touch broken.txt; finish "built ui";;

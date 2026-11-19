@@ -9,7 +9,9 @@ Your `Check command:` runs on every coder's result. Before the run starts it is 
 
 A failing check goes back to the coder with the last 60 lines of output: "These checks fail. Diagnose and fix; you decide how. Don't weaken or skip tests." Up to 3 rounds. A milestone that is still failing then gets one fresh round on a coder with a stronger model, if the team has one, with the work so far. If that fails too it is parked as failed, the work is kept, and the lead is woken to work out what is missing.
 
-After each milestone lands in worktree mode, the check runs again on the feature branch, so a merge that breaks something is caught right away.
+After each milestone lands in worktree mode, the check runs again on the feature branch, so a merge that breaks something is caught right away. When nothing else landed in between, the branch gets exactly the files that already passed in the coder's folder, so that second run is skipped (`SKIPPED_CHECK` in the log); `Branch check: always` runs it anyway.
+
+Checks run in the background: while one runs, the event manager keeps sending reviews, fixes and new milestones. One check runs at a time by default (`Parallel checks: 2` for two). A milestone with `Review: yes` goes to the reviewer while its check runs (`Early review: off` to wait for the check); if the check then fails, the coder gets one fix job with the check output and the reviewer's blockers together, and that review round does not count against the review limit.
 
 ## Reviews
 
