@@ -2,7 +2,9 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
-## [5.12.0] - 2026-11-19
+## [6.0.0] - 2026-11-19
+
+A major version for a major performance change: how fast work moves from a coder to the reviewer, the branch and the lead. Plans, commands and files work as before; three new defaults change timing (early review, auto dispatch, no repeated branch check), and each can be turned off with one plan line.
 
 Coders' finished work reaches the reviewer, the branch and the lead faster. Example: M5 and M6 finish at the same second and your check takes 10 seconds. Before, the event manager ran M5's check and did nothing else meanwhile, then M6's check, then the same check again on the branch for each one: M5 landed about 32 seconds after it was done. Now the checks run in the background, the reviewer already reads M5 while its check runs, and a check that already passed on exactly these files is not run again: M5 lands about 13 seconds after it is done. How the work is checked, reviewed and committed is the same; it is still one event loop that reacts to events.
 
