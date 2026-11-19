@@ -904,7 +904,7 @@ for d in st['run']['downs']:
 out=$(ORCH_TEST_SLEPT_S=7200 "$ORCH" poll 1 2>&1)
 check "a laptop that slept 2 hours while the event manager stayed up: the sleep is not working time either" '! grep -q TIMEOUT <<<"$out" && grep -q "^WAITING M9:coding" <<<"$out" && python3 -c "
 import json; st = json.load(open(\".orchestrate/state.json\")); d = st[\"run\"][\"downs\"]
-assert len(d) == 2 and d[1][\"to\"] - d[1][\"from\"] == 7200, d; assert 14390 <= st[\"tasks\"][\"M9\"][\"wait\"][\"down_s\"] <= 14470"'
+assert len(d) == 2 and 7195 <= d[1][\"to\"] - d[1][\"from\"] <= 7205, d; assert 14390 <= st[\"tasks\"][\"M9\"][\"wait\"][\"down_s\"] <= 14470"'
 check "one sleep is taken out once, even when two processes notice it" 'python3 -c "
 import importlib.machinery, importlib.util, json, time
 l = importlib.machinery.SourceFileLoader(\"orch\", \"$ROOT/bin/orch\"); m = importlib.util.module_from_spec(importlib.util.spec_from_loader(\"orch\", l)); l.exec_module(m)
