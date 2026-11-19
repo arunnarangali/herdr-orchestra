@@ -19,7 +19,7 @@ export default defineConfig({
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/arunnarangali/herdr-orchestra' },
       ],
-      components: { Header: './src/components/DocsHeader.astro' },
+      components: { Header: './src/components/DocsHeader.astro', ThemeProvider: './src/components/ThemeProvider.astro' },
       customCss: ['./src/styles/tokens.css', './src/styles/starlight.css'],
       sidebar: [
         { label: 'Home', link: '/' },

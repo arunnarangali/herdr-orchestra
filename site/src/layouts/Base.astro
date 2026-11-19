@@ -69,9 +69,9 @@ const jsonLd = {
       // Same storage key as the Starlight docs, so the theme follows you between them.
       (() => {
         const saved = localStorage.getItem('starlight-theme');
-        const theme = saved === 'light' || saved === 'dark'
-          ? saved
-          : matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        // Dark is the site's design. Light when you picked it; '' is the docs menu's Auto (follow the system).
+        const theme = saved === 'light' || saved === 'dark' ? saved
+          : saved === '' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
         document.documentElement.dataset.theme = theme;
         document.documentElement.classList.add('js');
       })();

@@ -9,6 +9,7 @@ import AgentStrip from '../components/AgentStrip.astro';
 import Modes from '../components/Modes.astro';
 import AutopilotLog from '../components/AutopilotLog.astro';
 import QuickRun from '../components/QuickRun.astro';
+import RunExplainer from '../components/RunExplainer.astro';
 import { REPO_URL, version, models, tierInfo, deniedModels } from '../lib/repo';
 import type { Tier } from '../lib/repo';
 
@@ -97,6 +98,7 @@ const handles = [
           <ul><li>The lead is woken by events; it never polls</li><li>Questions reach you only when only you can answer</li><li>Every event is stored first, so none is missed</li></ul>
         </div>
       </div>
+      <div style="margin-top:16px"><RunExplainer /></div>
       <div class="diagram reveal" style="margin-top:16px"><RunFlow /></div>
       <p class="diagram-note"><a href="/how-it-works">Walk through a full run, step by step →</a></p>
     </div>

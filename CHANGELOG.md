@@ -2,6 +2,17 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.1.0] - 2026-11-19
+
+The website gets a new look: a dark, terminal-style design. Every page keeps the same words, links and features; only the design changed.
+
+### Changed
+- **Terminal-minimal design.** A near-black background, thin 1px lines, square corners, no shadows, and one amber accent colour. Headings, navigation, buttons and labels use a monospace font (JetBrains Mono); explanations stay in Inter. The docs use the same colours and fonts. The site opens in dark mode; light mode is still one click on the theme button.
+- **Diagrams restyled.** The run graph, the event-loop picture and the branch picture use the new colours and square boxes, and animate as before.
+
+### Added
+- **"How it works" in four steps, with a live terminal.** On the homepage and the How it works page: the run as four numbered steps (01 plan, 02 say go, 03 run, 04 pull request), a data-flow diagram that lights up the step you are on, and a terminal that replays one run with real `orch` commands and log lines (`orch sync`, `orch plan show`, `orch dispatch`, the event manager's log, a `SAY:` line, `orch finish`). It has Play, Pause, Step and Restart buttons; click a step to jump to it. With reduced motion turned on, the whole log is shown at once.
+
 ## [6.0.0] - 2026-11-19
 
 A major version for a major performance change: how fast work moves from a coder to the reviewer, the branch and the lead. Plans, commands and files work as before; three new defaults change timing (early review, auto dispatch, no repeated branch check), and each can be turned off with one plan line.

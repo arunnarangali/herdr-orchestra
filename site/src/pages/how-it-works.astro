@@ -5,6 +5,7 @@ import EventLoop from '../components/EventLoop.astro';
 import BranchFlow from '../components/BranchFlow.astro';
 import AutopilotLog from '../components/AutopilotLog.astro';
 import Modes from '../components/Modes.astro';
+import RunExplainer from '../components/RunExplainer.astro';
 ---
 <Base title="How it works: a multi-agent coding workflow, step by step · herdr-orchestra" description="One herdr-orchestra run, step by step: the orchestration plan, the orchestration run, and the pull request.">
   <section class="first">
@@ -12,6 +13,12 @@ import Modes from '../components/Modes.astro';
       <p class="eyebrow">How it works</p>
       <h1>One run, from request to pull request.</h1>
       <p class="lede">A run builds one feature. The lead writes an orchestration plan of 1 to 4 milestones, the orchestration run builds them on one feature branch, and it ends in a pull request. Here is every step, using a CSV import feature as the example.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <RunExplainer />
     </div>
   </section>
 
