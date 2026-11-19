@@ -1511,5 +1511,25 @@ check "after the run, the cards say each milestone is done" '[ "$(grep -c "^   N
 check "orch fix is in the diary too" '"$ORCH" story | grep -q "the lead did: M6 added: a follow-up to M5 (\"the list shows newest first\")"'
 pkill -f -- "$APP" 2>/dev/null; sleep 1
 
+echo "47. the run's PR carries no AI tool's credit"
+newrepo prc
+printf '# Plan: t\nBranch: feature/prc\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 120 "$ORCH" autopilot > "$WORK/prc.log" 2>&1; code=$?
+check "orch's own commits credit nobody but the developer" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && ! git log main..feature/prc --format="%an%n%B" | grep -qi "claude\|co-authored-by\|generated with"'
+printf '\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\nhttps://claude.ai/code/session_01XYZ\nCo-authored-by: Jane <1+jane@users.noreply.github.com>\n' >> .orchestrate/summary.md
+echo x > by-agent.txt; git add by-agent.txt
+git -c user.name=Claude -c user.email=noreply@anthropic.com commit -qm "chore: by an agent" -m "Co-Authored-By: Claude <noreply@anthropic.com>"
+git init -q --bare "$WORK/prc-remote.git"; git remote add origin https://github.com/acme/app.git
+git config url."$WORK/prc-remote.git".pushInsteadOf https://github.com/acme/app.git
+mkdir -p "$WORK/ghbin"; printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "%s/gh-args.txt"\nwhile [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "%s/gh-body.txt"; shift; done\necho https://github.com/acme/app/pull/7\n' "$WORK" "$WORK" > "$WORK/ghbin/gh"; chmod +x "$WORK/ghbin/gh"
+out=$(PATH="$WORK/ghbin:$PATH" "$ORCH" finish 2>&1); code=$?
+check "finish opens the PR with gh, from .orchestrate/pr-body.md" '[ $code -eq 0 ] && grep -q "^PR https://github.com/acme/app/pull/7" <<<"$out" && grep -qx -- "--body-file" "$WORK/gh-args.txt" && grep -q "pr-body.md" "$WORK/gh-args.txt"'
+check "the PR text is the summary without AI credit lines; a person's co-author stays" 'grep -q "Final check on the branch" "$WORK/gh-body.txt" && ! grep -qi "noreply@anthropic\|generated with\|claude.ai/code/session" "$WORK/gh-body.txt" && grep -q "Co-authored-by: Jane" "$WORK/gh-body.txt"'
+check "the summary itself is left as written" 'grep -q "Generated with \[Claude Code\]" .orchestrate/summary.md'
+check "a commit an agent made with its own credit is named, and only that one" 'grep -q "^WARN 1 commit(s) on feature/prc credit an AI tool" <<<"$out" && grep -q "chore: by an agent" <<<"$out"'
+git remote remove origin; git init -q --bare "$WORK/prc-remote2.git"; git remote add origin "$WORK/prc-remote2.git"
+out=$("$ORCH" finish 2>&1)
+check "without gh, finish names the title and the PR text to use, and says to add no credit line" 'grep -q "^OPEN A PR from feature/prc into main — title: .t., text: .orchestrate/pr-body.md (use them as they are: add no \"Generated with\" or Co-Authored-By line)" <<<"$out"'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]
