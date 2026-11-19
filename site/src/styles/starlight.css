@@ -1,59 +1,74 @@
-/* Starlight docs: the same palette, fonts and header height as the landing pages. */
+/* Starlight docs: the same terminal-minimal palette, fonts and sharp corners as the landing pages. */
 :root {
   --sl-font: var(--font-sans);
   --sl-font-mono: var(--font-mono);
-  --sl-nav-height: 4rem;
-  --sl-color-accent-low: #3a2a05;
-  --sl-color-accent: #f5a524;
-  --sl-color-accent-high: #fcd58a;
-  --sl-color-white: #ecebe7;
-  --sl-color-gray-1: #e2e0db;
-  --sl-color-gray-2: #c4c6ca;
-  --sl-color-gray-3: #9ba1a9;
-  --sl-color-gray-4: #6b7280;
-  --sl-color-gray-5: #262b33;
-  --sl-color-gray-6: #12151a;
-  --sl-color-black: #0b0d10;
-  --sl-color-bg-nav: color-mix(in srgb, #0b0d10 86%, transparent);
-  --sl-color-bg-sidebar: #0b0d10;
-  --sl-color-hairline: #262b33;
-  --sl-color-hairline-shade: #262b33;
-  --sl-color-blue-low: #0f2a27;
-  --sl-color-blue: #2dd4bf;
-  --sl-color-blue-high: #b5f5ea;
+  --sl-nav-height: 3.5rem;
+  --sl-color-accent-low: #3a2b0f;
+  --sl-color-accent: #e5a93b;
+  --sl-color-accent-high: #f3d398;
+  --sl-color-white: #ededed;
+  --sl-color-gray-1: #dcdee3;
+  --sl-color-gray-2: #b9bec8;
+  --sl-color-gray-3: #8e95a5;
+  --sl-color-gray-4: #626979;
+  --sl-color-gray-5: #242832;
+  --sl-color-gray-6: #13151a;
+  --sl-color-black: #0d0e11;
+  --sl-color-bg-nav: #0d0e11;
+  --sl-color-bg-sidebar: #0d0e11;
+  --sl-color-hairline: #242832;
+  --sl-color-hairline-shade: #242832;
+  --sl-color-blue-low: #1a1d24;
+  --sl-color-blue: #c6ccd6;
+  --sl-color-blue-high: #ededed;
 }
 :root[data-theme='light'] {
-  --sl-color-accent-low: #fdf0d2;
-  --sl-color-accent: #a86400;
-  --sl-color-accent-high: #4a2c00;
-  --sl-color-white: #16181c;
+  --sl-color-accent-low: #f6e7c8;
+  --sl-color-accent: #a86b00;
+  --sl-color-accent-high: #4a2f00;
+  --sl-color-white: #121317;
   --sl-color-gray-1: #24272c;
   --sl-color-gray-2: #3a3f46;
-  --sl-color-gray-3: #555b63;
-  --sl-color-gray-4: #8a9099;
-  --sl-color-gray-5: #e4e2dc;
-  --sl-color-gray-6: #f3f2ee;
-  --sl-color-gray-7: #f7f6f2;
-  --sl-color-black: #fbfaf7;
-  --sl-color-bg-nav: color-mix(in srgb, #fbfaf7 86%, transparent);
-  --sl-color-bg-sidebar: #fbfaf7;
-  --sl-color-hairline: #e4e2dc;
-  --sl-color-hairline-shade: #e4e2dc;
-  --sl-color-blue-low: #dff7f3;
-  --sl-color-blue: #0d9488;
-  --sl-color-blue-high: #0b4f49;
+  --sl-color-gray-3: #5b6170;
+  --sl-color-gray-4: #8a909c;
+  --sl-color-gray-5: #dcdcd7;
+  --sl-color-gray-6: #eeeeeb;
+  --sl-color-gray-7: #f2f2ef;
+  --sl-color-black: #f6f6f4;
+  --sl-color-bg-nav: #f6f6f4;
+  --sl-color-bg-sidebar: #f6f6f4;
+  --sl-color-hairline: #dcdcd7;
+  --sl-color-hairline-shade: #dcdcd7;
+  --sl-color-blue-low: #eeeeeb;
+  --sl-color-blue: #3c4250;
+  --sl-color-blue-high: #121317;
 }
-header.header { backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
-.sl-markdown-content h1, .sl-markdown-content h2, .sl-markdown-content h3, h1#_top { letter-spacing: -0.02em; }
+header.header { border-bottom: 1px solid var(--line); }
+.sl-markdown-content h1, .sl-markdown-content h2, .sl-markdown-content h3, .sl-markdown-content h4, h1#_top {
+  font-family: var(--font-mono); letter-spacing: -0.03em; font-weight: 600;
+}
+.sl-markdown-content h2::before { content: '## '; color: var(--accent); }
 .sl-markdown-content :not(pre) > code {
-  background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 0.1em 0.38em;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 0.1em 0.38em;
 }
 .sl-markdown-content table { font-size: 0.95em; }
-.sl-markdown-content th { background: var(--surface); color: var(--faint); font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em; }
+.sl-markdown-content th { background: var(--surface); color: var(--faint); font-family: var(--font-mono); font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.05em; }
+.sl-markdown-content a { text-decoration-color: var(--accent); text-underline-offset: 3px; }
+.sidebar-content { font-family: var(--font-mono); font-size: 0.875rem; }
+.sidebar-content a { border-radius: var(--radius); transition: color var(--fast) linear, background var(--fast) linear; }
 .sidebar-content a[aria-current='page'],
 .sidebar-content a[aria-current='page']:hover {
   background: var(--surface-2);
   color: var(--text);
-  box-shadow: inset 2px 0 0 var(--lead);
+  box-shadow: inset 2px 0 0 var(--accent);
   font-weight: 600;
 }
+/* Sharp corners and no shadows on Starlight's own parts (code frames, asides, search, cards, buttons). */
+.expressive-code, .expressive-code .frame, .expressive-code pre, .starlight-aside, site-search button,
+.sl-link-button, .card, .sl-link-card, .pagination-links a, dialog, starlight-theme-select select, .right-sidebar,
+starlight-menu-button button, mobile-starlight-toc summary, mobile-starlight-toc .toggle, mobile-starlight-toc .dropdown {
+  border-radius: var(--radius) !important; box-shadow: none !important;
+}
+.expressive-code { --ec-brdRad: 2px; }
+.starlight-aside { border-left-width: 2px; }
+.pagination-links a { font-family: var(--font-mono); }

@@ -77,7 +77,7 @@ const label =
     <text class="quiet" x="24" y="18" font-size="11" letter-spacing="1.2">THE ORCHESTRATION PLAN</text>
     {pills.map((p) => (
       <g>
-        <rect class={`pill ${p.cls}`} x={p.cx - 104} y="28" width="208" height="34" rx="17" />
+        <rect class={`pill ${p.cls}`} x={p.cx - 104} y="28" width="208" height="34" rx="2" />
         <text x={p.cx} y="50" text-anchor="middle" font-size="13" font-weight="600">{p.title}</text>
       </g>
     ))}
@@ -90,7 +90,7 @@ const label =
 
   <!-- 4: the orchestration run -->
   <g data-step="2">
-    <rect class="zone" x="24" y="96" width="712" height="318" rx="14" />
+    <rect class="zone" x="24" y="96" width="712" height="318" rx="2" />
     <text x="40" y="120" font-size="13" font-weight="600">4. Orchestration run</text>
     <text class="quiet" x="40" y="137" font-size="11.5">Every milestone goes round this loop</text>
   </g>
@@ -107,7 +107,7 @@ const label =
   </g>
   {stops.map((s) => (
     <g data-step="3">
-      <rect class={`box stop ${s.cls}`} x={s.x - W / 2} y={s.y - H / 2} width={W} height={H} rx="10" />
+      <rect class={`box stop ${s.cls}`} x={s.x - W / 2} y={s.y - H / 2} width={W} height={H} rx="2" />
       <circle class={`node ${s.cls}`} cx={s.x - W / 2 + 16} cy={s.y - 7} r="4" />
       <text x={s.x - W / 2 + 28} y={s.y - 3} font-size="13" font-weight="600">{s.title}</text>
       <text class="quiet" x={s.x - W / 2 + 28} y={s.y + 14} font-size="11.5" style={s.sub.startsWith('orch') ? 'font-family:var(--font-mono)' : undefined}>{s.sub}</text>
@@ -129,7 +129,7 @@ const label =
     ))}
   </g>
   <g data-step="5">
-    <rect class="accent" x="524" y={branchY - 30} width="212" height="60" rx="12" />
+    <rect class="accent" x="524" y={branchY - 30} width="212" height="60" rx="2" />
     <text x="630" y={branchY - 4} text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text>
     <text x="630" y={branchY + 14} text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text>
   </g>
@@ -148,7 +148,7 @@ const label =
   </defs>
   {pills.map((p, i) => (
     <g data-step="1">
-      <rect class={`pill ${p.cls}`} x="60" y={20 + i * 52} width="240" height="34" rx="17" />
+      <rect class={`pill ${p.cls}`} x="60" y={20 + i * 52} width="240" height="34" rx="2" />
       <text x="180" y={42 + i * 52} text-anchor="middle" font-size="13" font-weight="600">{p.title}</text>
     </g>
   ))}
@@ -156,12 +156,12 @@ const label =
     <path d="M180 54V70" /><path d="M180 106V122" /><path d={`M180 158V${tallStops[0].y - H / 2 - 2}`} />
   </g>
   <g data-step="2">
-    <rect class="zone" x="12" y="172" width="336" height="430" rx="14" />
+    <rect class="zone" x="12" y="172" width="336" height="430" rx="2" />
     <text x="28" y="196" font-size="13" font-weight="600">4. Orchestration run</text>
   </g>
   {tallStops.map((s, i) => (
     <g data-step="3">
-      <rect class={`box stop ${s.cls}`} x="60" y={s.y - H / 2} width="240" height={H} rx="10" />
+      <rect class={`box stop ${s.cls}`} x="60" y={s.y - H / 2} width="240" height={H} rx="2" />
       <circle class={`node ${s.cls}`} cx="76" cy={s.y - 7} r="4" />
       <text x="88" y={s.y - 3} font-size="13" font-weight="600">{s.title}</text>
       <text class="quiet" x="88" y={s.y + 14} font-size="11.5">{s.sub}</text>
@@ -176,14 +176,14 @@ const label =
   <g data-step="4">
     <path class="edge" d={`M300 ${tallStops[3].y + 10}H340V650H300`} marker-end="url(#rft-arrow)" />
     <text class="quiet" x="290" y="626" font-size="11.5" text-anchor="end">approved</text>
-    <rect class="box" x="60" y="626" width="240" height="54" rx="10" />
+    <rect class="box" x="60" y="626" width="240" height="54" rx="2" />
     <text x="180" y="650" text-anchor="middle" font-size="13" font-weight="600">Commit on feature/csv-import</text>
     <text class="quiet" x="180" y="667" text-anchor="middle" font-size="11.5">One per milestone</text>
     <path class="edge" d="M180 681V720" marker-end="url(#rft-arrow)" />
     <text class="quiet" x="190" y="706" font-size="11.5">when every milestone is in</text>
   </g>
   <g data-step="5">
-    <rect class="accent" x="60" y="724" width="240" height="60" rx="12" />
+    <rect class="accent" x="60" y="724" width="240" height="60" rx="2" />
     <text x="180" y="750" text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text>
     <text x="180" y="768" text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text>
   </g>

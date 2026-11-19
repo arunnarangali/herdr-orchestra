@@ -24,10 +24,11 @@ const links = [
   .title-wrapper { min-width: 0; overflow: clip; }
   .search { flex: 1; display: flex; }
   .links { display: none; align-items: center; gap: 1.35rem; }
-  .links a { color: var(--muted); text-decoration: none; font-size: 15px; }
+  .links a { color: var(--muted); text-decoration: none; font: 13.5px var(--font-mono); transition: color var(--fast) linear; }
   .links a:hover, .links a[aria-current='page'] { color: var(--text); }
-  .links .gh { border: 1px solid var(--line-strong); border-radius: 10px; padding: 5px 12px; color: var(--text); font-weight: 600; }
+  .links .gh { border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 5px 12px; color: var(--text); }
+  .links .gh:hover { border-color: var(--text); }
   @media (min-width: 72rem) { .links { display: flex; } }
-  :global(.site-title) { font-weight: 650; font-size: 17px !important; color: var(--text) !important; letter-spacing: -0.01em; }
-  :global(.site-title img) { height: 26px !important; width: 26px; }
+  :global(.site-title) { font: 600 15px var(--font-mono) !important; color: var(--text) !important; }
+  :global(.site-title img) { height: 22px !important; width: 22px; }
 </style>

@@ -67,28 +67,28 @@ const questions = [
   .qr { display: grid; gap: 16px; }
   .qr-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   .qr-col, .qr-decide { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; }
-  .qr-head { margin: 0 0 12px; font-weight: 600; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+  .qr-head { margin: 0 0 12px; font-weight: 600; font-size: 15px; font-family: var(--font-mono); display: flex; align-items: center; gap: 8px; }
   .qr-head code { font-size: 13px; color: var(--muted); font-weight: 400; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot { width: 10px; height: 10px; border-radius: var(--radius); }
   .full .dot { background: var(--auto); }
   .quick .dot { background: var(--coder); }
   .qr ol { list-style: none; margin: 0; padding: 0; counter-reset: s; display: grid; gap: 6px; }
-  .qr li { counter-increment: s; position: relative; padding: 7px 10px 7px 38px; border-radius: 8px; background: var(--surface-2); font-size: 15px; }
-  .qr li::before { content: counter(s); position: absolute; left: 10px; top: 8px; width: 19px; height: 19px; border-radius: 50%; font-size: 11.5px; font-weight: 700; display: grid; place-items: center; color: var(--bg); background: var(--auto); }
+  .qr li { counter-increment: s; position: relative; padding: 7px 10px 7px 38px; border-radius: var(--radius); background: var(--surface-2); font-size: 15px; }
+  .qr li::before { content: counter(s, decimal-leading-zero); position: absolute; left: 8px; top: 8px; width: 22px; height: 19px; font-family: var(--font-mono); border-radius: var(--radius); font-size: 11.5px; font-weight: 700; display: grid; place-items: center; color: var(--bg); background: var(--auto); }
   .quick li::before { background: var(--coder); }
   .full li.dropped { color: var(--faint); }
   .full li.dropped::after { content: 'skipped in a quick run'; display: block; font-size: 12px; color: var(--faint); font-family: var(--font-mono); }
   .qr-foot { margin: 14px 0 0; color: var(--muted); font-size: 14.5px; }
   .qr-sub { margin: 0; color: var(--muted); font-size: 15px; }
   .qr-q { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
-  .qr-q div { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
-  .qr-q .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--surface-2); font-size: 12px; font-weight: 700; margin-right: 8px; }
-  .qr-q b { font-size: 15px; }
+  .qr-q div { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+  .qr-q .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: var(--radius); background: var(--surface-2); font-size: 12px; font-weight: 700; margin-right: 8px; }
+  .qr-q b { font-size: 14px; font-family: var(--font-mono); }
   .qr-q p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
   .qr-ex { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
-  .qr-ex div { border-radius: 10px; padding: 12px 14px; background: var(--surface-2); }
+  .qr-ex div { border-radius: var(--radius); padding: 12px 14px; background: var(--surface-2); }
   .qr-ex p { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
-  .qr-ex span { display: inline-block; margin-top: 8px; font-family: var(--font-mono); font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid currentColor; }
+  .qr-ex span { display: inline-block; margin-top: 8px; font-family: var(--font-mono); font-size: 12px; padding: 1px 8px; border-radius: var(--radius); border: 1px solid currentColor; }
   .qr-ex .yes span { color: var(--good); }
   .qr-ex .no span { color: var(--lead); }
   @media (max-width: 860px) {
