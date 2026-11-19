@@ -207,6 +207,7 @@ Reviewer: reviewer (claude: opus) | none
 ## [x] M1: <title>
 Depends on: none
 Why separate: <why this is its own milestone; leave the line out when the plan has one milestone>
+Plain: <one sentence for the developer: what they get from this milestone, in everyday words, no code words>
 Prefer: any | <worker kind> | <worker name>
 Tier: small | medium | high
 Needs: <any of: reasoning, coding, architecture, long-context, tool-use, planning, speed>
@@ -239,6 +240,7 @@ Optional header lines: `Scope: strict` sends a milestone back when its coder cha
 
 Rules for every milestone:
 - **Role**: from step 6, on every milestone. The standard to work to, never a how-to.
+- **Plain**: on every milestone, one sentence a person who never opens the code understands: what they will get, not how it is built. "the screen where you see and add categories", not "CategoryList component with a POST /categories call". `orch plan show` puts it on that milestone's card.
 <!-- quick: Rules for the milestone (from step 9) -->
 - **Acceptance criteria are observable**: "POST /upload returns 400 when the amount column is missing", not "handles errors well". Prefer criteria a test or a command can prove; say so plainly when one needs a person's eyes ("the upload button matches the other primary buttons, seen in the browser"), because at the end only those go on the developer's manual checklist. One per line: orch numbers them AC1, AC2… in the milestone's `task.json`, the coder says for each whether it is met, and the reviewer checks each one. A milestone without any gets a warning.
 - **Likely files is the scope**: list every file or folder (`src/feature/`, globs work) the milestone should change, including dependency files (`package.json`, lockfiles) when it adds packages. orch compares the coder's real diff with it, runs milestones that share a listed file one after the other, and holds an unlisted dependency change for approval. `Parallel: allow` lets a milestone run next to one it shares files with (expect a merge conflict).
@@ -256,9 +258,9 @@ Rules for every milestone:
 
 ## 10. Validate and show the plan
 - Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, a milestone without `Why separate` or `Estimate`, independent milestones in shared mode, coders left idle by a fully sequential plan, a tier no coder reaches, a model outside the catalog.
-- Run `orch status`. Show the developer:
-  - the feature breakdown, the milestones with each one's `Why separate`, and the parallel shape (which run together);
+- Run `orch plan show` and give the developer its cards as they are: each milestone in plain words, what it waits for and why, who builds it on which model, how long, and the order. Fix every `WARN no Plain: line` first. Then add, in plain words too:
   - **the team and model table**: each milestone, its tier, which coder and model it will go to, the `Model why`, and its estimate, plus the estimate for the whole feature;
   - the research facts that shaped the plan, and all open questions.
+  Keep code words (file names, functions, endpoints) out of what you write here: they are in plan.md for whoever wants them.
 - Then say: "Plan written to .orchestrate/plan.md. Edit it if you like: untick `[x]` to skip a milestone, change `Tier` / `Depends on` / `Prefer`, answer open questions under 'Notes from user' and set 'Open questions: - none'. Say **go** (or `/orch-run`, "use the orch-run skill", "Run `orch lead run` and follow it") and I will start the run: I dispatch the milestones, the event manager runs them, and I come back when one finishes, asks a question or needs a decision."
 - STOP and wait for the developer. Do not dispatch before they say so.

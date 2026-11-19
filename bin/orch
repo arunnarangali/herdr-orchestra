@@ -163,7 +163,7 @@ def state_lock():
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
 LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "defer",
-              "fix", "team", "resume", "bench", "stop", "doctor"}
+              "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story"}
 _LEASE = None
 
 
@@ -536,6 +536,12 @@ def lead_event(st, kind, tid, text):
     st["lead_seq"] = st.get("lead_seq", 0) + 1
     st["lead_events"].append({"id": st["lead_seq"], "ts": now(), "kind": kind, "task": tid, "text": text, "read": None})
     del st["lead_events"][:-200]
+
+
+def story_note(st, text, who="lead"):
+    """One line for the run diary (`orch story`, .orchestrate/story.md): what the lead (or developer) did."""
+    st.setdefault("story", []).append({"ts": now(), "who": who, "text": text})
+    del st["story"][:-500]
 
 
 def event_open(st, e):
@@ -1304,6 +1310,7 @@ def cmd_sync(args):
                  if lead else None),
         "lead_mode": lead_mode,
         "lead_events": old.get("lead_events", []),
+        "story": old.get("story", []),
         "lead_seq": old.get("lead_seq", 0),
         "lead_wake": old.get("lead_wake"),
         "lead_ready_told": old.get("lead_ready_told"),
@@ -1347,6 +1354,8 @@ def cmd_sync(args):
             "parallel": field(t, "parallel", "").lower().startswith("allow"),
             "tier": tiers[tid], "needs": needs[tid], "model_why": field(t, "model why"), "role": field(t, "role"),
             "estimate_s": estimates[tid],
+            # for the developer (`orch plan show`): the milestone in plain words, and the plan's own reasons
+            "plain": field(t, "plain"), "why_sep": field(t, "why separate"), "deps_text": field(t, "depends on"),
         }
         if status != st["tasks"][tid]["status"]:
             move(st, tid, status, {"skipped": "unticked in plan.md", "needs-answer": "open questions in plan.md"}
@@ -3210,7 +3219,7 @@ WORKER_RULES = """## Rules for you (the coder)
 
 # plan.md lines that are for the lead and orch, not the coder: they stay in plan.md and task.json
 LEAD_ONLY_FIELDS = {"depends on", "why separate", "prefer", "tier", "needs", "model why", "estimate", "role",
-                    "review", "parallel"}
+                    "review", "parallel", "plain"}
 
 
 def coder_section(text, drop_criteria):
@@ -3398,6 +3407,9 @@ def cmd_dispatch(args):
             print(f"DISPATCH {tid} -> {' or '.join(who) or 'nobody (every coder is off)'}"
                   + (f" (tier {TIERS[need_rank(t) - 1]})" if need_rank(t) else "")
                   + (f" — starts when {', '.join(waits)} merged" if waits else ""))
+            story_note(st, f"{tid} ({t['title']}) was sent to start" + (f" on {opts['--to']}" if opts.get("--to") else "")
+                       + (f", on a {opts['--tier']} model" if opts.get("--tier") else "")
+                       + (f"; it starts when {', '.join(waits)} has landed" if waits else ""))
             if who and not opts.get("--to"):
                 missing = [n for n in who if presence_word(st, n) not in ("ok", "detect:off")]
                 if len(missing) == len(who):
@@ -3499,6 +3511,7 @@ def cmd_defer(args):
         ids = parse_defer_ids(tid, raw)
         record_deferral(t, tid, ids, reason)
         add_plan_note(tid, defer_note(t, ids, reason))
+        story_note(st, f"{tid} ({t['title']}): {', '.join(ids)} left undone, as you approved ({reason[:200]})")
         save(st)
         print(f"DEFERRED {tid} {','.join(ids)}: no fix rounds for them; the summary lists them as not done "
               f"(follow-up). Why: {reason}")
@@ -3536,7 +3549,9 @@ def cmd_answer(args):
         if last in st["workers"]:
             t["assign"] = last
         t.setdefault("answers", []).append({"ts": now(), "text": text, **({"deferred": ids} if ids else {})})
-        _park(st, tid, "pending", f"answered: {text[:200]}")
+        story_note(st, f"{tid} ({t['title']}) got the answer \"{text[:200]}\" and goes back to "
+                       f"{last or 'the next free coder'}" + (f"; {', '.join(ids)} left undone, as you approved" if ids else ""))
+        _park(st, tid, "pending", f"answered: {text[:200]}")      # saves the state
         print(f"ANSWERED {tid}: written to plan.md; it goes back to {last or 'the next free coder'} with its work so far")
         if ids:
             print(f"DEFERRED {tid} {','.join(ids)}: no fix rounds for them; the summary lists them as not done (follow-up)")
@@ -3601,6 +3616,7 @@ def cmd_fix(args):
         }
         if who:
             st["tasks"][new]["assign"] = who
+        story_note(st, f"{new} added: a follow-up to {tid} (\"{text[:200]}\"), sent to {who or 'the next free coder'}")
         save(st)
         print(f"FIX {new} \"{title}\" -> {who or 'the next free coder (nobody on the team built ' + tid + ')'}; "
               f"added to plan.md, the check" + (" and the review" if st["tasks"][new]["review"] else "") + " still run")
@@ -3637,6 +3653,152 @@ EVENT_HELP = {
 }
 
 
+def say_line(st, e):
+    """The event in plain words, for the developer: the lead says it in its chat, and `orch story` keeps it."""
+    tid, text = e.get("task"), (e.get("text") or "").strip()
+    t = st["tasks"].get(tid or "", {})
+    name = f"{tid} ({t.get('title', '')})" if tid else ""
+    k = e["kind"]
+    if k == "merged":
+        how = "its check passed" + (" and the reviewer approved it" if t.get("review") else "")
+        return f"{name} is done: {how}, and it is on {st['branch']}."
+    if k == "ready":
+        ids = re.findall(r"M\d+", text)
+        return ("Ready to start: " + ", ".join(f"{i} ({st['tasks'][i]['title']})" if i in st["tasks"] else i
+                                                for i in ids) + ".")
+    if k == "auto-dispatched":
+        m = re.search(r"as soon as (.+?) landed", text)
+        return (f"{name} has started by itself, because {m.group(1)} landed." if m else
+                f"{name} has started by itself: {text}.")
+    if k == "paused":
+        if "?" in text and not text.startswith(("orch error", "result file", "review output")):
+            return f"{name} is paused: the coder asks: {text}"
+        return f"{name} is paused: {text}."
+    if k == "failed":
+        return f"{name} failed: {text}."
+    if k == "held":
+        return f"{name} is finished but waits for your OK, because it has a risky change: {text}."
+    if k == "needs-answer":
+        return f"{name} can't start yet: the plan has open questions only you can answer."
+    if k == "escalated":
+        return f"{name} moved to a stronger model: {text}."
+    if k == "reviewer-lost":
+        return f"The reviewer can't be reached, so {name} waits for its review: {text}"
+    if k == "worker-lost":
+        return f"A coder disappeared while working on {name}: {text}"
+    if k == "herdr-restart":
+        return f"Most agents disappeared at once (herdr was probably restarted): {text}"
+    if k == "all_done":
+        return f"Every milestone is done: {text}."
+    if k == "stopped":
+        return f"The event manager stopped: {text}."
+    return f"{k} {name}: {text}".strip()
+
+
+def story_lines(st):
+    """The run diary: every event in plain words, and what the lead did, in time order."""
+    items = [(e["ts"], "event", say_line(st, e)) for e in st.get("lead_events", [])]
+    items += [(n["ts"], n.get("who", "lead"), n["text"]) for n in st.get("story", [])]
+    return [f"{time.strftime('%H:%M', time.localtime(ts))}  {'what happened' if who == 'event' else 'the ' + who + ' did'}: {txt}"
+            for ts, who, txt in sorted(items, key=lambda x: x[0])]
+
+
+def write_story(st):
+    lines = story_lines(st)
+    with contextlib.suppress(OSError):
+        (ORCH / "story.md").write_text(f"# Run diary: {st.get('title') or st['branch']} ({st['branch']})\n\n"
+                                       "What happened, in plain words, and what the lead did about it. "
+                                       "`orch story` prints it; the detail is in autopilot.log.\n\n"
+                                       + "".join(f"- {l}\n" for l in lines))
+    return lines
+
+
+def cmd_story(args):
+    """orch story -> the run diary in plain words (also saved as .orchestrate/story.md)."""
+    st = load()
+    lines = write_story(st)
+    print(f"RUN DIARY: {st.get('title') or st['branch']} ({st['branch']})")
+    print("\n".join(lines) if lines else "Nothing yet: the diary fills as the run goes (events go to the lead only "
+                                          "with a `Lead:` line in the plan).")
+
+
+def _short_dur(s):
+    s = int(s or 0)
+    return (f"{s // 3600}h{s % 3600 // 60:02d}m" if s % 3600 // 60 else f"{s // 3600}h") if s >= 3600 else f"{max(1, s // 60)}m"
+
+
+def plan_steps(st, tids):
+    """The plan's shape for a person: which milestones start together, step by step (a milestone starts once
+    everything it depends on has landed). Milestones that already landed count as done."""
+    level = {}
+
+    def lv(tid, seen=()):
+        if tid not in level:
+            deps = [d for d in st["tasks"][tid]["deps"] if d in tids and d not in seen]
+            level[tid] = 1 + max((lv(d, seen + (tid,)) for d in deps), default=0)
+        return level[tid]
+    for tid in tids:
+        lv(tid)
+    return [[t for t in tids if level[t] == n] for n in range(1, max(level.values(), default=0) + 1)]
+
+
+def cmd_plan(args):
+    """orch plan show -> the plan for a person: one short card per milestone in plain words (from each milestone's
+    `Plain:` line), what it waits for and why, who builds it on which model, how long it should take, and which
+    milestones run together. plan.md keeps every detail; this is the part a developer reads."""
+    if args[:1] != ["show"]:
+        die("usage: orch plan show")
+    st = load()
+    tids = [t for t in st["order"] if st["tasks"][t]["status"] != "skipped"]
+    print(f"PLAN in plain words: {st.get('title') or st['branch']} — {len(tids)} milestone(s) on {st['branch']}"
+          + (f", about {_short_dur(st['estimate_s'])} in all" if st.get("estimate_s") else ""))
+    missing = []
+    for tid in tids:
+        t = st["tasks"][tid]
+        plain = (t.get("plain") or "").strip()
+        if not plain:
+            missing.append(tid)
+        print(f"\n{tid} {t['title']}" + (f" — {plain}" if plain else ""))
+        if t.get("why_sep") and len(tids) > 1:
+            print(f"   Why its own step: {t['why_sep']}")
+        deps = [d for d in t["deps"]]
+        if deps:
+            why = re.sub(r"^(M\d+[\s,]*)+", "", t.get("deps_text") or "").strip(" ()") if len(deps) == 1 else ""
+            m = re.findall(r"M\d+\s*\(([^)]*)\)", t.get("deps_text") or "")
+            why = "; ".join(m) or why
+            print(f"   Waits for: {', '.join(deps)}" + (f" ({why})" if why else ""))
+        else:
+            print("   Waits for: nothing, it can start first")
+        who = []
+        for n in eligible_workers(st, t):
+            w = st["workers"][n]
+            who.append(f"{n} ({w['model']})" if w.get("model") else n)
+        bits = [f"Built by: {' or '.join(who) if who else 'the next free coder'}"]
+        if t.get("tier"):
+            bits.append(f"{t['tier']} model")
+        if t.get("estimate_s"):
+            bits.append(f"about {_short_dur(t['estimate_s'])}")
+        bits.append(f"reviewed by {st['reviewer']}" if t.get("review") and st.get("reviewer") else "no review")
+        print("   " + " · ".join(bits))
+        if t["status"] != "pending":
+            now_ = {"merged": "done, on the branch", "coding": "being built", "verifying": "being checked",
+                    "awaiting-review": "waiting for the reviewer", "reviewing": "being reviewed",
+                    "reviewed": "reviewed, landing next", "committed": "landing", "needs-fix": "being fixed",
+                    "paused": "paused", "failed": "failed", "held": "waiting for your OK",
+                    "needs-answer": "waiting for your answer"}.get(t["status"], t["status"])
+            print(f"   Now: {now_}" + (f" ({t['reason']})" if t.get("reason") and t["status"] != "merged" else ""))
+    steps = plan_steps(st, tids)
+    if len(tids) > 1:
+        print("\nOrder:")
+        for i, g in enumerate(steps, 1):
+            print(f"  {i}. {' and '.join(g)}" + (" at the same time" if len(g) > 1 else "")
+                  + ("" if i == 1 else f" (after {' and '.join(steps[i - 2])})"))
+    if missing:
+        print(f"\nWARN no `Plain:` line for {', '.join(missing)}: add one sentence in plain words to each "
+              f"(what the developer will get, no code words), then `orch sync`.")
+    print("\nEvery detail (files, criteria, models, notes) stays in .orchestrate/plan.md.")
+
+
 def cmd_events(args):
     """orch events [--peek] -> what the lead was woken for. Reading the events acknowledges them (not with --peek)."""
     peek = "--peek" in args
@@ -3653,6 +3815,7 @@ def cmd_events(args):
             head = f"#{e['id']} {e['kind'].upper()}" + (f" {e['task']} \"{tt.get('title', '')}\"" if e.get("task") else "")
             print(head + (f": {e['text']}" if e.get("text") else ""))
             print("    -> " + EVENT_HELP.get(e["kind"], "").format(t=e.get("task") or "<Mn>"))
+            print("    SAY: " + say_line(st, e))
         print(f"EVENTS for the lead — run {st['branch']}: {len(new)} new, {len(old)} still open")
         for e in new:
             show(e)
@@ -3689,12 +3852,16 @@ def cmd_events(args):
                 print("\n" + run_playbook_part(text, "ALL_DONE"), end="")
         print("Handle each event above, then STOP: you are woken again when something else happens. Never prompt a "
               "coder yourself and never poll.")
+        if new or old:
+            print("BEFORE YOU STOP, tell the developer in your chat, one short line per event: its SAY line, then what "
+                  "you did about it (or \"nothing for me to do\"). Never end a wake-up without saying it.")
         if not peek and new:
             for e in new:
                 e["read"] = now()
             if st.get("lead_wake"):
                 st["lead_wake"]["read_ts"] = now()        # for the event manager's timing line
             save(st)
+            write_story(st)
 
 
 def cmd_escalate(args):
@@ -5717,7 +5884,7 @@ COMMANDS = {
     "send-job": cmd_send_job, "handoff": cmd_handoff, "needs-fix": cmd_needs_fix, "review-ok": cmd_review_ok,
     "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
     "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer, "defer": cmd_defer,
-    "escalate": cmd_escalate, "fix": cmd_fix, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
+    "escalate": cmd_escalate, "fix": cmd_fix, "plan": cmd_plan, "story": cmd_story, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
     "doctor": lambda a: cmd_doctor_crash(a),
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
@@ -5742,6 +5909,8 @@ USAGE = """usage: orch <command> [args]
   models show|check <id>   one model's ratings and evidence / is it allowed?
   resume                   after a restart (computer off, herdr closed): name the agents' panes again, save unsaved
                            work, re-send the tasks that were in progress and start the event manager
+  story                    the run diary in plain words: each event and what the lead did (.orchestrate/story.md)
+  plan show                the plan for a person: each milestone in plain words, who builds it, how long, the order
   events [--peek]          (lead) what you were woken for; reading acknowledges it
   dispatch <Mn>... [--to <worker>] [--tier <tier>]   (lead) start or restart milestones; starts the event manager
   answer <Mn> [--defer AC2,AC3] <text>   (lead) the developer's answer: into plan.md, and back to the same coder;
