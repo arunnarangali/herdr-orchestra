@@ -35,7 +35,7 @@ Run `orch events`. It lists the new events, the ones still open, the milestones 
 
 | Event | What you do |
 |---|---|
-| `READY` | Dispatch them: `orch dispatch <Mn>...`. If you wait too long (15 minutes by default) the event manager starts them itself, so a run never stalls on you. |
+| `READY` | Dispatch them: `orch dispatch <Mn>...`. If you wait too long (15 minutes by default) the event manager starts them itself, so a run never stalls on you. A milestone that a landing unlocked does not come as READY: it starts at once and you get `AUTO-DISPATCHED` (unless the plan says `Auto dispatch: off`). |
 | `MERGED Mn` | Nothing, unless it unlocked milestones listed under READY: dispatch those. |
 | `PAUSED Mn` with a coder's question | If the request, the plan or the code already answers it: `orch answer Mn "<answer> (from: <where>)"`. Otherwise put it to the developer with 2–3 options and STOP; when they answer, `orch answer Mn "<their answer>"`. The answer is written under that milestone's "Notes from user" and the **same coder** carries on from its saved work. |
 | `PAUSED Mn`: a criterion can't be met (for example an outside API it needs does not exist) | Only the developer can drop part of a milestone. Ask them: build the rest and defer AC<n>, or wait. If they agree, `orch answer Mn --defer AC<n> "<their words>"`. Then a coder that reports AC<n> `met: false` gets no fix round and no escalation for it, the reviewer does not block on it, and the summary lists it as **not done**, with a follow-up. Never defer without the developer's yes, and never by writing it in the plan only: the check reads `--defer`, not prose. |
@@ -46,7 +46,7 @@ Run `orch events`. It lists the new events, the ones still open, the milestones 
 | `HERDR-RESTART` | Most agents vanished at once. Tell the developer to run `orch resume`, then `orch team up` for any agent it reports `LOST`. |
 | `HELD Mn` | Risky changes (deleted files, migrations, CI config, secrets files, unlisted dependency changes, a very large diff) wait for the developer. Show the reasons from `orch status`, and tell the developer to look and run `orch approve Mn` (or `orch set Mn paused`). |
 | `NEEDS-ANSWER Mn` | Open questions in the plan: ask the developer, write the answers under "Notes from user", set "Open questions:" to `- none`, `orch sync`, then `orch dispatch Mn`. |
-| `ESCALATED Mn`, `AUTO-DISPATCHED Mn` | Information. Mention an escalation in the final summary. |
+| `ESCALATED Mn`, `AUTO-DISPATCHED Mn` | Information: nothing to dispatch. Mention an escalation in the final summary. |
 | `STOPPED` / the event manager is not running | Read the last lines of `.orchestrate/autopilot.log` and tell the developer why (a red baseline, the run's budget, the branch failing its check). Your next `orch dispatch` or `orch answer` starts it again; so does `orch autopilot` in a terminal. |
 | `orch status` starts with `!! EVENT MANAGER NOT RUNNING`, or the developer says the computer or herdr was restarted | Run `orch resume` once and read what it prints. It leaves the time orch was down out of every time budget, gives the agents' panes their names back, saves unsaved work, sends the tasks in progress to their agents again and starts the event manager. For each `LOST` line, give the developer the exact command it prints (`herdr agent rename <pane> <name>`, or `orch team up` for a pane with no agent in it), then run `orch resume` again. Never fix this with git by hand, and never prompt a coder yourself. |
 | `ALL_DONE` | Section 3. |

@@ -13,7 +13,7 @@ Task status flow (every change goes through move(), which checks TRANSITIONS)
   side states: needs-answer, paused, failed, conflict, needs-fix, held (waiting for `orch approve`), skipped
 Also: .orchestrate/events.jsonl (one line per transition), driver.lock (held by autopilot while it drives).
 """
-import contextlib, fcntl, fnmatch, hashlib, json, os, re, shlex, shutil, signal, socket, subprocess, sys, tempfile, time
+import atexit, contextlib, fcntl, fnmatch, hashlib, json, os, re, shlex, shutil, signal, socket, subprocess, sys, tempfile, time
 from pathlib import Path
 
 HERDR = os.environ.get("HERDR", "herdr")
@@ -104,6 +104,7 @@ def main_root():
 ROOT = None
 ORCH = None
 STATE = None
+BG_DIR = None          # .orchestrate/bg: logs and exit files of the event manager's background checks and merges
 
 
 def load():
@@ -476,7 +477,7 @@ TRANSITIONS = {
     "skipped": {"pending"},
     "coding": {"verifying", "needs-fix", "conflict"} | _PARK,
     "verifying": {"coding", "awaiting-review", "reviewing", "committed", "merged", "needs-fix", "held"} | _PARK,
-    "awaiting-review": {"reviewing"} | _PARK,
+    "awaiting-review": {"reviewing", "needs-fix"} | _PARK,
     "reviewing": {"reviewed", "awaiting-review"} | _PARK,
     "reviewed": {"needs-fix", "committed", "merged", "held"} | _PARK,
     "needs-fix": {"coding"} | _PARK,
@@ -992,6 +993,18 @@ def cmd_sync(args):
     if scope not in ("warn", "strict"):
         errors.append(f"Scope must be warn or strict, got {scope!r}")
     risk_hold = not get("risk hold", "on").lower().startswith("off")
+    try:
+        par_checks = max(1, int(re.findall(r"\d+", get("parallel checks", "1"))[0]))
+    except IndexError:
+        errors.append(f"Parallel checks must be a number, got {get('parallel checks')!r}")
+        par_checks = 1
+    if isolation == "shared":
+        par_checks = 1                     # one folder: two checks in it at once would see each other's files
+    early_review = not get("early review", "on").lower().startswith("off")
+    branch_check = (get("branch check", "auto").split() or ["auto"])[0].lower()
+    if branch_check not in ("auto", "always"):
+        errors.append(f"Branch check must be auto or always, got {branch_check!r}")
+    auto_dispatch = not get("auto dispatch", "on").lower().startswith("off")
     budget_s = None
     if get("budget"):
         bm = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(h|m|min|hours?|minutes?)?\s*", get("budget"), re.I)
@@ -1268,6 +1281,10 @@ def cmd_sync(args):
         "setup_inputs": [p.strip("`") for p in re.split(r"[,\s]+", get("setup inputs")) if p.strip("`")],
         "scope": scope,
         "risk_hold": risk_hold,
+        "parallel_checks": par_checks,
+        "early_review": early_review,
+        "branch_check": branch_check,
+        "auto_dispatch": auto_dispatch,
         "budget_s": budget_s,
         "estimate_s": feature_est,
         "check": get("check command"),
@@ -2511,6 +2528,8 @@ def cmd_poll(args):
                     events.append(f"IDLE {tid} agent={agent} (no sentinel after {age}s)")
                 elif age > budget:
                     events.append(f"TIMEOUT {tid} agent={agent} after {age // 60} min")
+            if BG_DIR.is_dir() and any(BG_DIR.glob("*.exit")):
+                events.append("BG_DONE - (a background check or merge of the event manager ended)")
             if events or changed:
                 save(st)
             if not any(t.get("wait") for t in st["tasks"].values()):
@@ -2589,9 +2608,62 @@ def _finish(st, tid):
     save(st)
 
 
+def merge_check_needed(st, tid):
+    """Whether landing Mn must run the check again on the feature branch. Not when the branch would hold exactly the
+    files whose check already passed in the coder's folder: nothing else landed since the coder started (the branch
+    head is part of its saved work) and its saved work is the very tree that was checked. Then a second check would
+    run on the same files and can only say the same thing."""
+    t = st["tasks"][tid]
+    chk = t.get("chk") or {}
+    if st["isolation"] != "worktree" or not st.get("check") or not chk.get("ok") or not chk.get("tree"):
+        return True
+    if st.get("branch_check") == "always":    # the check depends on more than the files (the folder, the branch)
+        return True
+    src = work_ref(st, tid)
+    if not src:
+        return True
+    tree = git("rev-parse", f"{src}^{{tree}}", cwd=ROOT, check=False).stdout.strip()
+    if tree != chk["tree"]:
+        return True                       # the work changed after its check (or the check left files behind)
+    return git("merge-base", "--is-ancestor", st["branch"], src, cwd=ROOT, check=False).returncode != 0
+
+
 def cmd_merge(args):
+    """orch merge Mn -> land a committed milestone on the feature branch, checked first so nothing red lands.
+    The state lock is held only while the run's state or the main folder change, not while the check runs, so the
+    event manager and the lead keep working meanwhile (the `merging` journal covers a crash in between)."""
     need(args, 1, "merge <Mn>")
     tid = args[0]
+    with state_lock():
+        st, need_check = _merge_start(tid)
+    if need_check is None:
+        return
+    ok, tail = ensure_root_setup(st)
+    secs = 0
+    if ok:
+        ok, tail, secs = run_check(st, ROOT)
+    with state_lock():
+        st2 = load()
+        t = st2["tasks"][tid]
+        if st.get("root_setup_hash") != st2.get("root_setup_hash"):
+            st2["root_setup_hash"] = st["root_setup_hash"]
+        t.setdefault("checks", []).append({"where": "branch", "ok": ok, "secs": secs, "ts": now()})
+        fault("after-check")
+        if not ok:
+            git("reset", "--hard", "-q", "HEAD", cwd=ROOT)
+            st2["merging"] = None
+            _integration_failed(st2, tid, tail)
+        git("commit", "-q", "-m", commit_message(st2, tid), cwd=ROOT)
+        note_green(st2, ROOT, True)
+        fault("after-merge-commit")
+        git("update-ref", "-d", task_ref(st2, tid), cwd=ROOT, check=False)
+        _finish(st2, tid)
+        print(f"MERGED {tid} into {st2['branch']}")
+
+
+def _merge_start(tid):
+    """cmd_merge's first part, under the state lock: squash Mn into the main folder. Returns (state, need_check):
+    need_check None means it is done already (no changes, or no second check needed: committed and merged)."""
     st = load()
     t = task(st, tid)
     if st["isolation"] == "shared":
@@ -2633,23 +2705,23 @@ def cmd_merge(args):
         sys.exit(4)
     if git("diff", "--cached", "--quiet", cwd=ROOT, check=False).returncode == 0:
         print(f"NOTE {tid} had no changes to merge")
+    elif merge_check_needed(st, tid):
+        save(st)
+        return st, True
     else:
-        # check BEFORE committing: nothing red ever lands on the feature branch
-        ok, tail = ensure_root_setup(st)
-        if ok:
-            ok, tail, secs = run_check(st, ROOT)
-            t.setdefault("checks", []).append({"where": "branch", "ok": ok, "secs": secs, "ts": now()})
-        fault("after-check")
+        ok, tail = ensure_root_setup(st)      # keep the main folder's dependencies current all the same
         if not ok:
-            git("reset", "--hard", "-q", "HEAD", cwd=ROOT)
-            st["merging"] = None
-            _integration_failed(st, tid, tail)
+            print(f"WARN {tail.splitlines()[0] if tail else 'setup failed in the main folder'}")
+        print(f"SKIPPED_CHECK {tid}: the branch gets exactly the files whose check passed in the coder's folder "
+              f"(nothing else landed meanwhile), so the check was not run again")
+        fault("after-check")
         git("commit", "-q", "-m", commit_message(st, tid), cwd=ROOT)
         note_green(st, ROOT, True)
         fault("after-merge-commit")
     git("update-ref", "-d", task_ref(st, tid), cwd=ROOT, check=False)
     _finish(st, tid)
     print(f"MERGED {tid} into {st['branch']}")
+    return st, None
 
 
 def _hold(st, tid, risks):
@@ -2936,6 +3008,11 @@ def cmd_status(args):
               + (f"tier={t['tier'] if rank(t.get('min_tier')) <= rank(t.get('tier')) else t['min_tier'] + '^'} "
                  if need_rank(t) else "") + t["title"]
               + (f"  [{t['reason']}]" if t.get("reason") else "")
+              + (f"  [check running {_fmt_secs(now() - c['since'])} in "
+                 f"{'the main folder (before landing)' if c['where'] == 'branch' else 'its folder'}]"
+                 if (c := t.get("checking")) else "")
+              + (f"  [waiting {_fmt_secs(now() - w['since'])} for {w.get('behind') or w['what']}]"
+                 if (w := t.get("waiting")) else "")
               + (f"  !! but {t['worker']} has no agent in herdr ({here[t['worker']]}): nothing is working on it — "
                  f"`orch resume`" if t["status"] in ("coding", "conflict") and here.get(t.get("worker"))
                  in ("NO AGENT", "SHELL ONLY") else ""))
@@ -3304,7 +3381,11 @@ def cmd_dispatch(args):
             t = st["tasks"][tid]
             t["go"] = True
             t["go_ts"] = now()
-            t.pop("ready_ts", None)
+            rt = t.pop("ready_ts", None)
+            if rt and t["status"] == "pending":         # it was ready and waited for this dispatch
+                ws = t.setdefault("waits", {})
+                ws["lead"] = ws.get("lead", 0) + max(0, now() - rt)
+                t["lead_wait_s"] = max(0, now() - rt)
             if opts.get("--to"):
                 t["assign"] = opts["--to"]
             if opts.get("--tier"):
@@ -3540,7 +3621,7 @@ EVENT_HELP = {
     "merged": "landed on the feature branch. Nothing to do unless it unlocked work listed under READY.",
     "ready": "milestones are ready for you: `orch dispatch <Mn>...`.",
     "escalated": "moved to a stronger model after its rounds ran out. Nothing to do.",
-    "auto-dispatched": "started without you because you did not dispatch it in time. Nothing to do.",
+    "auto-dispatched": "already started by the event manager (the reason is on the line above). Nothing to do.",
     "reviewer-lost": "the reviewer can't be reached, so the milestone waits for review (its work is kept). Tell the "
                      "developer the fix in the event text (usually: rename the reviewer's new pane). Review resumes "
                      "by itself once herdr finds the reviewer again.",
@@ -3991,21 +4072,31 @@ def _autopilot(args):
         hold = undispatched(s_)
         if not hold:
             return
-        late = [k for k in hold if now() - s_["tasks"][k].get("ready_ts", now()) > LEAD_WAIT_S]
+        # `Auto dispatch: on` (the default): a milestone that a landing unlocked starts at once; the lead hears of
+        # it (AUTO-DISPATCHED) instead of being asked. The plan already says what it is and who may take it.
+        auto = [k for k in hold if s_.get("auto_dispatch", True) and s_["tasks"][k]["deps"]
+                and s_["run"].get("started")]
+        late = [k for k in hold if k not in auto and now() - s_["tasks"][k].get("ready_ts", now()) > LEAD_WAIT_S]
 
         def upd(s2):
             for k in hold:
                 s2["tasks"][k].setdefault("ready_ts", now())
+            for k in auto:
+                s2["tasks"][k]["go"] = True
+                lead_event(s2, "auto-dispatched", k, f"started by the event manager as soon as "
+                           f"{', '.join(s2['tasks'][k]['deps'])} landed (`Auto dispatch: on` in plan.md)")
             for k in late:
                 s2["tasks"][k]["go"] = True
                 lead_event(s2, "auto-dispatched", k, f"not dispatched by the lead within {LEAD_WAIT_S // 60} min")
-            rest = [k for k in hold if k not in late]
+            rest = [k for k in hold if k not in late and k not in auto]
             if rest and rest != s2.get("lead_ready_told"):       # once per set, not once per loop
                 lead_event(s2, "ready", None, ", ".join(rest))
             s2["lead_ready_told"] = rest
         patch_state(upd)
         for k in late:
             say(f"{k}: the lead did not dispatch it within {LEAD_WAIT_S // 60} min -> started without it", True)
+        for k in auto:
+            say(f"{k}: {', '.join(s_['tasks'][k]['deps'])} landed, so it starts now (auto dispatch); the lead is told")
 
     def guarded(tid, fn):
         """One task's orch error never stops the run: that task is paused with the error, the rest carry on."""
@@ -4050,45 +4141,299 @@ def _autopilot(args):
         say(f"{tid} is HELD for your approval: {out.splitlines()[0].split('—', 1)[-1].strip()}. "
             f"Look at it, then run `orch approve {tid}`; autopilot keeps going with the rest", True)
 
-    def land(tid):
-        st_ = load()
-        code, out = run("commit", tid, ok=(0, 7))
-        if code == 7:
-            held(tid, out)
+    # ---- background jobs: a check or a merge runs beside the event loop, and its end is one more event (like a
+    # browser's fetch: the work happens elsewhere, the callback is queued). Nothing waits for a check to finish.
+    bg = {}
+
+    def check_slots():
+        return max(1, load().get("parallel_checks", 1)) - sum(1 for j in bg.values() if j["uses_check"])
+
+    def checking(tid):
+        return any(j["tid"] == tid and j["kind"] == "check" for j in bg.values())
+
+    def bg_start(name, tid, kind, shell_cmd, cwd, uses_check, on_done, timeout=None):
+        log, ex = BG_DIR / f"{name}.log", BG_DIR / f"{name}.exit"
+        ex.unlink(missing_ok=True)
+        q = shlex.quote
+        wrapped = (f"( {shell_cmd}\n) > {q(str(log))} 2>&1; echo $? > {q(str(ex))}.tmp; "
+                   f"mv {q(str(ex))}.tmp {q(str(ex))}")
+        p = subprocess.Popen(["/bin/sh", "-c", wrapped], cwd=cwd, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        bg[name] = {"p": p, "tid": tid, "kind": kind, "t0": time.time(), "log": log, "exit": ex,
+                    "uses_check": uses_check, "on_done": on_done, "timeout": timeout}
+
+    def bg_reap():
+        """Collect the background jobs that ended and run what each one's end means."""
+        for name, j in list(bg.items()):
+            secs = round(time.time() - j["t0"], 1)
+            timed_out = False
+            if j["p"].poll() is None and j["exit"].exists():
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    j["p"].wait(timeout=5)            # it wrote its exit code: it is leaving
+            if j["p"].poll() is None:
+                if not (j["timeout"] and secs > j["timeout"]):
+                    continue
+                timed_out = True
+                with contextlib.suppress(OSError):
+                    os.killpg(j["p"].pid, signal.SIGTERM)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    j["p"].wait(timeout=30)
+            try:
+                code = int(j["exit"].read_text().strip())
+            except (OSError, ValueError):
+                code = 124 if timed_out else (j["p"].returncode or 1)
+            try:
+                out = j["log"].read_text(errors="replace")
+            except OSError:
+                out = ""
+            if timed_out:
+                code, out = 124, out + f"\ncheck command timed out after {j['timeout'] // 60} min"
+            del bg[name]
+            for f in (j["log"], j["exit"]):
+                f.unlink(missing_ok=True)
+            guarded(j["tid"], lambda: j["on_done"](code, out, secs))
+
+    def bg_stop():
+        """The event manager is leaving: stop the checks it started (a merge is left to finish: it is journaled)."""
+        for j in bg.values():
+            if j["kind"] == "check" and j["p"].poll() is None:
+                with contextlib.suppress(OSError):
+                    os.killpg(j["p"].pid, signal.SIGTERM)
+
+    # ---- waits: time a finished or ready milestone sat still because something else had to happen first
+    def start_wait(tid, what, behind):
+        s_ = load()
+        if (s_["tasks"][tid].get("waiting") or {}).get("what") == what:
+            return
+        patch_state(lambda s2: s2["tasks"][tid].update(waiting={"what": what, "since": now(), "behind": behind}))
+
+    def end_wait(tid, what):
+        """Close Mn's wait for `what`: add it to the milestone's waits (summary) and log it. Returns the seconds."""
+        w = load()["tasks"][tid].get("waiting") or {}
+        if w.get("what") != what:
+            return 0
+        secs = max(0, now() - w["since"])
+
+        def upd(s2):
+            t2 = s2["tasks"][tid]
+            t2.pop("waiting", None)
+            ws = t2.setdefault("waits", {})
+            ws[what] = ws.get(what, 0) + secs
+        patch_state(upd)
+        if secs and what != "reviewer":           # the reviewer wait is said with the review it waited for
+            say(f"{tid} waited {_fmt_secs(secs)} for {w.get('behind') or what}")
+        return secs
+
+    def start_check(tid, d):
+        """Start Mn's check in its folder, in the background. False when every check slot is busy (it waits)."""
+        s_ = load()
+        t_ = s_["tasks"][tid]
+        k = t_["attempt"]
+        if not s_.get("check"):
+            check_done(tid, k, d, None, 0, "", 0)
+            return True
+        if check_slots() <= 0:
+            busy = [j["tid"] for j in bg.values() if j["uses_check"]]
+            start_wait(tid, "check slot", f"{', '.join(busy)}'s check" if busy else "a free check slot")
             return False
+        end_wait(tid, "check slot")
+        tree0 = tree_of(d)
+        patch_state(lambda s2: s2["tasks"][tid].update(checking={"since": now(), "where": "worktree"}))
+        bg_start(f"check-{tid}-{k}", tid, "check", s_["check"], d, True,
+                 lambda code, out, secs: check_done(tid, k, d, tree0, code, out, secs), CHECK_TIMEOUT_S)
+        return True
+
+    def check_done(tid, k, d, tree0, code, out, secs):
+        ok = code == 0
+        tail = "\n".join(out.splitlines()[-60:])
+        tree = tree_of(d) if ok and tree0 else None
+
+        def upd(s2):
+            t2 = s2["tasks"][tid]
+            t2.pop("checking", None)
+            if s2.get("check"):
+                t2.setdefault("checks", []).append({"where": "worktree", "ok": ok, "secs": secs, "ts": now()})
+            # the tree is kept only when the check left the files as it found them: then a branch that gets exactly
+            # these files needs no second check (merge_check_needed)
+            t2["chk"] = {"attempt": k, "ok": ok, "tail": tail, "tree": tree if tree and tree == tree0 else None,
+                         "used": False}
+            note_green(s2, d, ok)
+        patch_state(upd)
+        if s_check := load().get("check"):
+            say(f"{tid} check {'passed' if ok else 'FAILED'} in {_fmt_secs(secs)} ({s_check})")
+
+    def early_review_ok(tid, t):
+        s_ = load()
+        return (s_.get("early_review", True) and bool(s_.get("check")) and bool(s_.get("reviewer"))
+                and t["review"] and not t.get("review_ok") and not t.get("pre_conflict") and holds(s_, tid))
+
+    def check_fix(tid, tail, blockers=()):
+        """The check failed: one fix round for the coder that holds Mn, with the reviewer's blockers if there are."""
+        code, _ = run("bump", tid, "fix", ok=(0, 3))
+        if code == 3:
+            fail(tid, f"checks still failing after {MAX_FIX} fix rounds")
+            return
+        n = load()["tasks"][tid]["fix"]
+        say(f"{tid} checks failed -> fix round {n}" + (f" (with the reviewer's {len(blockers)} blocker(s))"
+                                                        if blockers else ""))
+        write_and_send(tid, f"fix-{n}.md",
+                       f"# Checks failing for {tid} (round {n})\n\nThe check command `{st['check']}` "
+                       f"failed. Diagnose the cause and fix it; you decide how. Don't change unrelated "
+                       f"code, and don't weaken or skip tests to make them pass.\n\n"
+                       f"```\n{tail}\n```\n"
+                       + ("\nThe reviewer also found these problems in the same version (it reviewed it while the "
+                          "check ran). Investigate each one too; if you think one is wrong, say why in your report:\n"
+                          + "\n".join(blockers) + "\n" if blockers else ""))
+
+    def early_followup(tid, t):
+        """Mn's review was sent alongside its check (`Early review: on`). Match the two up. True when handle()
+        has nothing more to do for Mn now."""
+        if t.get("early") != t.get("attempt"):
+            return False
+        if checking(tid):
+            return t["status"] == "reviewed"      # the review is back first: it waits for the check
+        chk = t.get("chk") if (t.get("chk") or {}).get("attempt") == t["attempt"] else None
+        if chk is None:                           # the event manager restarted while the check ran: run it again
+            start_check(tid, t["dir"])
+            return t["status"] == "reviewed"
+        if chk["ok"]:
+            if not chk.get("used"):
+                patch_state(lambda s_: s_["tasks"][tid]["chk"].update(used=True))
+                if holds(load(), tid):
+                    _, hout = run("handoff", tid)
+                    if hout.startswith("HANDED_OFF"):
+                        say(f"{tid} passed its check while being reviewed; {t['worker']} is free for other work")
+            return False
+        if t["status"] == "reviewing":
+            return True                           # check failed: wait for the review, then one fix round for both
+        blockers = []
+        if t["status"] == "reviewed":
+            blockers, _, _ = review_findings(tid, t["review_round"])
+        why = "the check failed" + (" while it was being reviewed" if t["status"] == "reviewed" else "")
+
+        def upd(s_):
+            t2 = s_["tasks"][tid]
+            t2["chk"]["used"] = True
+            t2["early"] = None
+            t2["review_ok"] = False
+            if t["status"] == "reviewed":         # that review round looked at a version that fails its check:
+                t2["review_base"] = t2.get("review_base", 0) + 1   # it does not count against the review cap
+            move(s_, tid, "needs-fix", why)
+        patch_state(upd)
+        check_fix(tid, chk["tail"], blockers)
+        return True
+
+    def land(tid):
+        """Land a milestone: commit it, then merge it onto the feature branch in the background (the merge runs the
+        check there unless the files are the ones already checked). One merge at a time: they all go through the
+        main folder. Waits are counted (see add_wait)."""
+        st_ = load()
+        t_ = st_["tasks"][tid]
         if st_["isolation"] == "shared":
+            if any(j["kind"] == "check" for j in bg.values()):
+                return False                      # a commit in the shared folder waits for a check running in it
+            code, out = run("commit", tid, ok=(0, 7))
+            if code == 7:
+                held(tid, out)
+                return False
             say(f"{tid} landed on {st_['branch']}")
             return True
-        code, out = run("merge", tid, ok=(0, 3, 4, 6, 7))
+        if any(j["kind"] == "merge" and j["tid"] == tid for j in bg.values()):
+            return None                           # its merge is running
+        if t_["status"] != "committed":
+            code, out = run("commit", tid, ok=(0, 7))
+            if code == 7:
+                held(tid, out)
+                return False
+            st_ = load()
+        uses = merge_check_needed(st_, tid)
+        other = next((j["tid"] for j in bg.values() if j["kind"] == "merge"), None)
+        if other or (uses and check_slots() <= 0):
+            start_wait(tid, "merge", f"the merge of {other}" if other else "a free check slot")
+            return None
+        end_wait(tid, "merge")
+        if uses:
+            patch_state(lambda s_: s_["tasks"][tid].update(checking={"since": now(), "where": "branch"}))
+        bg_start(f"merge-{tid}", tid, "merge", shlex.join([sys.executable, os.path.abspath(__file__), "merge", tid]),
+                 ROOT, uses, lambda code, out, secs: merge_done(tid, code, out))
+        return None
+
+    def merge_done(tid, code, out):
+        patch_state(lambda s_: s_["tasks"][tid].pop("checking", None))
+        out = out.strip()
+        for l in out.splitlines():
+            if l.startswith(("SKIPPED_CHECK", "SETUP ", "WARN ")):
+                say(l)
         if code == 7:
             held(tid, out)
-            return False
+            return
         if code == 3:
-            say(f"{tid} failed: {out.splitlines()[0]}", True)
-            return False
+            say(f"{tid} failed: {out.splitlines()[0] if out else 'merge stopped'}", True)
+            return
         if code in (4, 6):
             s_ = load()
             if code == 4 and s_["tasks"][tid].get("conflicts", 0) > MAX_CONFLICT:
                 park(tid, "failed", f"merge conflict still unresolved after {MAX_CONFLICT} attempts")
-                return False
+                return
             what = "merge conflict" if code == 4 else f"passes alone but fails the check on {s_['branch']} (not committed)"
-            if holds(s_, tid):
+            if not s_["tasks"][tid].get("job"):   # the dispatch step sent its job already, while this was collected
+                say(f"{tid} {what} -> sent to {s_['tasks'][tid].get('worker') or 'the next free coder'}")
+            elif holds(s_, tid):
                 say(f"{tid} {what} -> back to {s_['tasks'][tid]['worker']}")
                 code, out = run("send-job", tid, ok=(0, 5))
                 sent(code, out, tid, s_["tasks"][tid]["worker"])
             else:
                 say(f"{tid} {what} -> queued for the next free coder")
-            return False
-        say(f"{tid} checked and merged into {st_['branch']}")
-        return True
+            return
+        if code != 0:
+            raise RuntimeError(f"orch merge {tid} -> exit {code}: {out}")
+        say(f"{tid} checked and merged into {load()['branch']}")
 
     def handle(tid, t):
+        if t["status"] in ("awaiting-review", "reviewing", "reviewed") and early_followup(tid, t):
+            return
         if t["status"] == "verifying":
+            if checking(tid):
+                return                            # its check runs in the background: its end is an event
+            k = t["attempt"]
+            chk = t.get("chk") if (t.get("chk") or {}).get("attempt") == k else None
+            if chk is None:
+                if t.get("prechecked") != k:
+                    if not pre_check(tid, t):
+                        return
+                    patch_state(lambda s_: s_["tasks"][tid].update(prechecked=k))
+                    t = load()["tasks"][tid]
+                if early_review_ok(tid, t):
+                    code, out = run("review", tid, ok=(0, 3, 5))
+                    patch_state(lambda s_: s_["tasks"][tid].update(early=k))
+                    say(out.splitlines()[-1] + (" (alongside its check: `Early review: on`)" if code == 0 else ""))
+                start_check(tid, t["dir"])
+                return
+            post_check(tid, t, chk)
+        elif t["status"] == "awaiting-review":
+            code, out = run("review", tid, ok=(0, 3, 5))
+            if code == 0:
+                waited = end_wait(tid, "reviewer")
+                say(out + (f" ({tid} waited {_fmt_secs(waited)} for the reviewer)" if waited else ""))
+            elif code == 3:
+                start_wait(tid, "reviewer", "the reviewer")
+            elif code == 5:
+                n = (load().get("reviewer_info") or {}).get("delivery_fails", 0)
+                say(f"{tid}: could not reach the reviewer — retrying when herdr sees it again (or after "
+                    f"{SEND_RETRY_S if n < UNREACHABLE_AFTER else UNREACHABLE_MIN * 60}s)\n{out}",
+                    n in (1, UNREACHABLE_AFTER))
+        else:
+            handle_rest(tid, t)
+
+    def pre_check(tid, t):
+        """What a finished coder's work must pass before its check runs: a usable result file, no open question,
+        its scope, its acceptance criteria. False when it went back to the coder or was parked."""
+        if True:
             res, err = read_result(t.get("last_result"))
             if err and err != "missing":
                 if t.get("result_fixes", 0) >= 1:
                     park(tid, "paused", f"result file still not usable ({err}): {t.get('last_result')}")
-                    return
+                    return False
                 patch_state(lambda s_: s_["tasks"][tid].update(result_fixes=s_["tasks"][tid].get("result_fixes", 0) + 1))
                 say(f"{tid}: result file not usable ({err}) -> asked the coder once to rewrite it")
                 write_and_send(tid, "result-fix-1.md",
@@ -4096,19 +4441,19 @@ def _autopilot(args):
                                "Don't change any code for this. Write the result file the prompt names, in the "
                                "`result_format` shape from task.json (valid JSON), plus the report, then the done "
                                "file.\n")
-                return
+                return False
             rp = t.get("last_report")
             rtext = Path(rp).read_text() if rp and Path(rp).exists() else ""
             if res:
                 if res["status"] in ("question", "blocked"):
                     qs = [str(q) for q in res.get("questions", []) if q] or ["the coder is " + res["status"]]
                     park(tid, "paused", "; ".join(qs)[:400])
-                    return
+                    return False
             else:
                 q = [l for l in rtext.splitlines() if l.strip().upper().startswith("QUESTION:")]
                 if q:
                     park(tid, "paused", q[0].strip()[9:].strip() or "worker asked a question")
-                    return
+                    return False
             # scope: the real diff against the milestone's Likely files
             s_ = load()
             allowed = s_["tasks"][tid].get("files") or []
@@ -4125,7 +4470,7 @@ def _autopilot(args):
                         f"{', '.join(new)}.\nUndo those changes, or, if the task truly can't be done without them, "
                         f"leave them and explain why in your report. Then run `{st['check']}`.\n"),
                         f"still outside its scope after {MAX_FIX} fix rounds: {', '.join(new)}")
-                    return
+                    return False
                 if new:
                     hot = [f for f in new if HOTSPOT_RE.search(f)]
                     say(f"{tid} changed files outside its Likely files: {', '.join(new)}" +
@@ -4151,8 +4496,14 @@ def _autopilot(args):
                     "exist), don't try again: set status `question`, say which criterion and why, and offer to "
                     "build the rest and defer that one. The developer decides.\n"),
                     f"acceptance criteria still not met after {MAX_FIX} fix rounds")
-                return
-            ok, tail = check(t["dir"], tid)
+                return False
+            return True
+
+    def post_check(tid, t, chk):
+        """The check of a coder's work came back (verifying): on to review or landing, or a fix round."""
+        patch_state(lambda s_: s_["tasks"][tid]["chk"].update(used=True))
+        ok, tail = chk["ok"], chk["tail"]
+        if True:
             if ok:
                 if t["review"] and not t.get("review_ok"):
                     _, hout = run("handoff", tid)
@@ -4163,27 +4514,10 @@ def _autopilot(args):
                 else:
                     land(tid)
             else:
-                code, out = run("bump", tid, "fix", ok=(0, 3))
-                if code == 3:
-                    fail(tid, f"checks still failing after {MAX_FIX} fix rounds")
-                else:
-                    n = load()["tasks"][tid]["fix"]
-                    say(f"{tid} checks failed -> fix round {n}")
-                    write_and_send(tid, f"fix-{n}.md",
-                                   f"# Checks failing for {tid} (round {n})\n\nThe check command `{st['check']}` "
-                                   f"failed. Diagnose the cause and fix it; you decide how. Don't change unrelated "
-                                   f"code, and don't weaken or skip tests to make them pass.\n\n"
-                                   f"```\n{tail}\n```\n")
-        elif t["status"] == "awaiting-review":
-            code, out = run("review", tid, ok=(0, 3, 5))
-            if code == 0:
-                say(out)
-            elif code == 5:
-                n = (load().get("reviewer_info") or {}).get("delivery_fails", 0)
-                say(f"{tid}: could not reach the reviewer — retrying when herdr sees it again (or after "
-                    f"{SEND_RETRY_S if n < UNREACHABLE_AFTER else UNREACHABLE_MIN * 60}s)\n{out}",
-                    n in (1, UNREACHABLE_AFTER))
-        elif t["status"] == "reviewed":
+                check_fix(tid, tail)
+
+    def handle_rest(tid, t):
+        if t["status"] == "reviewed":
             k = t["review_round"]
             blockers, _, known = review_findings(tid, k)
             where = f".orchestrate/review/{tid}/review-{k}.json"
@@ -4225,17 +4559,21 @@ def _autopilot(args):
         code, out = run("send-job" if kind == "FIX" else "send", tid, *([] if kind == "FIX" else ["task.md"]),
                         ok=(0, 5))
         if sent(code, out, tid, worker):
-            go_ts = load()["tasks"][tid].get("go_ts")
-            if go_ts:
-                patch_state(lambda s_: s_["tasks"][tid].pop("go_ts", None))
+            t_ = load()["tasks"][tid]
+            go_ts, lw = t_.get("go_ts"), t_.get("lead_wait_s")
+            if go_ts or lw is not None:
+                patch_state(lambda s_: [s_["tasks"][tid].pop(k, None) for k in ("go_ts", "lead_wait_s")])
             say(f"{tid} fix job -> {worker}" if kind == "FIX" else f"{tid} -> {worker}"
-                + (f" ({max(0, now() - go_ts)}s after the lead's dispatch or answer)" if go_ts else ""))
+                + (f" ({max(0, now() - go_ts)}s after the lead's dispatch or answer)" if go_ts else "")
+                + (f" — it waited {_fmt_secs(lw)} for the lead's dispatch" if lw else ""))
 
     def on_event(ev):
         parts = ev.split()
         if len(parts) < 2:
             return
         kind, tid = parts[0], parts[1]
+        if kind == "BG_DONE":
+            return                                # a background check or merge ended: the next loop collects it
         agent = (re.search(r"agent=(\S+)", ev) or re.search(r"worker=(\S+)", ev) or [None, None])[1]
         s_ = load()
         t = s_["tasks"].get(tid, {})
@@ -4359,6 +4697,11 @@ def _autopilot(args):
     if gone:
         say(f"!! LEAD NOT FOUND: the lead ({st['lead']['name']}) can't be woken ({gone}). Its events are kept and wait "
             f"for it; in the lead's pane: herdr agent rename <its pane id> {st['lead']['name']}", True)
+    BG_DIR.mkdir(exist_ok=True)
+    for f in BG_DIR.glob("*"):                # left by a manager that stopped: its jobs are gone
+        f.unlink(missing_ok=True)
+    patch_state(lambda s_: [t_.pop("checking", None) for t_ in s_["tasks"].values()])
+    atexit.register(bg_stop)
     last_tick = time.time()
     slept = sleep_meter()
     waiting_since = None       # set while nothing runs and the run waits for the lead or the developer
@@ -4414,8 +4757,12 @@ def _autopilot(args):
                 f"`Budget:` in plan.md (or remove it) and run autopilot again; work in progress is kept.", True)
             sys.exit(3)
 
-        # 1. act on tasks waiting for us
-        for tid in st["order"]:
+        # 1. act on tasks waiting for us: background jobs that ended first, then reviews (so the reviewer is never
+        # idle while work waits for it), then the rest in plan order
+        bg_reap()
+        st = load()
+        first = {"reviewed": 0, "awaiting-review": 1}
+        for tid in sorted(st["order"], key=lambda k: first.get(st["tasks"][k]["status"], 2)):
             t = st["tasks"][tid]
             guarded(tid, lambda: handle(tid, t))
 
@@ -4486,6 +4833,8 @@ def _autopilot(args):
                 + ("## Models: planned and actual\n| Milestone | Planned tier | Ran on | Escalated | Why this tier |\n"
                    "|---|---|---|---|---|\n" + "\n".join(models) + "\n\n" if models else "") +
                 f"## Time: estimate vs actual\n{timing}\n\n"
+                f"## Waiting: time milestones sat still\nA finished or ready milestone that waited for something else "
+                f"first (counted in the times above).\n{wait_table(tasks)}\n\n"
                 f"## Checked automatically\nAlready verified by the run; nobody needs to redo these by hand.\n"
                 f"{auto_checked(st, ok)}\n\n"
                 f"## Run report\n```\n{report}\n```\n\n"
@@ -4567,6 +4916,21 @@ def _autopilot(args):
             evtid = ev.split()[1] if len(ev.split()) > 1 else None
             if evtid:
                 guarded(evtid, lambda: on_event(ev))
+
+
+WAIT_NAMES = {"check slot": "a free check slot", "merge": "the merge step", "reviewer": "the reviewer",
+              "lead": "the lead's dispatch"}
+
+
+def wait_table(tasks):
+    rows = []
+    for k, v in tasks.items():
+        ws = {w: s for w, s in (v.get("waits") or {}).items() if s}
+        if ws:
+            rows.append(f"| {k} | " + ", ".join(f"{WAIT_NAMES.get(w, w)} {_fmt_secs(s)}" for w, s in ws.items())
+                        + f" | {_fmt_secs(sum(ws.values()))} |")
+    return ("| Milestone | Waited for | Total |\n|---|---|---|\n" + "\n".join(rows)) if rows else \
+        "No milestone waited: each one went on as soon as it could."
 
 
 def _fmt_secs(s):
@@ -5357,7 +5721,7 @@ COMMANDS = {
     "doctor": lambda a: cmd_doctor_crash(a),
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
-UNLOCKED = {"autopilot", "poll", "events", "dispatch", "answer", "defer", "fix", "team", "resume", "bench", "stop",
+UNLOCKED = {"autopilot", "poll", "merge", "events", "dispatch", "answer", "defer", "fix", "team", "resume", "bench", "stop",
             "doctor"}
 
 USAGE = """usage: orch <command> [args]
@@ -6472,6 +6836,7 @@ if __name__ == "__main__":
     ORCH = ROOT / ".orchestrate"
     ORCH.mkdir(exist_ok=True)
     STATE = ORCH / "state.json"
+    BG_DIR = ORCH / "bg"
     if sys.argv[1] not in LEASE_FREE:
         require_driver()
     try:

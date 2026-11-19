@@ -146,7 +146,7 @@ newrepo pl; touch "$FH/slow-review"
 printf '# Plan: t\nBranch: orch/pl\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M2: Endpoint\nDepends on: none\nReview: yes\nOpen questions:\n- none\n\n## [x] M6: Other screen\nDepends on: none\nReview: no\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 150 "$ORCH" autopilot > "$WORK/pl.log" 2>&1; code=$?
 check "finished (exit 0)" '[ $code -eq 0 ]'
-check "coder freed at handoff" 'grep -q "M2 saved for review; codex-1 is free" "$WORK/pl.log"'
+check "coder freed at handoff" 'grep -qE "M2 (saved for review|passed its check while being reviewed); codex-1 is free" "$WORK/pl.log"'
 check "M6 started while M2 was in review" '[ "$(grep -n "M6 -> codex-1" "$WORK/pl.log" | cut -d: -f1)" -lt "$(grep -n "M2 review: 1 blocker" "$WORK/pl.log" | cut -d: -f1)" ]'
 check "blocker fix ran as a queued job" 'grep -q "M2 fix job -> codex-1" "$WORK/pl.log"'
 check "fix kept on M2 and merged" '[ "$(status_of M2)$(status_of M6)" = mergedmerged ] && grep -q validated b.txt'
@@ -326,7 +326,7 @@ timeout 60 "$ORCH" autopilot > "$WORK/js.log" 2>&1; code=$?
 check "herdr status is read from its JSON field (agent named working-1 is free)" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ]'
 
 newrepo ib; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
-printf '# Plan: t\nBranch: feature/ib\nCheck command: test "$(git rev-parse --abbrev-ref HEAD)" = HEAD || test ! -f boom.txt\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M10: Boom\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+printf '# Plan: t\nBranch: feature/ib\nCheck command: test "$(git rev-parse --abbrev-ref HEAD)" = HEAD || test ! -f boom.txt\nBranch check: always\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M10: Boom\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 90 "$ORCH" autopilot > "$WORK/ib.log" 2>&1; code=$?
 check "a milestone that fails the check once merged is never committed" '[ $code -eq 3 ] && [ "$(git rev-parse feature/ib)" = "$(git rev-parse main)" ] && [ -z "$(git status --porcelain)" ]'
 check "…it gets fix rounds, then fails with the reason" '[ "$(status_of M10)" = failed ] && grep -q "passes alone but fails the check on feature/ib" "$WORK/ib.log" && [ -f "$APP/../app-wt/claude-1/.orch-task/M10/integration-fix-1.md" ]'
@@ -390,7 +390,7 @@ check "the restart did not hand the milestone to a coder twice" '[ "$(grep -c "M
 echo "15. crash safety: a crash at any step is recovered on the next run"
 crash_then_resume() {   # crash_then_resume <fault point> <name>: sets ccode (crashed run) and code (resumed run)
   newrepo "$2"; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
-  { printf '%b' "$P1"; printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
+  { printf '%b' "${3:-$P1}"; printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
   ORCH_FAULT=$1 timeout 60 "$ORCH" autopilot > "$WORK/$2-crash.log" 2>&1; ccode=$?
   sleep 2
   ORCH_CONFIRM_S=2 timeout 90 "$ORCH" autopilot > "$WORK/$2.log" 2>&1; code=$?
@@ -403,6 +403,8 @@ crash_then_resume after-squash cs1
 check "crash between squash and check: undone, merged again, one commit" '[ $ccode -ne 0 ] && [ $code -eq 0 ] && landed_once && grep -q "RECOVERED M6: undid the half-done merge" "$WORK/cs1.log"'
 crash_then_resume after-check cc1
 check "crash between check and commit: one commit" '[ $ccode -ne 0 ] && [ $code -eq 0 ] && landed_once'
+crash_then_resume after-check cc2 "${P1/Check command:/Branch check: always\\nCheck command:}"
+check "…the same with the check run again on the branch (Branch check: always)" '[ $ccode -ne 0 ] && [ $code -eq 0 ] && landed_once && ! grep -q SKIPPED_CHECK "$WORK/cc2-crash.log" "$WORK/cc2.log"'
 crash_then_resume after-merge-commit cm1
 check "crash right after the commit: not merged twice" '[ $ccode -ne 0 ] && [ $code -eq 0 ] && landed_once && grep -q "RECOVERED M6: its commit had landed" "$WORK/cm1.log"'
 
@@ -645,7 +647,7 @@ check "--to sends a fix to another coder" 'grep -q "^FIX M6 .*-> claude-1" <<<"$
 
 echo "25. the lead dispatches what becomes ready; a silent lead never stalls the run"
 newrepo lw; echo "$APP" > "$FH/lead.dir"
-printf '# Plan: t\nBranch: feature/lw\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: M5 (needs e)\nOpen questions:\n- none\n' > .orchestrate/plan.md
+printf '# Plan: t\nBranch: feature/lw\nAuto dispatch: off\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: M5 (needs e)\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 180 "$ORCH" autopilot > "$WORK/lw.log" 2>&1; code=$?
 check "woken with READY, the lead dispatches each milestone as it unlocks" '[ $code -eq 0 ] && [ "$(status_of M5)$(status_of M6)" = mergedmerged ] && grep -q "orch dispatch M6" "$FH/lead-events.log"'
 check "the event manager waited for the lead instead of stopping" 'grep -q "waiting for the lead: dispatch M5" "$WORK/lw.log" && ! grep -q "started without it" "$WORK/lw.log"'
@@ -1444,6 +1446,42 @@ check "the event manager warns at its start that the lead can't be woken" '[ $co
 check "ALL_DONE says loudly the lead was never woken" 'grep -q "ALL_DONE, but the lead (lead) was NEVER WOKEN" "$WORK/lnv.log"'
 check "the last line no longer reads like a normal finish: the lead was never woken" 'tail -1 .orchestrate/autopilot.log | grep -q "STOPPED: the event manager finished the run (exit 0) — but the lead .lead. was never woken (herdr has no agent with this name): [0-9] event(s) wait for it (.*ALL_DONE"'
 rm -f "$FH/lead.missing"
+
+echo "45. faster handoffs: checks in the background, no double check, early review, auto dispatch, wait times"
+BGPLAN='# Plan: t\nBranch: feature/bg\nCheck command: sleep 3\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M5: e\nDepends on: none\nReview: yes\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: none\nReview: yes\nOpen questions:\n- none\n'
+newrepo bgc; printf "$BGPLAN" > .orchestrate/plan.md
+( for _ in $(seq 1 40); do "$ORCH" status 2>/dev/null | grep "check running" >> "$WORK/bgc-status.txt"; sleep 0.5; done ) &
+spy=$!
+timeout 180 "$ORCH" autopilot > "$WORK/bgc.log" 2>&1; code=$?; kill $spy 2>/dev/null; wait $spy 2>/dev/null
+L=.orchestrate/autopilot.log
+task_is(){ python3 -c "import json,sys; t=json.load(open('.orchestrate/state.json'))['tasks']['$1']; sys.exit(0 if ($2) else 1)"; }
+line(){ grep -n "$1" $L | head -1 | cut -d: -f1; }
+check "both land; the run ends normally" '[ $code -eq 0 ] && [ "$(status_of M5)$(status_of M6)" = mergedmerged ]'
+check "the manager keeps going while a check runs: both reviews come back before M5's 3-second check ends" '[ "$(line "M6 reviewed")" -lt "$(line "M5 check passed")" ]'
+check "early review: the review is sent alongside the check" 'grep -q "SENT review M5 -> reviewer (round 1) (alongside its check: .Early review: on.)" $L'
+check "one check at a time by default: M6 waits for the check of M5, and the log says so" 'grep -q "M6 waited 0m0[0-9]s for M5.s check" $L'
+check "orch status shows a running check" 'grep -q "M5 .*\[check running [0-9]m[0-9]*s in its folder\]" "$WORK/bgc-status.txt"'
+check "the first milestone to land is not checked twice (nothing else landed)" 'grep -q "^.*SKIPPED_CHECK M5: the branch gets exactly the files whose check passed" $L && ! task_is M5 "any(c[\"where\"] == \"branch\" for c in t[\"checks\"])"'
+check "the second one is checked again on the branch, because M5 landed in between" '! grep -q "SKIPPED_CHECK M6" $L && task_is M6 "any(c[\"where\"] == \"branch\" and c[\"ok\"] for c in t[\"checks\"])"'
+check "the summary has a Waiting table with the wait of M6" 'grep -q "^## Waiting: time milestones sat still" .orchestrate/summary.md && grep -q "^| M6 | a free check slot 0m0[0-9]s |" .orchestrate/summary.md'
+newrepo pch; printf "${BGPLAN/Max parallel: 2/Max parallel: 2\\nParallel checks: 2}" > .orchestrate/plan.md
+timeout 180 "$ORCH" autopilot > "$WORK/pch.log" 2>&1; code=$?
+check "Parallel checks: 2 runs both checks at once: nobody waits for a check" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ] && ! grep -q "waited .* check" .orchestrate/autopilot.log'
+newrepo ero; printf "${BGPLAN/Max parallel: 2/Max parallel: 2\\nEarly review: off}" > .orchestrate/plan.md
+timeout 180 "$ORCH" autopilot > "$WORK/ero.log" 2>&1; code=$?; L=.orchestrate/autopilot.log
+check "Early review: off sends the review only after the check passed" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && [ "$(line "M5 check passed")" -lt "$(line "SENT review M5")" ] && ! grep -q "alongside its check" $L'
+newrepo erf
+printf '# Plan: t\nBranch: feature/erf\nCheck command: sleep 1; ! grep -qx b b.txt\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: reviewer (agy)\n\n## [x] M2: Endpoint\nDepends on: none\nReview: yes\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 180 "$ORCH" autopilot > "$WORK/erf.log" 2>&1; code=$?; L=.orchestrate/autopilot.log; F="$APP/../app-wt/claude-1/.orch-task/M2"
+check "a failed check and a review blocker on the same version make ONE fix round" '[ $code -eq 0 ] && [ "$(status_of M2)" = merged ] && grep -q "M2 checks failed -> fix round 1 (with the reviewer.s 1 blocker(s))" $L && [ ! -e "$F/review-fix-1.md" ] && [ ! -e "$F/fix-2.md" ]'
+check "that fix job names both the check and the blocker" 'grep -q "^# Checks failing for M2" "$F/fix-1.md" && grep -q "BLOCKER: b.txt:1 — b.txt must say validated" "$F/fix-1.md"'
+check "the review of the failing version does not count against the review cap" 'task_is M2 "t.get(\"review_base\", 0) == 1"'
+newrepo adp; echo "$APP" > "$FH/lead.dir"
+printf '# Plan: t\nBranch: feature/ad\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: M5 (needs e)\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 180 "$ORCH" autopilot > "$WORK/adp.log" 2>&1; code=$?; L=.orchestrate/autopilot.log
+check "auto dispatch: M6 starts as soon as M5 lands, without waiting for the lead" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ] && grep -q "M6: M5 landed, so it starts now (auto dispatch); the lead is told" $L && ! grep -q "orch dispatch M6" "$FH/lead-events.log"'
+check "the lead is told with AUTO-DISPATCHED and the reason" 'grep -q "AUTO-DISPATCHED M6 \"g\": started by the event manager as soon as M5 landed (.Auto dispatch: on. in plan.md)" "$FH/lead-events.log"'
+check "the first milestone still waits for the lead's go" 'grep -q "waiting for the lead: dispatch M5" $L && grep -q "M5 -> claude-1 .*it waited [0-9]m[0-9]*s for the lead.s dispatch" $L'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

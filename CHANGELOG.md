@@ -2,6 +2,21 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.12.0] - 2026-11-19
+
+Coders' finished work reaches the reviewer, the branch and the lead faster. Example: M5 and M6 finish at the same second and your check takes 10 seconds. Before, the event manager ran M5's check and did nothing else meanwhile, then M6's check, then the same check again on the branch for each one: M5 landed about 32 seconds after it was done. Now the checks run in the background, the reviewer already reads M5 while its check runs, and a check that already passed on exactly these files is not run again: M5 lands about 13 seconds after it is done. How the work is checked, reviewed and committed is the same; it is still one event loop that reacts to events.
+
+### Changed
+- **Checks run in the background.** A check works like `fetch()` in a browser: the event manager starts it, keeps handling the other events (reviews, fixes, new milestones, the lead's answers), and the check's end arrives as one more event. One check runs at a time by default, so two test suites never fight over your machine; `Parallel checks: 2` in the plan header allows two. `orch status` shows `[check running 0m04s in its folder]`.
+- **No double check when nothing changed.** In worktree mode each milestone was checked in the coder's folder, then again on the feature branch. When nothing else landed in between, the branch gets exactly the files that already passed, so the second check is skipped and the log says `SKIPPED_CHECK M5: ...`. If another milestone landed first, the branch check still runs. `Branch check: always` brings back the old behaviour, for a check that depends on more than the files (the branch name, the clock, a running service).
+- **Reviews go first.** A milestone waiting for the reviewer is handled before anything else in each loop, so a free reviewer gets the next review at once.
+- **Early review.** A `Review: yes` milestone goes to the reviewer while its check runs (`Early review: off` to wait for the check). If the check fails, the coder gets one fix job with the check output and the reviewer's blockers together, and that review round does not count against the review limit.
+- **Auto dispatch.** When a milestone lands and that unlocks the next one (M6 depends on M5), M6 starts at once and the lead gets `AUTO-DISPATCHED M6: started by the event manager as soon as M5 landed`, instead of waiting for the lead to wake up and run `orch dispatch M6`. The first milestones of a run still wait for the lead's go. `Auto dispatch: off` makes every milestone wait for the lead, as before.
+
+### Added
+- **Wait times.** The log says what a finished milestone waited for, for example `M6 waited 0m03s for M5's check`, `M5 -> claude-1 — it waited 0m40s for the lead's dispatch`, or `(M6 waited 0m12s for the reviewer)`. The summary has a new table, **"Waiting: time milestones sat still"**, with each milestone's waits.
+- Tests (section 45): reviews come back while a check still runs; the check-slot wait is logged; status shows the running check; the first milestone to land skips the branch check and the second runs it; `Parallel checks: 2`; `Early review: off`; a failed check and a review blocker become one fix round; auto dispatch and its `AUTO-DISPATCHED` event; the Waiting table.
+
 ## [5.11.0] - 2026-11-19
 
 Fixes a bug where the lead was never given its name, so orch could not wake it. Example: you run the plan and the run in a Claude Code pane, four agent panes are open in the same folder, and the lead never ran the `herdr agent rename` line its playbook asked for. The run went ahead anyway, M4 landed, and the lead only learned the run had finished when you asked. The log said "can't tell which pane is lead" at the start and "exited (code 0)" at the end, which read like a normal finish.

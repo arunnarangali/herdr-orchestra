@@ -79,6 +79,10 @@ Notes from user:
 | `Risk hold:` | Optional. `off` stops risky changes being held for `orch approve` |
 | `Budget:` | Optional. A time limit for the whole run, e.g. `4h`; the event manager stops when it is used up. Time spent waiting for your answer does not count |
 | `Estimate:` | How long the whole feature should take, e.g. `1h30m`. Milestones that run side by side count once. The summary compares it with the real time |
+| `Parallel checks:` | Optional. How many check commands may run at once (default `1`). The event manager keeps going while a check runs either way; raise it only if your machine can run two test suites side by side. Shared mode always uses 1 |
+| `Early review:` | Optional. `on` (default) sends a `Review: yes` milestone to the reviewer while its check runs; if the check fails, the coder gets one fix job with both the check output and the reviewer's blockers. `off` reviews only after the check passed |
+| `Branch check:` | Optional. `auto` (default) skips the check on the feature branch when the merged files are exactly the ones already checked in the coder's folder (nothing else landed meanwhile). `always` runs it on every merge, for checks that depend on more than the files (the branch name, the time, a service) |
+| `Auto dispatch:` | Optional. `on` (default): a milestone that a landing unlocked starts at once, and the lead is told (`AUTO-DISPATCHED`). `off`: it waits for the lead's `orch dispatch` |
 | `Setup inputs:` | Optional. Extra files that make the setup command run again when they change, besides lockfiles |
 
 ## Milestone sections

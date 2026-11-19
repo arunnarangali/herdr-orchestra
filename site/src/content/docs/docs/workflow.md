@@ -27,7 +27,7 @@ The lead decides the **what** and **why**. It decides two more things: the inter
 
 1. **Dispatch.** Each milestone the lead has dispatched, once its dependencies have landed, goes to a free coder whose model serves its tier (a stronger one if none is free). Fix and conflict jobs go first.
 2. **Code.** The coder gets a task file built from the plan: the milestone, the global instructions, the check command, the reports of the milestones it depends on, and the rules for coders. It writes a short report ending in a `COMMIT:` line and a done file.
-3. **Check.** Your check command runs on the coder's work. A failure goes back with the last 60 lines of output, up to 3 rounds.
+3. **Check.** Your check command runs on the coder's work, in the background: the event manager keeps handling everything else meanwhile. A failure goes back with the last 60 lines of output, up to 3 rounds.
 4. **Review.** If the milestone has `Review: yes`, the reviewer reads the diff. In worktree mode the coder is freed first and picks up other work meanwhile. Blockers become a fix job for the next free coder, up to 2 rounds.
 5. **Land.** The milestone becomes one commit on the feature branch, and the milestones that depended on it unlock.
 6. **Wake the lead.** The lead is woken with the news and dispatches what is now ready. It is also woken for a coder's question, a milestone that failed, and a milestone held for approval. Between wake-ups it is paused.

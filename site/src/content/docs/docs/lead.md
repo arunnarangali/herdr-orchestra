@@ -22,7 +22,7 @@ The lead never watches or polls the agents. It works like a function on a call s
 
 | Event | What the lead does |
 |---|---|
-| A milestone **landed** | Dispatches whatever that unlocked |
+| A milestone **landed** | Nothing: whatever that unlocked has already started (`AUTO-DISPATCHED`), unless the plan says `Auto dispatch: off` |
 | Milestones are **ready** | `orch dispatch <Mn>...` |
 | A coder asked a **question** | Answers it when the request, the plan or the code already settles it. Otherwise asks you, and passes your answer on |
 | A milestone **failed** after its rounds | Reads the report, adds the missing fact to the plan, dispatches it again (with a stronger model if the work was harder than planned) |
@@ -90,7 +90,7 @@ A run never stalls on the lead.
 - **A wake-up only counts when the lead reads its events.** Sending the prompt proves nothing: it can sit in the pane's input box, or collide with something you were typing there. So if the lead is idle again and the events are still unread, the wake-up is sent again after 30 seconds, then after 1 minute. After 3 wake-ups you get a desktop notification. `orch status` shows it too: `wake-up sent 2x (last 0m40s ago), not picked up yet`.
 - The event manager does not leave at the end of a run until the lead has picked up the last events (or you have been told it did not).
 - A lead herdr can't watch gets the wake-up again every 5 minutes instead.
-- Ready milestones the lead has not dispatched after 15 minutes start by themselves.
+- A milestone a landing unlocked starts at once and the lead is only told (`Auto dispatch: off` to make it wait for the lead). Other ready milestones the lead has not dispatched after 15 minutes start by themselves.
 - If the lead's pane is gone, you are told once. `orch events --peek` shows you what is waiting without acknowledging it.
 - While a question or a hold waits for you, the event manager stays up (12 hours by default) and that time does not count against the run's `Budget:`.
 
