@@ -36,6 +36,8 @@ orch finish
 4. Removes the worktrees and hidden refs.
 5. Pushes the branch and opens a PR into `Base:` with `gh`, or prints the compare link if `gh` isn't available.
 
+**No AI credit.** The run's commits are yours: orch makes them with your git name, and adds no `Co-Authored-By: Claude` or "Generated with" line. The PR text is `.orchestrate/pr-body.md`: the summary without any such line (`summary.md` itself stays as written). If an agent made a commit by itself with its own credit, `orch finish` names it (`WARN 1 commit(s) ... credit an AI tool`) so you can reword it before you push. To stop your own Claude Code adding the line to commits you make yourself, set `"includeCoAuthoredBy": false` in `~/.claude/settings.json`.
+
 `orch finish --no-push` only cleans up. Neither the lead nor the event manager pushes on its own; finishing is always your call.
 
 ## Upgrading from 4.4 and earlier

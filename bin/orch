@@ -3109,6 +3109,35 @@ def github_compare_url(remote, base, branch):
     return f"https://github.com/{m.group(1)}/compare/{base}...{branch}?expand=1" if m else None
 
 
+# AI tools sign their own commits and PRs ("Co-Authored-By: Claude ...", "Generated with Claude Code"). A run's
+# commits and PR are the developer's: orch never adds such lines, and keeps them out of what it publishes.
+AI_CREDIT_RE = re.compile(
+    r"(?im)^[ \t]*(?:co-authored-by:[^\n]*(?:claude|anthropic|openai|codex|copilot|gemini|cursor|aider|devin|"
+    r"opencode|antigravity|noreply@anthropic|noreply@openai)[^\n]*|claude-session:[^\n]*|(?:🤖\s*)?generated (?:with|by) \[?(?:claude|codex|"
+    r"copilot|gemini|cursor|aider|opencode|antigravity)[^\n]*|https?://claude\.ai/code/session_\S*)[ \t]*\n?")
+AI_AUTHOR_RE = re.compile(r"(?i)noreply@anthropic\.com|noreply@openai\.com|^(?:claude|copilot|codex)\s*<")
+
+
+def strip_ai_credit(text):
+    """The text without lines that credit an AI tool, and without the blank lines they leave at the end."""
+    return AI_CREDIT_RE.sub("", text).rstrip() + "\n"
+
+
+def ai_credited_commits(base):
+    """Commits on the run's branch that credit an AI tool (as author, or with a Co-Authored-By line). orch never
+    makes them: a coder or the lead committed by itself."""
+    mb = git("merge-base", base, "HEAD", cwd=ROOT, check=False).stdout.strip()
+    if not mb:
+        return []
+    out = git("log", "--format=%h%x1f%an <%ae>%x1f%B%x1e", f"{mb}..HEAD", cwd=ROOT, check=False).stdout
+    found = []
+    for rec in out.split("\x1e"):
+        parts = rec.strip("\n").split("\x1f")
+        if len(parts) == 3 and (AI_AUTHOR_RE.search(parts[1]) or AI_CREDIT_RE.search(parts[2] + "\n")):
+            found.append(f"{parts[0]} {parts[2].strip().splitlines()[0] if parts[2].strip() else ''}")
+    return found
+
+
 def cmd_finish(args):
     """orch finish [--no-push] [--recheck] -> final check (reused when it already passed on exactly these files;
     --recheck runs it anyway), drop hidden refs and worktrees, push the feature branch, open a PR."""
@@ -3148,6 +3177,15 @@ def cmd_finish(args):
         if branch_exists(f"{st['branch']}-{tid}"):
             git("branch", "-D", "-q", f"{st['branch']}-{tid}", cwd=ROOT, check=False)
     print(f"CLEAN {st['branch']} is the only branch this run made ({len(refs)} hidden ref(s) removed)")
+    credited = ai_credited_commits(base)
+    if credited:
+        print(f"WARN {len(credited)} commit(s) on {st['branch']} credit an AI tool (a Claude author or a "
+              f"Co-Authored-By line). orch did not make them: an agent committed by itself. They go into the PR as "
+              f"they are; to drop the credit, reword them before you push: " + "; ".join(credited[:5]))
+    summary = ORCH / "summary.md"
+    pr_body = ORCH / "pr-body.md"                 # the PR text: the summary, without any AI tool's credit line
+    pr_body.write_text(strip_ai_credit(summary.read_text()) if summary.exists() else
+                       f"Built by herdr-orchestra from .orchestrate/plan.md ({len(st['order'])} milestones).\n")
     for ref in rescued:
         print(f"KEPT {ref}: unsaved files orch rescued during the run and no milestone used — look with "
               f"`git show --stat {ref}`, delete with `git update-ref -d {ref}`")
@@ -3163,11 +3201,9 @@ def cmd_finish(args):
     print(f"PUSHED {st['branch']} to origin")
     compare = github_compare_url(url, base, st["branch"])
     if compare and shutil.which("gh"):
-        summary = ORCH / "summary.md"
-        body = (["--body-file", str(summary)] if summary.exists() else
-                ["--body", f"Built by herdr-orchestra from .orchestrate/plan.md ({len(st['order'])} milestones)."])
         try:
-            r = subprocess.run(["gh", "pr", "create", "--base", base, "--head", st["branch"], "--title", title, *body],
+            r = subprocess.run(["gh", "pr", "create", "--base", base, "--head", st["branch"], "--title", title,
+                                "--body-file", str(pr_body)],
                                cwd=ROOT, text=True, capture_output=True, timeout=120)
         except (OSError, subprocess.TimeoutExpired) as e:
             r = subprocess.CompletedProcess([], 1, "", str(e))
@@ -3175,7 +3211,9 @@ def cmd_finish(args):
             print(f"PR {r.stdout.strip().splitlines()[-1] if r.stdout.strip() else 'created'}")
             return
         print(f"NOTE gh pr create failed: {(r.stdout + r.stderr).strip()}")
-    print(f"OPEN A PR from {st['branch']} into {base}" + (f": {compare}" if compare else ""))
+    print(f"OPEN A PR from {st['branch']} into {base}" + (f": {compare}" if compare else "")
+          + f" — title: {title!r}, text: .orchestrate/pr-body.md (use them as they are: add no \"Generated with\" or "
+            f"Co-Authored-By line)")
 
 
 # ---------------------------------------------------------------- v4: task files, nudge, autopilot
