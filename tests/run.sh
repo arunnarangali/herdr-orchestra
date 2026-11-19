@@ -231,7 +231,7 @@ check "lead plan refuses an unknown part" '! "$ORCH" lead plan fast >/dev/null 2
 check "lead run --section prints one part of the run playbook" '"$ORCH" lead run --section FAILED | grep -q "^| \`FAILED Mn\`: checks" && "$ORCH" lead run --section ALL_DONE | grep -q "^## 3. ALL_DONE" && "$ORCH" lead run --section rules | grep -q "^## Hard rules"'
 check "a wake-up runs only orch events, not the whole run playbook again" 'for f in "$ROOT/skills/orch-run/SKILL.md" "$ROOT/claude-commands/orch-run.md" "$ROOT/opencode-commands/orch-run.md"; do grep -q "run only \`orch events\`" "$f" && grep -q "do not run \`orch lead run\` again" "$f" || exit 1; done'
 check "the plan playbook spells out the herdr commands instead of loading the herdr skill first" 'grep -q "herdr agent rename <pane id> <name>" "$ROOT/playbooks/plan.md" && grep -q "Load the \`herdr\` skill (or run \`herdr --skill\`) only if one of these fails" "$ROOT/playbooks/plan.md" && ! grep -q "skill for exact CLI syntax if you have it" "$ROOT/playbooks/plan.md"'
-check "lead whoami names the pane" '"$ORCH" lead whoami | grep -q "herdr agent rename w1:p1 lead"'
+check "lead whoami names the pane" 'env -u HERDR_PANE_ID "$ORCH" lead whoami | grep -q "herdr agent rename w1:p1 lead"'
 check "lead check passes on HERDR_ENV=1" 'HERDR_ENV=1 "$ORCH" lead check | grep -q "^OK inside a Herdr pane"'
 out=$(env -u HERDR_ENV "$ORCH" lead check 2>&1); code=$?
 check "lead check passes when herdr answers but HERDR_ENV is unset (Hermes gateway)" '[ $code -eq 0 ] && grep -q "^OK herdr is reachable" <<<"$out" && grep -q "client_env_passthrough" <<<"$out"'
@@ -1150,7 +1150,7 @@ timeout 90 "$ORCH" autopilot > "$WORK/wl.log" 2>&1; code=$?
 check "the run still finishes once the coder is back" '[ $code -eq 0 ] && [ "$(status_of M7)" = merged ]'
 check "the lead got a WORKER-LOST event with the exact fix" 'grep -q "WORKER-LOST M7 .*claude-1 is gone: herdr can.t find it .*Fix: run \`orch resume\` if herdr restarted" "$FH/lead-events.log" && grep -q "This is NOT routine" "$FH/lead-events.log"'
 check "the log line names the project and run" 'grep -q "\[app feature/wl\] LOST claude-1" .orchestrate/autopilot.log'
-check "the manager wrote its last line when it finished" 'tail -1 .orchestrate/autopilot.log | grep -q "\[app feature/wl\] STOPPED: the event manager exited (code 0)"'
+check "the manager wrote its last line when it finished" 'tail -1 .orchestrate/autopilot.log | grep -q "\[app feature/wl\] STOPPED: the event manager finished the run (exit 0)"'
 
 newrepo hr; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; echo "$APP/../app-wt/codex-1" > "$FH/codex-1.dir"
 printf '# Plan: t\nBranch: feature/hr\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M19: S\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
@@ -1398,6 +1398,52 @@ check "sent on again, the same honest result lands with no more fix rounds" '[ $
 out=$("$ORCH" defer M22 AC1 "x" 2>&1); code=$?
 check "defer refuses a milestone that already landed" '[ $code -eq 2 ] && grep -q "is merged" <<<"$out"'
 check "usage and the run playbook explain defer" '"$ORCH" 2>&1 | grep -q "defer <Mn> <AC2,AC3> <reason>" && grep -q "orch defer" "$ROOT/playbooks/run.md" && grep -q -- "--defer" "$ROOT/playbooks/run.md"'
+
+echo "44. the lead is named automatically, or the run refuses to start without it (bug: lead never named, never woken)"
+LNPLAN='# Plan: t\nBranch: feature/ln\nCheck command: true\nIsolation: worktree\nLead: lead (claude: sonnet)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M1: e\nDepends on: none\nOpen questions:\n- none\n'
+newrepo ln; printf "$LNPLAN" > .orchestrate/plan.md; touch "$FH/lead.missing"
+"$ORCH" sync >/dev/null
+out=$(env -u HERDR_PANE_ID "$ORCH" dispatch M1 2>&1); code=$?
+check "dispatch refuses when herdr has no agent named lead, with the exact rename command" '[ $code -eq 2 ] && grep -q "NO LEAD: the lead .lead. can.t be woken (herdr has no agent with this name)" <<<"$out" && grep -q "herdr agent rename w1:p1 lead .*FOCUSED pane" <<<"$out" && grep -q "Lead mode: off" <<<"$out"'
+check "…and changed nothing: M1 is not dispatched" 'python3 -c "import json,sys;sys.exit(bool(json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M1\"].get(\"go\")))"'
+out=$(env -u HERDR_PANE_ID "$ORCH" start 2>&1); code=$?
+check "orch start refuses too, before it makes the branch" '[ $code -eq 2 ] && grep -q "orch start was refused" <<<"$out" && ! git rev-parse -q --verify feature/ln >/dev/null'
+check "orch status shows LEAD NOT FOUND with the fix" '"$ORCH" status | grep -q "^!! LEAD NOT FOUND: .*herdr agent rename <its pane id> lead" && "$ORCH" status | grep -q "lead lead: .*!! LEAD NOT FOUND"'
+echo "$APP" > "$FH/pane-w1:p9.cwd"; echo claude > "$FH/pane-w1:p9.cmd"        # the lead's own pane, an agent runs in it
+out=$(HERDR_PANE_ID=w1:p9 "$ORCH" start 2>&1); code=$?
+check "run from the lead's own pane, orch start names it lead and goes on" '[ $code -eq 0 ] && grep -q "^NAMED   this pane (w1:p9) is now .lead." <<<"$out" && grep -q "^rename w1:p9 lead" "$FH/team.log" && grep -q "^LEAD lead kind=claude herdr=found" <<<"$out" && git rev-parse -q --verify feature/ln >/dev/null'
+check "status no longer warns" '! "$ORCH" status | grep -q "LEAD NOT FOUND"'
+out=$(HERDR_PANE_ID=w1:p9 "$ORCH" dispatch M1 2>&1); code=$?
+check "once named, dispatch goes ahead without renaming again" '[ $code -eq 0 ] && grep -q "^DISPATCH M1" <<<"$out" && [ "$(grep -c "^rename w1:p9 lead" "$FH/team.log")" -eq 1 ]'
+rm -f "$FH/lead.paneid"; touch "$FH/lead.missing"; echo "$APP" > "$FH/pane-w1:p8.cwd"   # a plain shell pane: no agent
+out=$(HERDR_PANE_ID=w1:p8 "$ORCH" dispatch M1 2>&1); code=$?
+check "a pane with no agent in it is not named lead: refused, with herdr's reason" '[ $code -eq 2 ] && grep -q "herdr agent rename w1:p8 lead. failed: no agent detected" <<<"$out" && grep -q "name your own pane, then run it again:  herdr agent rename w1:p8 lead$" <<<"$out"'
+echo w1:p5 > "$FH/claude-1.paneid"; echo claude > "$FH/pane-w1:p5.cmd"; echo "$APP" > "$FH/pane-w1:p5.cwd"
+out=$(HERDR_PANE_ID=w1:p5 "$ORCH" dispatch M1 2>&1); code=$?
+check "a coder's pane is never renamed to lead" '[ $code -eq 2 ] && grep -q "this pane (w1:p5) is claude-1, not the lead" <<<"$out" && ! grep -q "^rename w1:p5" "$FH/team.log"'
+rm -f "$FH/claude-1.paneid"
+# orch lead plan / run name the pane they run in, from the plan's Lead line; a wake-up's --section does not
+newrepo lp; printf "${LNPLAN/Lead: lead/Lead: boss}" > .orchestrate/plan.md; touch "$FH/boss.missing"
+echo "$APP" > "$FH/pane-w1:p9.cwd"; echo claude > "$FH/pane-w1:p9.cmd"
+out=$(HERDR_PANE_ID=w1:p9 "$ORCH" lead plan 2>&1)
+check "orch lead plan names its own pane with the plan's lead name" 'grep -q "^NAMED   this pane (w1:p9) is now .boss." <<<"$out" && grep -q "^rename w1:p9 boss" "$FH/team.log" && grep -q "You are the LEAD" <<<"$out"'
+out=$(HERDR_PANE_ID=w1:p9 "$ORCH" lead run 2>&1)
+check "orch lead run sees it is named already" 'grep -q "^LEAD    this pane (w1:p9) is .boss." <<<"$out" && [ "$(grep -c "^rename" "$FH/team.log")" -eq 1 ]'
+HERDR_PANE_ID=w1:p9 "$ORCH" lead run --section FAILED >/dev/null 2>&1; HERDR_PANE_ID=w1:p9 "$ORCH" lead plan quick >/dev/null 2>&1
+check "a wake-up's playbook section and the plan parts ask herdr nothing" '[ "$(grep -c "^rename" "$FH/team.log")" -eq 1 ]'
+echo w1:p4 > "$FH/boss.paneid"
+out=$(HERDR_PANE_ID=w1:p9 "$ORCH" lead plan 2>&1)
+check "the name is never taken from another pane that runs an agent" 'grep -q "pane w1:p4 already has the name .boss. and runs an agent" <<<"$out" && [ "$(grep -c "^rename" "$FH/team.log")" -eq 1 ]'
+rm -f "$FH/lead.missing"
+out=$(HERDR_PANE_ID=w1:p9 "$ORCH" lead whoami 2>&1)
+check "orch lead whoami names the pane too" 'grep -q "^NAMED   this pane (w1:p9) is now .lead." <<<"$out" && ! grep -q "Name it:" <<<"$out"'
+# a run that starts without its lead (the developer ran `orch autopilot` by hand) says so at once and at the end
+newrepo lnv; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead.missing"; printf "$LNPLAN" > .orchestrate/plan.md
+ORCH_LEAD_WAIT_MIN=0 timeout 120 "$ORCH" autopilot > "$WORK/lnv.log" 2>&1; code=$?
+check "the event manager warns at its start that the lead can't be woken" '[ $code -eq 0 ] && grep -q "!! LEAD NOT FOUND: the lead (lead) can.t be woken (herdr has no agent with this name)" "$WORK/lnv.log"'
+check "ALL_DONE says loudly the lead was never woken" 'grep -q "ALL_DONE, but the lead (lead) was NEVER WOKEN" "$WORK/lnv.log"'
+check "the last line no longer reads like a normal finish: the lead was never woken" 'tail -1 .orchestrate/autopilot.log | grep -q "STOPPED: the event manager finished the run (exit 0) — but the lead .lead. was never woken (herdr has no agent with this name): [0-9] event(s) wait for it (.*ALL_DONE"'
+rm -f "$FH/lead.missing"
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

@@ -2,6 +2,19 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [5.11.0] - 2026-11-19
+
+Fixes a bug where the lead was never given its name, so orch could not wake it. Example: you run the plan and the run in a Claude Code pane, four agent panes are open in the same folder, and the lead never ran the `herdr agent rename` line its playbook asked for. The run went ahead anyway, M4 landed, and the lead only learned the run had finished when you asked. The log said "can't tell which pane is lead" at the start and "exited (code 0)" at the end, which read like a normal finish.
+
+### Fixed
+- **The lead is named by orch, not by a playbook line.** `orch lead plan`, `orch lead run`, `orch lead whoami`, `orch start` and `orch dispatch` run in the lead's own pane, so they name that pane `lead` themselves (`NAMED   this pane (w7:p1) is now \`lead\``). They use the pane id herdr gives the shell (`HERDR_PANE_ID`), never the focused pane, never take the name from another pane that runs an agent, and never rename a coder's or the reviewer's pane.
+- **No run starts without a lead that can be woken.** If herdr has no agent named `lead` and the pane can't be named, `orch start` and `orch dispatch` stop with `NO LEAD` and the exact command, for example `herdr agent rename w7:p1 lead`, and change nothing. (`Lead mode: off` runs are not checked.)
+- **`orch status` shows it:** `!! LEAD NOT FOUND` with the fix, next to the lead line.
+- **The event manager says it loudly.** At its start: `!! LEAD NOT FOUND: the lead (lead) can't be woken`. At ALL_DONE: `ALL_DONE, but the lead (lead) was NEVER WOKEN`. Its last line is now `STOPPED: the event manager finished the run (exit 0) — but the lead \`lead\` was never woken ...: 2 event(s) wait for it`, instead of `exited (code 0)`. A wake-up that herdr answers with `agent_not_found` counts as "lead not found", so the manager no longer waits two more minutes for it.
+
+### Added
+- Tests (section 44): dispatch and start refuse without a lead and change nothing; the lead's own pane is named; a shell pane, a coder's pane or a name another pane holds are never used; a wake-up's `--section` asks herdr nothing; the start warning, the ALL_DONE warning and the last log line. The test herdr now answers `agent_not_found` when an agent it has no name for is prompted, as real herdr does.
+
 ## [5.10.0] - 2026-11-18
 
 The lead reads less text, and coders get a cleaner task, with no change to how a feature is built or checked. Example: a quick run ("make the login button blue") used to read the whole 31 KB planning playbook; now it reads about 15 KB. A run with 15 wake-ups no longer has the lead print the 17 KB run playbook again on each one. The check command, acceptance criteria, reviews, risk hold, fix rounds and summary work exactly as before.

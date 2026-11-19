@@ -63,7 +63,7 @@ orch never refuses a task because a coder's folder has unsaved files. It saves t
 
 ## Why did it stop?
 
-Every stop writes a last line in `.orchestrate/autopilot.log`: `STOPPED: orch stop`, `STOPPED: the event manager exited (code 3)` or `CRASHED: <error>` with the traceback. When the event manager was killed without a word (the memory guard closed the terminal, the computer restarted), the next `orch status`, `orch resume` or manager start finds it and looks up why in the computer's own log:
+Every stop writes a last line in `.orchestrate/autopilot.log`: `STOPPED: orch stop`, `STOPPED: the event manager finished the run (exit 0)`, `STOPPED: the event manager exited (code 3)` or `CRASHED: <error>` with the traceback. If the lead still has unread events when the manager leaves, the line says so, for example `— but the lead \`lead\` was never woken (herdr has no agent with this name): 2 event(s) wait for it`. Name the lead's pane (`herdr agent rename <pane> lead`) and run `orch resume`: it wakes the lead. When the event manager was killed without a word (the memory guard closed the terminal, the computer restarted), the next `orch status`, `orch resume` or manager start finds it and looks up why in the computer's own log:
 
 ```
 [shop feature/cart] CRASHED: the event manager (pid 4120) stopped without a word; last alive 14:36:10. Reason: the memory guard (systemd-oomd) closed the terminal or app this run was in, because the computer was low on memory

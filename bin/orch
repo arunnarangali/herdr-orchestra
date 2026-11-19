@@ -1781,6 +1781,7 @@ def default_base(st):
 
 def cmd_start(args):
     st = load()
+    require_lead(st, "orch start")
     ensure_excluded()
     cur = git("rev-parse", "--abbrev-ref", "HEAD", cwd=ROOT).stdout.strip()
     if st.get("base") == st["branch"]:
@@ -1839,6 +1840,10 @@ def cmd_start(args):
             herdr = "found" if herdr_state(name) is not None else "NOT FOUND"
             lost = lost or herdr == "NOT FOUND"
         print(f"{label} {name} kind={w.get('kind')}{where} herdr={herdr}")
+    if lead_on(st) and not os.environ.get("ORCH_DRIVER"):
+        ld = st["lead"]                          # require_lead above made sure herdr can wake it
+        print(f"LEAD {ld['name']} kind={ld.get('kind')} herdr="
+              + (f"pane {ld['pane']}" if ld.get("pane") else "found" if ld.get("detect", True) else "detect:off"))
     if lost:
         print("HINT an agent herdr can't find: after a herdr or computer restart the panes come back without their "
               "names — `orch resume` names them again; `orch team up` opens the ones that are really gone")
@@ -2937,7 +2942,13 @@ def cmd_status(args):
     if lead_on(st):
         ev = [e for e in st["lead_events"] if event_open(st, e)]
         hold = undispatched(st)
+        gone = lead_missing(st)
+        if gone:
+            print(f"!! LEAD NOT FOUND: the event manager can't wake the lead `{st['lead']['name']}` ({gone}). In the "
+                  f"lead's pane: herdr agent rename <its pane id> {st['lead']['name']}   (`orch lead whoami` there "
+                  f"shows the id)")
         print(f"  lead {st['lead']['name']}: {len(unread_events(st))} unread event(s), {len(ev)} open"
+              + ("  !! LEAD NOT FOUND" if gone else "")
               + (f"; waiting for `orch dispatch`: {', '.join(hold)}" if hold else "")
               + (f"; wake-up sent {lw['n']}x (last {_fmt_secs(now() - lw.get('ts', now()))} ago), not picked up yet"
                  if unread_events(st) and (lw := st.get("lead_wake") or {}).get("n") else "")
@@ -3269,6 +3280,7 @@ def cmd_dispatch(args):
     need(args, 1, "dispatch <Mn> [Mn...] [--to <worker>] [--tier small|medium|high]")
     with state_lock():
         st = load()
+        require_lead(st, "orch dispatch")
         if opts.get("--to") and opts["--to"] not in st["workers"]:
             die(f"unknown worker {opts['--to']!r} — workers: {', '.join(st['workers'])}")
         if opts.get("--to"):
@@ -3781,8 +3793,15 @@ def cmd_autopilot(args):
         sys.exit(0)
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
-        ended("exit", f"exit {code}")
-        log_line(f"{tag} STOPPED: the event manager exited (code {code}); the line above says why")
+        unwoken = ""
+        with contextlib.suppress(BaseException):
+            unwoken = lead_unwoken(load()) if STATE.exists() else ""
+        ended("exit", f"exit {code}" + (f"; {unwoken}" if unwoken else ""))
+        log_line(f"{tag} STOPPED: " + ("the event manager finished the run (exit 0)" if code == 0 else
+                                       f"the event manager exited (code {code}); the line above says why")
+                 + (f" — but {unwoken}" if unwoken else ""))
+        if unwoken and shutil.which("notify-send"):
+            subprocess.run(["notify-send", "orch autopilot", f"{tag} {unwoken}"], capture_output=True)
         raise
     except KeyboardInterrupt:
         ended("stopped", "Ctrl-C")
@@ -3799,6 +3818,24 @@ def cmd_autopilot(args):
             subprocess.run(["notify-send", "orch autopilot", f"{tag} CRASHED: {type(e).__name__}: {e}"],
                            capture_output=True)
         raise
+
+
+def lead_unwoken(st):
+    """The event manager is leaving: if the lead still has unread events, one line that says so and why (it was never
+    woken because herdr can't find it, or it did not read the wake-ups), with what to do. "" when all is read."""
+    if not lead_on(st):
+        return ""
+    un = unread_events(st)
+    if not un:
+        return ""
+    name, lw = st["lead"]["name"], st.get("lead_wake") or {}
+    gone = lead_missing(st) if lw.get("gone") or not lw.get("n") else None
+    what = ", ".join(dict.fromkeys(e["kind"].upper() + (f" {e['task']}" if e.get("task") else "") for e in un[:6]))
+    if gone or lw.get("gone"):
+        return (f"the lead `{name}` was never woken ({gone or 'herdr could not find it'}): {len(un)} event(s) wait "
+                f"for it ({what}). Name the lead's pane (herdr agent rename <its pane id> {name}), then `orch resume` "
+                f"wakes it; `orch events --peek` shows them")
+    return (f"the lead `{name}` has not read {len(un)} event(s) ({what}) — tell it: run `orch events`")
 
 
 def manager_begin():
@@ -3930,7 +3967,9 @@ def _autopilot(args):
             deliver(s_, lead, text)
         except DeliveryError as e:
             say(f"could not wake the lead ({lead}): {e} — will retry; the events are kept")
-            patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now(), "n": n, "wait": SEND_RETRY_S}))
+            gone = bool(lw.get("gone")) or "not_found" in str(e) or "not found" in str(e)   # herdr has no such agent
+            patch_state(lambda s2: s2.update(lead_wake={"upto": newest, "ts": now(), "n": n, "wait": SEND_RETRY_S,
+                                                        **({"gone": True} if gone else {})}))
             return
         wait = min(LEAD_REWAKE_S, LEAD_CONFIRM_S * 2 ** n) if watch else LEAD_REWAKE_S
         oldest = min(e["ts"] for e in un)
@@ -4316,6 +4355,10 @@ def _autopilot(args):
         + str([n + (f" ({w['model']})" if w.get("model") else "") for n, w in st["workers"].items()])
         + (f", budget {st['budget_s'] // 60} min" if st.get("budget_s") else "")
         + (f"; events go to the lead ({st['lead']['name']})" if lead_on(st) else ""))
+    gone = lead_missing(st)
+    if gone:
+        say(f"!! LEAD NOT FOUND: the lead ({st['lead']['name']}) can't be woken ({gone}). Its events are kept and wait "
+            f"for it; in the lead's pane: herdr agent rename <its pane id> {st['lead']['name']}", True)
     last_tick = time.time()
     slept = sleep_meter()
     waiting_since = None       # set while nothing runs and the run waits for the lead or the developer
@@ -4482,6 +4525,11 @@ def _autopilot(args):
                             True)
                         break
                     time.sleep(POLL_STEP_S)
+                s_ = load()
+                if unread_events(s_) and lead_missing(s_):
+                    say(f"ALL_DONE, but the lead ({st['lead']['name']}) was NEVER WOKEN: herdr can't find it, so it "
+                        f"does not know the run finished. Name its pane (herdr agent rename <its pane id> "
+                        f"{st['lead']['name']}), then `orch resume`", True)
             sys.exit(0 if ok else 3)
         active = [k for k, v in tasks.items() if v["status"] in ACTIVE and v["status"] != "held"]
         ready = [k for k, v in tasks.items() if v["status"] == "pending" and deps_met(st, v)]
@@ -5412,6 +5460,84 @@ def lead_check():
         + hermes_fix)
 
 
+def herdr_current_pane():
+    """(pane id, sure): the pane this shell runs in. sure=False when HERDR_PANE_ID is unset, so the id herdr gave is
+    the FOCUSED pane, which may be another one. (None, False) outside herdr."""
+    pid = os.environ.get("HERDR_PANE_ID")
+    if pid:
+        return pid, True
+    ok, data, out = _herdr_json([HERDR, "pane", "current"])
+    if not ok:
+        return None, False
+    pid = _find_key(data, "pane_id") if data is not None else None
+    if not pid:
+        pid = (re.search(r'"?pane_id"?\s*[:=]\s*"?([\w:.-]+)', out) or [None, None])[1]
+    return pid, False
+
+
+def name_lead(name, st=None):
+    """Give this pane (the lead's own: HERDR_PANE_ID) the lead's name, so the event manager can wake it. The lead
+    runs `orch lead plan`, `orch lead run`, `orch start` and `orch dispatch` from its own pane, so the pane they run
+    in is the lead's; nothing depends on the lead obeying a playbook line. Never takes the name from another pane
+    that runs an agent, and never renames a worker's or the reviewer's pane. Returns (ok, one line to print)."""
+    pid = os.environ.get("HERDR_PANE_ID")
+    if not pid:
+        return False, ("HERDR_PANE_ID is not set in this shell, so orch can't tell which pane is yours and did not "
+                       "name it")
+    ok, data, _ = _herdr_json([HERDR, "agent", "get", name])
+    if ok and data is not None and not _shell_only(data):
+        where = _find_key(data, "pane_id")
+        if where == pid:
+            return True, f"LEAD    this pane ({pid}) is `{name}`: the event manager can wake it"
+        if where:
+            return False, (f"pane {where} already has the name `{name}` and runs an agent, so this pane ({pid}) was "
+                           f"not named. If that pane is not the lead: herdr agent rename {where} old-{name} && "
+                           f"herdr agent rename {pid} {name}")
+    for n in list((st or {}).get("workers", {})) + ([st["reviewer"]] if (st or {}).get("reviewer") else []):
+        if agent_pane(n) == pid:
+            return False, f"this pane ({pid}) is {n}, not the lead, so it was not named `{name}`"
+    ok, _, out = _herdr_json([HERDR, "agent", "rename", pid, name])
+    if ok:
+        return True, f"NAMED   this pane ({pid}) is now `{name}`, so the event manager can wake it"
+    return False, f"`herdr agent rename {pid} {name}` failed: {out.splitlines()[-1] if out else 'no answer'}"
+
+
+def lead_missing(st):
+    """Why the event manager can't wake this run's lead (herdr has no agent with its name), or None when it can, or
+    when there is nothing to check (no lead, `Lead mode: off`, a lead herdr can't watch or reached by pane id)."""
+    if not lead_on(st):
+        return None
+    lead = st["lead"]
+    if lead.get("pane") or not lead.get("detect", True):
+        return None
+    where, _ = herdr_presence(lead["name"])
+    return {"agent": None, "shell": "only a plain shell is left in its pane",
+            "gone": "herdr has no agent with this name"}[where]
+
+
+def require_lead(st, doing):
+    """`orch start` / `orch dispatch`: a run with a lead must be able to wake it. Name this pane when it is the lead's
+    (see name_lead); otherwise refuse, with the exact rename command, before anything changes. The event manager's
+    own `orch start` is not checked here (its pane is not the lead's); it warns in its log instead."""
+    if os.environ.get("ORCH_DRIVER"):
+        return
+    why = lead_missing(st)
+    if not why:
+        return
+    name = st["lead"]["name"]
+    ok, line = name_lead(name, st)
+    if ok and not lead_missing(st):
+        print(line)
+        return
+    pid, sure = herdr_current_pane()
+    die(f"NO LEAD: the lead `{name}` can't be woken ({why}), so nobody would hear when work finishes or a coder asks "
+        f"something. {doing} was refused; nothing changed.\n"
+        f"  {line}.\n"
+        f"  If you are the lead, name your own pane, then run it again:  herdr agent rename {pid or '<your pane id>'} "
+        f"{name}" + ("" if sure or not pid else "   (that is the FOCUSED pane: check it is yours)") + "\n"
+        f"  `orch lead whoami` shows your pane. To run with no lead, put `Lead mode: off` in plan.md and `orch sync`.")
+
+
 PB_MARK_RE = re.compile(r"^<!-- (/?)(full|start|quick)(?::\s*(.*?))?\s*-->$")
 
 
@@ -5472,6 +5598,30 @@ def run_playbook_part(text, name):
     return "\n".join(rows) + ("\n" if rows else "")
 
 
+def lead_self_name():
+    """`orch lead plan` / `orch lead run` (not a wake-up's --section): name the pane they run in as the lead. The
+    name is the run's `Lead:` (from state.json, else plan.md), else `lead`. Prints one line; never fails."""
+    st, name = None, "lead"
+    with contextlib.suppress(Exception):
+        r = git("rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+        if r.returncode == 0:
+            o = Path(r.stdout.strip()).parent / ".orchestrate"
+            if (o / "state.json").exists():
+                st = json.loads((o / "state.json").read_text())
+                name = (st.get("lead") or {}).get("name") or name
+            elif (o / "plan.md").exists():
+                m = re.search(r"(?mi)^Lead:\s*([\w.-]+)", (o / "plan.md").read_text())
+                name = m.group(1) if m and m.group(1).lower() != "none" else name
+    if not os.environ.get("HERDR_PANE_ID"):
+        pid, _ = herdr_current_pane()
+        if pid:
+            print(f"LEAD    name your pane `{name}` (HERDR_PANE_ID is unset, so orch can't tell which pane is yours): "
+                  f"`orch lead whoami`, then herdr agent rename <your pane id> {name}\n")
+        return
+    ok, line = name_lead(name, st)
+    print(line + ("" if ok else f"\n  Name your pane `{name}` before `orch start`: `orch lead whoami` shows it.") + "\n")
+
+
 def cmd_lead(args):
     """orch lead plan|run -> print the lead playbook; orch lead whoami -> this pane + how to name it `lead`."""
     sub = args[0] if args else ""
@@ -5489,6 +5639,8 @@ def cmd_lead(args):
             return
         label = f"{sub} ({part})" if part else sub
         print(f"herdr-orchestra {installed_version()} — lead playbook: {label}\n")
+        if not part:
+            lead_self_name()
         print(plan_playbook_part(pb.read_text(), part) if sub == "plan" else pb.read_text(), end="")
         return
     if sub == "check":
@@ -5513,8 +5665,13 @@ def cmd_lead(args):
         except (ValueError, KeyError, TypeError):
             pid = (re.search(r'"?pane_id"?\s*[:=]\s*"?([\w:.-]+)', out) or [None, None])[1]
             print(out)
-        print(f"This pane is YOU (the lead). Name it:  herdr agent rename {pid or '<pane id>'} lead\n"
-              f"Write `Lead: lead (<your kind>)` in the plan header, and never prompt this pane.")
+        named = False
+        if os.environ.get("HERDR_PANE_ID"):
+            named, line = name_lead("lead")
+            print(line)
+        if not named:
+            print(f"This pane is YOU (the lead). Name it:  herdr agent rename {pid or '<pane id>'} lead")
+        print("Write `Lead: lead (<your kind>)` in the plan header, and never prompt this pane.")
         return
     die("usage: orch lead plan | run | check | whoami")
 

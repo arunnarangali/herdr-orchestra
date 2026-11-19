@@ -7,7 +7,7 @@ Any installed agent can play any role: Claude Code, Codex, Amp, OpenCode, Hermes
 
 ## Choose your lead
 
-The agent whose pane you start the plan playbook in becomes the lead. It names its pane `lead` and writes `Lead: lead (<kind>: <model>)` into the plan. It never codes or reviews in its own run. During the run it dispatches milestones and is woken to decide; see [The lead and the event manager](/docs/lead/).
+The agent whose pane you start the plan playbook in becomes the lead. orch names its pane `lead` by itself (`orch lead plan`, `orch start` and `orch dispatch` do it from the lead's own pane), and the lead writes `Lead: lead (<kind>: <model>)` into the plan. It never codes or reviews in its own run. During the run it dispatches milestones and is woken to decide; see [The lead and the event manager](/docs/lead/).
 
 | Lead | Start it with |
 |---|---|
