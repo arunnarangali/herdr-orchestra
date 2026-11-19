@@ -187,7 +187,7 @@ Model why: one module, a clear contract, an existing endpoint to copy; no design
 - **Yours to change.** Add or re-rate models in `~/.config/herdr-orchestra/models.toml` (merged over `models.default.toml`). The default ratings are starting points with their sources, not benchmarks run by this project. A model that is not in the catalog still works; it just has no tier.
 
 ### Choose your lead
-The agent whose pane you start the plan playbook in becomes the lead. It names its pane `lead` and writes `Lead: lead (<kind>)` into the plan; it never codes or reviews in its own run (`orch sync` rejects that). Give it a high-tier model: planning and coordination are reasoning work. Another pane of the same kind as a coder is fine.
+The agent whose pane you start the plan playbook in becomes the lead. orch names its pane `lead` by itself (`orch lead plan`, `orch start` and `orch dispatch` run in the lead's own pane and name it), and it writes `Lead: lead (<kind>)` into the plan. If herdr has no agent named `lead`, `orch start` and `orch dispatch` refuse with the exact rename command, so a run never starts with a lead nobody can wake; it never codes or reviews in its own run (`orch sync` rejects that). Give it a high-tier model: planning and coordination are reasoning work. Another pane of the same kind as a coder is fine.
 
 | Lead | Start it with |
 |---|---|

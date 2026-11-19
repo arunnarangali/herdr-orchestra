@@ -44,7 +44,7 @@ If any is false, use the full process: run `orch lead plan full` and follow its 
 
 **A quick run, step by step** (in place of steps 3 to 10):
 - **First run `orch lead plan quick`.** It prints the rules a quick plan uses, word for word from the full process: the split test, the tiers, the estimate, the check command and how to write acceptance criteria and Likely files. Don't run `orch lead plan full` for a quick run.
-- **Team: one coder, no reviewer.** Run `orch lead whoami` and name yourself `lead`. Pick ONE coder pane whose model fits the tier (a free pane of any kind; if only you are open, `orch team <your kind> --coders 1 --no-reviewer`). `Reviewer: none`, unless the developer wrote `quick review:`: then one reviewer pane and `Review: yes`. Why no reviewer: a quick change is small and stays out of risky areas, the check command (lint, types, tests) still has to pass before it lands, and the developer looks at UI changes in the browser anyway; the reviewer is often the slowest step of a small run.
+- **Team: one coder, no reviewer.** Your pane is named `lead` already (`orch lead plan` did it; if it printed a rename command, run it). Pick ONE coder pane whose model fits the tier (a free pane of any kind; if only you are open, `orch team <your kind> --coders 1 --no-reviewer`). `Reviewer: none`, unless the developer wrote `quick review:`: then one reviewer pane and `Review: yes`. Why no reviewer: a quick change is small and stays out of risky areas, the check command (lint, types, tests) still has to pass before it lands, and the developer looks at UI changes in the browser anyway; the reviewer is often the slowest step of a small run.
 - **One milestone** that holds every change in the request, with **one acceptance criterion per change**, so the coder and the summary go through them one by one.
 - **Fields:** only `Tier`, `Estimate`, `Likely files`, `Goal`, `Acceptance criteria` and the `Context` facts the coder needs to find their way. Leave out `Feature breakdown`, `Why separate`, `Needs`, `Model why`, `Role`, `Interfaces` (none) and `Prefer` unless one really helps. A backend change gets an acceptance criterion a test can prove (e.g. "GET /orders returns `createdAt` as ISO 8601; a test covers it").
 - **Header:** `Mode: quick`, your `Quick because:` line, `Isolation: shared`, `Setup command: none` (shared mode uses your folder as it is), the `Check command`, `Estimate` = the milestone's.
@@ -87,7 +87,7 @@ Then the run is the same as any run (`orch lead run`): the coder builds it, the 
 
 <!-- full -->
 ## 3. Discover the team
-- Run `orch lead whoami`. It shows YOUR pane. Name yourself `lead` with the rename command it prints, and never prompt your own pane.
+- Your pane is named `lead` for you: `orch lead plan` did it (look for `NAMED` or `LEAD` at the top of its output). If it printed a rename command instead, run `orch lead whoami`, which shows YOUR pane, and run the rename command it prints. Never prompt your own pane.
 - Run `herdr agent list` and `orch agents` (which kinds exist here, their roles, and whether herdr can watch them).
 - **Coders** = the other agent panes the user wants coding (any kind with the `coder` role: claude, codex, amp, opencode, hermes, agy…). Name them `<kind>-1`, `<kind>-2`… with `herdr agent rename`, and always target them by name.
 - **Reviewer** = one spare agent the user picks (any kind, including another pane of your own tool), named `reviewer`. If there is none, use `Reviewer: none`.

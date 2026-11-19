@@ -55,7 +55,7 @@ Run `orch` with no arguments for the full help.
 | `orch lead run` | Print the run playbook |
 | `orch lead run --section <EVENT\|ALL_DONE\|rules>` | One part of the run playbook; `orch events` prints these for the lead |
 | `orch lead check` | Preflight: is this agent in a Herdr pane, can it reach Herdr? |
-| `orch lead whoami` | The lead's own pane and how to name it `lead` |
+| `orch lead whoami` | The lead's own pane; names it `lead` (or prints the rename command when it can't tell which pane is yours) |
 | `orch agents` | The agent registry: kinds, installed or not, roles, launch commands |
 | `orch agents launch <kind> [--model <id>]` | The command that starts `<kind>` with edits auto-approved, on a model |
 | `orch team <kind> [--coders N] [--models a,b] [--no-reviewer]` | The plan's team built from one tool: coders over its catalog tiers and a reviewer, as `Workers:` / `Reviewer:` lines |
