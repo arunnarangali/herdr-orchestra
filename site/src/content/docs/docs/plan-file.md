@@ -97,6 +97,7 @@ Notes from user:
 | `Needs:` | What the work leans on: any of `reasoning`, `coding`, `architecture`, `long-context`, `tool-use`, `planning`, `speed` |
 | `Model why:` | One line: what in this milestone makes it that tier |
 | `Estimate:` | How long from dispatch to landed if nothing goes wrong, e.g. `40m` or `1h30m`. `orch sync` refuses anything that is not a time and warns when it is missing. See [Estimate vs actual time](/docs/planning/#estimate-vs-actual-time) |
+| `Plain:` | One sentence for the developer: what this milestone gives them, in everyday words, e.g. `the screen where you see and add categories`. `orch plan show` puts it on the milestone's card; the coder's task file leaves it out |
 | `Role:` | The specialist the coder works as, and what they care about in this milestone. orch puts it at the top of the coder's task file. It sets the standard, never the method |
 | `Review:` | `yes` or `no` |
 | `Likely files:` | Where the work probably lands; used for the scope check and to run overlapping milestones one after the other |

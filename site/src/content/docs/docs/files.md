@@ -17,6 +17,7 @@ description: What herdr-orchestra keeps in your repo and on your machine.
 | `events.jsonl` | One line per state change, for `orch report` |
 | `driver.lock` | The lease that keeps a run to one driver |
 | `review/Mn/review-N.json` (or `.md`) | Each review round's findings |
+| `story.md` | The run diary in plain words: each event and what the lead did about it (`orch story` prints it) |
 | `summary.md` | The run summary: commits, files, who did what, the model table (planned tier against the model that ran), estimated vs actual time with the reasons for any delay, what each milestone waited for (a check slot, the reviewer, a merge, the lead), design notes, test checklist |
 
 Each coder's worktree also has a `.orch-task/` folder with its task file, fix files, report and done file. Both folders are kept out of your commits.

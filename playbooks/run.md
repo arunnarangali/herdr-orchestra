@@ -17,6 +17,7 @@ A run behaves like a call stack. You **dispatch** work and **pause**. The **even
 4. Never answer a worker's permission prompt yourself, and never approve a held milestone yourself (`orch approve` is the developer's call).
 5. Never move a task forward by hand: `orch set` only accepts `pending`, `paused`, `failed` and `skipped`. Don't use `--force`.
 6. After every step below that ends in **STOP**, stop. Do not sleep, loop or check back: you will be woken.
+7. **Never end a wake-up silently.** Before you STOP, write in your chat one short line per event, in plain words: what happened (its `SAY:` line from `orch events`) and what you did about it. Example: `M1 (Model) is done and on the branch. M3 started by itself because it was waiting for M1. Nothing for me to do.` or `M4 is paused: the coder asks which currency to use. I'm asking you: INR only, or several?`. The developer reads your chat to follow the run; `orch story` keeps the same lines.
 
 ## Context budget (credits scale with how much you read and how many turns you take)
 - Your memory is `orch events` + `orch status` + files on disk, not this conversation. Never re-read old reports, diffs, plans or this playbook "to refresh": `orch events` prints what each wake-up needs.

@@ -30,6 +30,10 @@ The lead never watches or polls the agents. It works like a function on a call s
 | An agent **stopped**, timed out or is blocked | Tells you what to look at, then dispatches the milestone again |
 | **All done** | Finishes the summary: design notes, what it checked itself (by running commands and reading the code, with the evidence), and a manual checklist of only what a person must see or do. In a [quick run](/docs/quick-runs/): only what changed and the checklist |
 
+After each wake-up the lead says in its chat, one short line per event, what happened and what it did. For example: `M1 (Model) is done and on the branch. M3 started by itself because it was waiting for M1. Nothing for me to do.` or `M4 is paused: the coder asks which currency to use. INR only, or several?` The same lines go into the run diary: `orch story`.
+
+After planning, the lead shows the plan as short cards from `orch plan show`, one per milestone in plain words, instead of the whole plan file.
+
 Routine recovery does not wake the lead: a failed check goes back to its coder, a rate-limited or vanished agent is benched and its work moves on, and a milestone out of fix rounds gets one fresh round on a stronger model.
 
 ## When a coder has a question

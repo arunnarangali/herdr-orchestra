@@ -32,7 +32,9 @@ Run `orch` with no arguments for the full help.
 | Command | What it does |
 |---|---|
 | `orch dispatch <Mn>... [--to <worker>] [--tier <tier>]` | Start or restart milestones. Starts the event manager when none is running. `--to` refuses a worker with no agent in herdr or one that is benched off |
-| `orch events [--peek]` | What the lead was woken for, what is ready, who is free. Reading acknowledges it; `--peek` does not |
+| `orch events [--peek]` | What the lead was woken for, what is ready, who is free. Each event has a `SAY:` line in plain words, which the lead repeats in its chat with what it did. Reading acknowledges it; `--peek` does not |
+| `orch plan show` | The plan for a person: one card per milestone in plain words (its `Plain:` line), what it waits for and why, who builds it on which model, how long, and the order |
+| `orch story` | The run diary: every event in plain words and what the lead did about it, in time order. Also saved as `.orchestrate/story.md` |
 | `orch answer <Mn> [--defer AC2] "<text>"` | The developer's answer: written under the milestone's "Notes from user", and the milestone goes back to the same coder. `--defer AC2` records that the developer agreed to leave AC2 undone |
 | `orch defer <Mn> <AC2,AC3> "<reason>"` | Only with the developer's yes: these criteria stay undone in Mn. No fix rounds or stronger-model retries for them, the reviewer does not block on them, and the summary lists them as **not done**, with a follow-up |
 | `orch fix <Mn> "<change>" [--to <worker>]` | A change to something Mn already landed: one small follow-up milestone in the plan, sent straight to the coder who built Mn. Check, review and summary still apply. Works after ALL_DONE; you or the lead can run it |

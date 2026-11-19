@@ -1483,5 +1483,33 @@ check "auto dispatch: M6 starts as soon as M5 lands, without waiting for the lea
 check "the lead is told with AUTO-DISPATCHED and the reason" 'grep -q "AUTO-DISPATCHED M6 \"g\": started by the event manager as soon as M5 landed (.Auto dispatch: on. in plan.md)" "$FH/lead-events.log"'
 check "the first milestone still waits for the lead's go" 'grep -q "waiting for the lead: dispatch M5" $L && grep -q "M5 -> claude-1 .*it waited [0-9]m[0-9]*s for the lead.s dispatch" $L'
 
+echo "46. plain words: the plan as cards, a SAY line per event, the run diary"
+newrepo pw; echo "$APP" > "$FH/lead.dir"; echo "INR only" > "$FH/lead-answer"
+printf '# Plan: Totals\nBranch: feature/pw\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nEstimate: 1h10m\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: reviewer (agy)\n\n## [x] M5: e\nDepends on: none\nWhy separate: the totals build on it\nPlain: the page that lists every expense\nReview: yes\nEstimate: 30m\nOpen questions:\n- none\n\n## [x] M4: Totals\nDepends on: M5 (needs the expense list)\nWhy separate: needs the list first\nEstimate: 40m\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null 2>&1; out=$("$ORCH" plan show 2>&1)
+check "orch plan show: one card per milestone, in the plan's plain words" 'grep -q "^PLAN in plain words: Totals — 2 milestone(s) on feature/pw, about 1h10m in all" <<<"$out" && grep -q "^M5 e — the page that lists every expense$" <<<"$out" && grep -q "^   Why its own step: the totals build on it" <<<"$out"'
+check "each card says what it waits for and why, who builds it on which model, how long, and the review" 'grep -q "^   Waits for: nothing, it can start first" <<<"$out" && grep -q "^   Waits for: M5 (needs the expense list)" <<<"$out" && grep -q "^   Built by: claude-1 (sonnet) or codex-1 (gpt-6-luna) · about 30m · reviewed by reviewer" <<<"$out"'
+check "the order is spelled out" 'grep -q "^  1. M5$" <<<"$out" && grep -q "^  2. M4 (after M5)$" <<<"$out"'
+check "a milestone with no Plain: line is named, with the fix" 'grep -q "^WARN no .Plain:. line for M4" <<<"$out"'
+timeout 180 "$ORCH" autopilot > "$WORK/pw.log" 2>&1 & ap=$!
+sleep 3; out=$("$ORCH" plan show 2>&1); code=$?; sout=$("$ORCH" story 2>&1); scode=$?
+wait $ap; code_ap=$?
+check "plan show and story work while the event manager runs" '[ $code -eq 0 ] && [ $scode -eq 0 ] && grep -q "^PLAN in plain words" <<<"$out" && grep -q "^RUN DIARY" <<<"$sout"'
+check "the run still lands everything" '[ $code_ap -eq 0 ] && [ "$(status_of M5)$(status_of M4)" = mergedmerged ]'
+E="$FH/lead-events.log"
+check "Plain: is for the developer: it is not in the coder's task file" 'f=$(ls "$APP"/../app-wt/*/.orch-task/M5/task.md | head -1); [ -n "$f" ] && grep -q "^# " "$f" && ! grep -q "Plain:\|lists every expense" "$f"'
+check "every event in orch events has a SAY line in plain words" 'grep -q "^    SAY: Ready to start: M5 (e)\.$" "$E" && grep -q "^    SAY: M5 (e) is done: its check passed and the reviewer approved it, and it is on feature/pw\.$" "$E" && grep -q "^    SAY: M4 (Totals) has started by itself, because M5 landed\.$" "$E" && grep -q "^    SAY: M4 (Totals) is paused: the coder asks: which currency should totals use, INR or multi?$" "$E" && grep -q "^    SAY: Every milestone is done: final check PASS on feature/pw\.$" "$E"'
+check "each wake-up tells the lead to say them before it stops" '[ "$(grep -c "^BEFORE YOU STOP, tell the developer in your chat, one short line per event" "$E")" -eq "$(grep -c "^EVENTS for the lead" "$E")" ] && grep -q "^7\. \*\*Never end a wake-up silently\.\*\*" "$E"'
+out=$("$ORCH" story 2>&1)
+check "orch story: what happened and what the lead did, in time order" 'grep -q "what happened: Ready to start: M5 (e)\." <<<"$out" && grep -q "the lead did: M5 (e) was sent to start$" <<<"$out" && grep -q "the lead did: M4 (Totals) got the answer \"INR only\" and goes back to claude-1" <<<"$out" && [ "$(grep -n "is paused" <<<"$out" | cut -d: -f1)" -lt "$(grep -n "got the answer" <<<"$out" | cut -d: -f1)" ]'
+"$ORCH" sync >/dev/null 2>&1
+check "orch sync keeps the diary (the plan is synced again after every answer)" '"$ORCH" story | grep -q "the lead did: M5 (e) was sent to start$"'
+check "the diary is saved in .orchestrate/story.md" 'grep -q "^# Run diary: Totals (feature/pw)" .orchestrate/story.md && grep -q "^- .*what happened: Every milestone is done" .orchestrate/story.md'
+out=$("$ORCH" plan show 2>&1)
+check "after the run, the cards say each milestone is done" '[ "$(grep -c "^   Now: done, on the branch$" <<<"$out")" -eq 2 ]'
+"$ORCH" fix M5 "the list shows newest first" >/dev/null 2>&1
+check "orch fix is in the diary too" '"$ORCH" story | grep -q "the lead did: M6 added: a follow-up to M5 (\"the list shows newest first\")"'
+pkill -f -- "$APP" 2>/dev/null; sleep 1
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

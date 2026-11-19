@@ -6,6 +6,8 @@ All notable changes. Versions follow [semantic versioning](https://semver.org).
 
 A major version for a major performance change: how fast work moves from a coder to the reviewer, the branch and the lead. Plans, commands and files work as before; three new defaults change timing (early review, auto dispatch, no repeated branch check), and each can be turned off with one plan line.
 
+It also makes a run easier to follow: the plan comes as short cards in plain words (`orch plan show`), the lead says in its chat what each event was and what it did, and `orch story` keeps the whole run as a diary.
+
 Coders' finished work reaches the reviewer, the branch and the lead faster. Example: M5 and M6 finish at the same second and your check takes 10 seconds. Before, the event manager ran M5's check and did nothing else meanwhile, then M6's check, then the same check again on the branch for each one: M5 landed about 32 seconds after it was done. Now the checks run in the background, the reviewer already reads M5 while its check runs, and a check that already passed on exactly these files is not run again: M5 lands about 13 seconds after it is done. How the work is checked, reviewed and committed is the same; it is still one event loop that reacts to events.
 
 ### Changed
@@ -16,7 +18,11 @@ Coders' finished work reaches the reviewer, the branch and the lead faster. Exam
 - **Auto dispatch.** When a milestone lands and that unlocks the next one (M6 depends on M5), M6 starts at once and the lead gets `AUTO-DISPATCHED M6: started by the event manager as soon as M5 landed`, instead of waiting for the lead to wake up and run `orch dispatch M6`. The first milestones of a run still wait for the lead's go. `Auto dispatch: off` makes every milestone wait for the lead, as before.
 
 ### Added
+- **The plan in plain words.** Each milestone gets a `Plain:` line: one sentence on what you get, in everyday words. `orch plan show` prints the plan as short cards, for example `M2 Categories list — the screen where you see and add categories` / `Waits for: M1 (needs the category model)` / `Built by: claude-1 (sonnet) · about 40m · reviewed by reviewer`, then the order (`1. M1 and M2 at the same time`, `2. M3 (after M1 and M2)`). After planning, the lead shows you these cards instead of the whole plan file. The coder's task file leaves `Plain:` out.
+- **The lead says what happened.** `orch events` gives each event a `SAY:` line in plain words, for example `SAY: M4 (Totals) is paused: the coder asks: which currency should totals use, INR or multi?`, and tells the lead to write it in its chat, with what it did about it, before it stops. A wake-up no longer ends silently.
+- **The run diary.** `orch story` prints every event in plain words and what the lead did about it (dispatch, answer, defer, fix), in time order: `16:01  what happened: M4 (Totals) is paused ...` / `16:01  the lead did: M4 (Totals) got the answer "INR only" and goes back to claude-1`. It is saved in `.orchestrate/story.md`.
 - **Wait times.** The log says what a finished milestone waited for, for example `M6 waited 0m03s for M5's check`, `M5 -> claude-1 — it waited 0m40s for the lead's dispatch`, or `(M6 waited 0m12s for the reviewer)`. The summary has a new table, **"Waiting: time milestones sat still"**, with each milestone's waits.
+- Tests (section 46): the plan cards, waits and order, the missing-`Plain:` warning, `Plain:` kept out of the coder's task, `plan show` and `story` while the event manager runs, a SAY line for each event and the "before you stop" line, the diary in order with the lead's dispatch, answer and fix, the diary kept across `orch sync`.
 - Tests (section 45): reviews come back while a check still runs; the check-slot wait is logged; status shows the running check; the first milestone to land skips the branch check and the second runs it; `Parallel checks: 2`; `Early review: off`; a failed check and a review blocker become one fix round; auto dispatch and its `AUTO-DISPATCHED` event; the Waiting table.
 
 ## [5.11.0] - 2026-11-19
