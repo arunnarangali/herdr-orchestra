@@ -189,8 +189,8 @@ const label =
       const start = lines.findIndex((l) => Number(l.dataset.stage) === s);
       reset(start);
       setStage(s);
-      // keep earlier output on screen, scrolled to where this step starts
-      screen.scrollTop = lines[start].offsetTop - screen.offsetTop - 8;
+      // earlier steps' output stays above; the screen follows the newest line
+      screen.scrollTop = screen.scrollHeight;
       play();
     };
 
@@ -216,11 +216,18 @@ const label =
 </script>
 
 <style>
-  .rx { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 32px; align-items: start; }
-  @media (max-width: 980px) { .rx { grid-template-columns: 1fr; } }
+  /* Steps and diagram side by side, the terminal full width under both. */
+  .rx { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: 'steps flow' 'term term'; gap: 16px; align-items: stretch; }
+  .rx-steps { grid-area: steps; }
+  .rx-flow { grid-area: flow; display: flex; flex-direction: column; }
+  .rx-flow svg { margin: auto; max-width: 640px; }
+  .rx-term { grid-area: term; min-width: 0; }
+  @media (max-width: 980px) { .rx { grid-template-columns: 1fr; grid-template-areas: 'steps' 'flow' 'term'; } }
 
   /* Numbered steps */
-  .rx-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; border: 1px solid var(--line); }
+  .rx-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--line); background: var(--bg); }
+  .rx-steps li:last-child { flex: 1; }
+  .rx-steps li:last-child .rx-step { height: 100%; align-content: start; }
   .rx-steps li + li { border-top: 1px solid var(--line); }
   .rx-step {
     all: unset; box-sizing: border-box; width: 100%; cursor: pointer; display: grid; grid-template-columns: 44px 1fr; gap: 14px;
@@ -240,7 +247,7 @@ const label =
   .rx.live .rx-step[aria-pressed='false'] .rx-body { display: none; }
 
   /* Diagram */
-  .rx-side { display: grid; gap: 16px; min-width: 0; }
+  .rx-side { display: contents; }
   .rx-flow { border: 1px solid var(--line); background: var(--surface); }
   .rx-flow-head { display: flex; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--line); font: 12px var(--font-mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .rx-stage b { color: var(--accent); font-weight: 600; }
@@ -279,7 +286,7 @@ const label =
   }
   .rx-ctrl button:hover { color: #e5a93b; border-color: #e5a93b; }
   .rx.playing [data-act='play'], .rx:not(.playing) [data-act='pause'] { color: #e5a93b; border-color: color-mix(in srgb, #e5a93b 50%, #343a47); }
-  .rx-screen { height: 320px; overflow-y: auto !important; overflow-x: hidden !important; white-space: pre-wrap !important; word-break: break-word; scroll-behavior: smooth; }
+  .rx-screen { height: 320px; overflow-y: auto !important; overflow-x: hidden !important; white-space: pre-wrap !important; word-break: break-word; }
   .rx-line { display: block; }
   .rx.live .rx-line { display: none; }
   .rx.live .rx-line.shown { display: block; animation: rx-in 0.15s linear; }
@@ -289,7 +296,7 @@ const label =
   @media (max-width: 560px) {
     /* Phone: the whole diagram fits; names get bigger and the small second lines step aside. */
     .rx-flow svg { padding: 6px 4px 2px; }
-    .rx-node .nm { font-size: 14px; transform: translateY(7px); }
+    .rx-node .nm { font-size: 12.5px; transform: translateY(7px); }
     .rx-node .sb { display: none; }
     .rx-edge text { font-size: 13px; }
     .rx-screen { height: 280px; font-size: 12px !important; }
