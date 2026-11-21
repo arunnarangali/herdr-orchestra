@@ -168,7 +168,7 @@ def state_lock():
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
 LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "defer",
-              "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story", "check", "free"}
+              "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story", "check", "free", "manual"}
 _LEASE = None
 
 
@@ -3260,6 +3260,122 @@ def ai_credited_commits(base):
     return found
 
 
+# ---------------------------------------------------------------- manual tests: what the developer tries by hand
+MANUAL_HEAD_RE = re.compile(r"^\s*(#{1,6}\s+|\*\*)\s*manual (verification checklist|tests?\b)", re.I)
+MANUAL_ITEM_RE = re.compile(r"^(\s*)(?:[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)(.*\S)\s*$")
+
+
+def manual_tests(text):
+    """The summary's "Manual verification checklist" (the lead writes it at ALL_DONE): (items, note). items are
+    the things to try by hand, in order (a sub-bullet or a wrapped line stays with its item); note is the lead's
+    `Nothing to check by hand: ...` line when there are none. (None, None): the summary has no such section yet."""
+    lines, start, level = text.splitlines(), None, 0
+    for i, l in enumerate(lines):
+        m = MANUAL_HEAD_RE.match(l)
+        if m:
+            start, level = i + 1, (len(m.group(1).strip()) if m.group(1).strip().startswith("#") else 0)
+    if start is None:
+        return None, None
+    items, note = [], None
+    for l in lines[start:]:
+        h = re.match(r"^(#{1,6})\s", l)
+        if (h and (not level or len(h.group(1)) <= level)) or (not level and l.startswith("**")):
+            break
+        m = MANUAL_ITEM_RE.match(l)
+        if m and not m.group(1):
+            items.append(m.group(2).strip())
+        elif l.strip() and items and (m or l[:1].isspace()):
+            items[-1] += ("; " + m.group(2).strip()) if m else (" " + l.strip())
+        elif re.search(r"nothing to (check|test) by hand", l, re.I) and not note:
+            note = l.strip().strip("-*_ ")
+    return items, note
+
+
+def manual_block(st=None):
+    """The manual test list for a person, as printed by `orch finish` and `orch manual` (and saved in
+    .orchestrate/manual-tests.md): numbered, word for word from the summary. Returns (lines, count or None)."""
+    summary = ORCH / "summary.md"
+    items, note = manual_tests(summary.read_text()) if summary.exists() else (None, None)
+    if items:
+        out = [f"MANUAL TESTS: {len(items)} to try by hand before you merge (from the summary's Manual "
+               f"verification checklist):"] + [f"  {i}. {x}" for i, x in enumerate(items, 1)]
+    elif items is not None:
+        out = ["MANUAL TESTS: none. " + (note or "The lead's Manual verification checklist is empty.")]
+    else:
+        out = ["MANUAL TESTS: not written yet. .orchestrate/summary.md has no \"Manual verification checklist\": "
+               "ask the lead to finish the summary (ALL_DONE), then `orch manual` prints the list."]
+    with contextlib.suppress(OSError):
+        if ORCH.is_dir():
+            (ORCH / "manual-tests.md").write_text(
+                f"# Manual tests: {(st or {}).get('title') or (st or {}).get('branch') or 'this run'}\n\n"
+                "Try these by hand. They come from the Manual verification checklist in summary.md.\n\n"
+                + ("".join(f"{i}. {x}\n" for i, x in enumerate(items, 1)) if items else out[0] + "\n"))
+    return out, (len(items) if items is not None else None)
+
+
+def cmd_manual(args):
+    """orch manual -> the manual test list from the summary, numbered, for the developer (and the lead's chat)."""
+    st = load() if STATE.exists() else None
+    print("\n".join(manual_block(st)[0]))
+
+
+def tell_lead_finished(st, outcome, count):
+    """After `orch finish`: queue a FINISHED event for the lead, so it posts the manual test list in its chat. When
+    the lead ran `orch finish` itself (this pane is the lead's), it has the list in front of it: no wake-up."""
+    if not lead_on(st):
+        if run_mode(st) == "subagent":
+            print("LEAD: post the MANUAL TESTS list above in your chat, numbered, word for word.")
+        return
+    text = outcome + ("" if count is None else f"; {count} manual test(s) to try by hand")
+    with state_lock():
+        s_ = load()
+        lead_event(s_, "finished", None, text)
+        save(s_)
+    lead = st["lead"]["name"]
+    pid = os.environ.get("HERDR_PANE_ID")
+    if pid and pid in (st["lead"].get("pane"), agent_pane(lead)):
+        print("LEAD: you ran `orch finish` yourself: post the MANUAL TESTS list above in your chat now, numbered, "
+              "word for word, then run `orch events` to mark FINISHED read.")
+        return
+    try:
+        deliver(st, lead, f"orch: `orch finish` ran on {st['branch']}. Run `orch events` and post the manual test "
+                          f"list it prints in your chat, then stop.")
+        print(f"TOLD THE LEAD ({lead}): it posts the manual test list in its chat")
+    except DeliveryError as e:
+        print(f"NOTE could not tell the lead ({lead}): {e} — tell it: run `orch events`")
+
+
+def finish_push(st, base, title, pr_body, args):
+    """Push the feature branch and open the PR. Returns one line on what happened, for the lead's FINISHED event."""
+    if "--no-push" in args:
+        print(f"NOT PUSHED (--no-push): push {st['branch']} and open a PR into {base} when ready")
+        return f"cleaned up, not pushed (--no-push): {st['branch']} still needs a push and a PR into {base}"
+    remote = git("remote", "get-url", "origin", cwd=ROOT, check=False)
+    if remote.returncode != 0:
+        print(f"NO REMOTE: no `origin` remote — merge {st['branch']} into {base} yourself")
+        return f"no `origin` remote: {st['branch']} is to be merged into {base} by hand"
+    url = remote.stdout.strip()
+    git("push", "-q", "-u", "origin", st["branch"], cwd=ROOT)
+    print(f"PUSHED {st['branch']} to origin")
+    compare = github_compare_url(url, base, st["branch"])
+    if compare and shutil.which("gh"):
+        try:
+            r = subprocess.run(["gh", "pr", "create", "--base", base, "--head", st["branch"], "--title", title,
+                                "--body-file", str(pr_body)],
+                               cwd=ROOT, text=True, capture_output=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            r = subprocess.CompletedProcess([], 1, "", str(e))
+        if r.returncode == 0:
+            pr = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "created"
+            print(f"PR {pr}")
+            return f"pushed {st['branch']}, PR into {base}: {pr}"
+        print(f"NOTE gh pr create failed: {(r.stdout + r.stderr).strip()}")
+    print(f"OPEN A PR from {st['branch']} into {base}" + (f": {compare}" if compare else "")
+          + f" — title: {title!r}, text: .orchestrate/pr-body.md (use them as they are: add no \"Generated with\" or "
+            f"Co-Authored-By line)")
+    return f"pushed {st['branch']}; the PR into {base} is still to open" + (f": {compare}" if compare else "")
+
+
 def cmd_finish(args):
     """orch finish [--no-push] [--recheck] -> final check (reused when it already passed on exactly these files;
     --recheck runs it anyway), drop hidden refs and worktrees, push the feature branch, open a PR."""
@@ -3311,31 +3427,10 @@ def cmd_finish(args):
     for ref in rescued:
         print(f"KEPT {ref}: unsaved files orch rescued during the run and no milestone used — look with "
               f"`git show --stat {ref}`, delete with `git update-ref -d {ref}`")
-    if "--no-push" in args:
-        print(f"NOT PUSHED (--no-push): push {st['branch']} and open a PR into {base} when ready")
-        return
-    remote = git("remote", "get-url", "origin", cwd=ROOT, check=False)
-    if remote.returncode != 0:
-        print(f"NO REMOTE: no `origin` remote — merge {st['branch']} into {base} yourself")
-        return
-    url = remote.stdout.strip()
-    git("push", "-q", "-u", "origin", st["branch"], cwd=ROOT)
-    print(f"PUSHED {st['branch']} to origin")
-    compare = github_compare_url(url, base, st["branch"])
-    if compare and shutil.which("gh"):
-        try:
-            r = subprocess.run(["gh", "pr", "create", "--base", base, "--head", st["branch"], "--title", title,
-                                "--body-file", str(pr_body)],
-                               cwd=ROOT, text=True, capture_output=True, timeout=120)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            r = subprocess.CompletedProcess([], 1, "", str(e))
-        if r.returncode == 0:
-            print(f"PR {r.stdout.strip().splitlines()[-1] if r.stdout.strip() else 'created'}")
-            return
-        print(f"NOTE gh pr create failed: {(r.stdout + r.stderr).strip()}")
-    print(f"OPEN A PR from {st['branch']} into {base}" + (f": {compare}" if compare else "")
-          + f" — title: {title!r}, text: .orchestrate/pr-body.md (use them as they are: add no \"Generated with\" or "
-            f"Co-Authored-By line)")
+    outcome = finish_push(st, base, title, pr_body, args)
+    lines, count = manual_block(st)
+    print("\n".join(lines))
+    tell_lead_finished(st, outcome, count)
 
 
 # ---------------------------------------------------------------- v4: task files, nudge, autopilot
@@ -3833,6 +3928,9 @@ EVENT_HELP = {
                      "any agent it reports LOST.",
     "all_done": "every milestone landed. Finish .orchestrate/summary.md: the steps (section 3, ALL_DONE) are printed below.",
     "stopped": "the event manager stopped. Tell the developer why; they run `orch resume` (or `orch autopilot`).",
+    "finished": "the developer ran `orch finish`. Post the MANUAL TESTS list printed below in your chat, numbered and "
+                "word for word, under \"Try these by hand before you merge\" (or say there is nothing to try by hand). "
+                "Add nothing else to the run.",
 }
 
 
@@ -3875,6 +3973,8 @@ def say_line(st, e):
         return f"Every milestone is done: {text}."
     if k == "stopped":
         return f"The event manager stopped: {text}."
+    if k == "finished":
+        return f"The run is finished: {text}."
     return f"{k} {name}: {text}".strip()
 
 
@@ -3999,6 +4099,8 @@ def cmd_events(args):
             print(head + (f": {e['text']}" if e.get("text") else ""))
             print("    -> " + EVENT_HELP.get(e["kind"], "").format(t=e.get("task") or "<Mn>"))
             print("    SAY: " + say_line(st, e))
+            if e["kind"] == "finished":
+                print("\n".join("    " + x for x in manual_block(st)[0]))
         print(f"EVENTS for the lead — run {st['branch']}: {len(new)} new, {len(old)} still open")
         for e in new:
             show(e)
@@ -6123,11 +6225,11 @@ COMMANDS = {
     "send-job": cmd_send_job, "handoff": cmd_handoff, "needs-fix": cmd_needs_fix, "review-ok": cmd_review_ok,
     "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
     "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer, "defer": cmd_defer,
-    "escalate": cmd_escalate, "fix": cmd_fix, "plan": cmd_plan, "story": cmd_story, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
+    "escalate": cmd_escalate, "fix": cmd_fix, "plan": cmd_plan, "story": cmd_story, "manual": cmd_manual, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
     "free": cmd_free, "doctor": lambda a: cmd_doctor_crash(a), "check": lambda a: cmd_check(a), "sub": lambda a: cmd_sub(a),
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
-UNLOCKED = {"autopilot", "poll", "merge", "events", "dispatch", "answer", "defer", "fix", "team", "resume", "bench", "stop",
+UNLOCKED = {"manual", "autopilot", "poll", "merge", "events", "dispatch", "answer", "defer", "fix", "team", "resume", "bench", "stop",
             "doctor", "check", "free"}
 
 USAGE = """usage: orch <command> [args]
@@ -6154,6 +6256,8 @@ USAGE = """usage: orch <command> [args]
   resume                   after a restart (computer off, herdr closed): name the agents' panes again, save unsaved
                            work, re-send the tasks that were in progress and start the event manager
   story                    the run diary in plain words: each event and what the lead did (.orchestrate/story.md)
+  manual                   the manual tests: what to try by hand, numbered, from the summary's Manual verification
+                           checklist (`orch finish` prints them too, and the lead posts them in its chat)
   plan show                the plan for a person: each milestone in plain words, who builds it, how long, the order
   events [--peek]          (lead) what you were woken for; reading acknowledges it
   dispatch <Mn>... [--to <worker>] [--tier <tier>]   (lead) start or restart milestones; starts the event manager
@@ -6360,7 +6464,7 @@ def plan_playbook_part(text, part):
 EVENT_ROWS = {"ready": "READY", "merged": "MERGED", "paused": "PAUSED", "failed": "FAILED", "held": "HELD",
               "worker-lost": "WORKER-LOST", "herdr-restart": "HERDR-RESTART", "needs-answer": "NEEDS-ANSWER",
               "escalated": "ESCALATED", "auto-dispatched": "AUTO-DISPATCHED", "stopped": "STOPPED",
-              "all_done": "ALL_DONE"}
+              "all_done": "ALL_DONE", "finished": "FINISHED"}
 
 
 def run_playbook_part(text, name):

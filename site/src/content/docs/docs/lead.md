@@ -87,6 +87,16 @@ At the end, the summary separates three things:
 
 You will not find "read the code", "check the comments" or "confirm the tests pass" there: that is the lead's job. A change with nothing to look at (a backend, CLI or docs change) says `Nothing to check by hand` and why.
 
+You don't have to open the summary to find the list. The lead posts it in its chat at the end, and again after `orch finish`, which also prints it:
+
+```
+MANUAL TESTS: 2 to try by hand before you merge (from the summary's Manual verification checklist):
+  1. Open /imports on a phone-sized window and upload sample.csv → the preview table scrolls sideways, the Save button stays visible
+  2. Upload a file with a missing amount column → the red message appears under the file field, in the same style as other form errors
+```
+
+`orch manual` prints it again at any time.
+
 ## If the lead does not answer
 
 A run never stalls on the lead.

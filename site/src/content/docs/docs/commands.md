@@ -15,7 +15,7 @@ Run `orch` with no arguments for the full help.
 | `orch autopilot` | The event manager: runs the plan as a script and wakes the lead; exits 0 when done, 3 when it needs you |
 | `orch approve <Mn>` | Let a milestone held for risky changes land |
 | `orch report [--json]` | Estimated vs actual time per milestone and for the feature (and, when it took longer, where the time went and who it waited on), rounds, first-pass rate and wasted work, and how each model did |
-| `orch finish [--no-push] [--recheck]` | Final check, clean up, push the feature branch, open a PR. The check is reused when it already passed on exactly these files; `--recheck` runs it anyway |
+| `orch finish [--no-push] [--recheck]` | Final check, clean up, push the feature branch, open a PR. The check is reused when it already passed on exactly these files; `--recheck` runs it anyway. Ends with the manual tests as a numbered list, and tells the lead, which posts them in its chat |
 | `orch set <Mn> <status> [reason]` | Manual override; accepts `pending`, `paused`, `failed` and `skipped`. A coder still working on a paused or failed milestone gets its interrupt key (Esc) and a STOP note, and shows as `stopping` until herdr sees it idle |
 | `orch free <worker>` | You looked at its pane and the coder that was told to stop has stopped: it takes work again at once |
 | `orch park <Mn> paused\|failed\|pending [reason]` | Free the worker and keep its work in a hidden ref (also what its coder wrote after an earlier park). A coder still working on a paused or failed milestone is told to stop |
@@ -35,6 +35,7 @@ Run `orch` with no arguments for the full help.
 | `orch dispatch <Mn>... [--to <worker>] [--tier <tier>]` | Start or restart milestones. Starts the event manager when none is running. `--to` refuses a worker with no agent in herdr or one that is benched off |
 | `orch events [--peek]` | What the lead was woken for, what is ready, who is free. Each event has a `SAY:` line in plain words, which the lead repeats in its chat with what it did. Reading acknowledges it; `--peek` does not |
 | `orch plan show` | The plan for a person: one card per milestone in plain words (its `Plain:` line), what it waits for and why, who builds it on which model, how long, and the order |
+| `orch manual` | The manual tests: what to try by hand, numbered, from the summary's Manual verification checklist. `orch finish` prints them too, and the lead posts them in its chat |
 | `orch story` | The run diary: every event in plain words and what the lead did about it, in time order. Also saved as `.orchestrate/story.md` |
 | `orch answer <Mn> [--defer AC2] "<text>"` | The developer's answer: written under the milestone's "Notes from user", and the milestone goes back to the same coder. `--defer AC2` records that the developer agreed to leave AC2 undone |
 | `orch defer <Mn> <AC2,AC3> "<reason>"` | Only with the developer's yes: these criteria stay undone in Mn. No fix rounds or stronger-model retries for them, the reviewer does not block on them, and the summary lists them as **not done**, with a follow-up |
