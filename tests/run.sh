@@ -15,6 +15,8 @@ export ORCH_JOURNALCTL=false ORCH_COREDUMPCTL=false ORCH_NO_SCOPE=1 ORCH_TEAM_CO
 export ORCH_NO_UPDATE_CHECK=1 ORCH_TTY=/dev/null ORCH_SHARE="$WORK/share"
 # ...nor into their orch config (mode) or their Pi agents folder
 export ORCH_CONFIG_FILE="$WORK/config/config.json" PI_CODING_AGENT_DIR="$WORK/pi-agent" ORCH_PI="$WORK/pibin/pi"
+# a coder told to stop: short waits (section 49 tests the real behaviour with its own values)
+export ORCH_HALT_WAIT_S=2 ORCH_HALT_SETTLE_S=1
 pass=0 fail=0
 ok()   { echo "  ok   $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $*"; fail=$((fail+1)); }
@@ -917,7 +919,7 @@ stpy "st['tasks']['M9']['wait']['since'] -= 46 * 60"
 out=$("$ORCH" poll 1 2>&1)
 check "real working time still counts: 46 more minutes is over the budget" 'grep -q "^TIMEOUT M9 agent=codex-1 after 5[0-9] min" <<<"$out"'
 out=$("$ORCH" park M9 paused "codex-1 over its time budget" 2>&1)
-check "a coder that is still working when its milestone is paused is told to stop" 'grep -q "^STOP_NOTE M9 -> codex-1" <<<"$out" && grep -q "^codex-1 <- STOP: M9 is paused (codex-1 over its time budget). Stop working on it now" "$FH/prompts.log"'
+check "a coder that is still working when its milestone is paused is told to stop" 'grep -q "^STOP_NOTE M9 -> codex-1" <<<"$out" && grep -q "^codex-1 <- STOP: M9 is paused (codex-1 over its time budget). orch interrupted you: stop working on it now" "$FH/prompts.log" && grep -q "^codex-1 keys esc$" "$FH/keys.log"'
 check "the attempt is charged its working time, not the 2 hours down" 'python3 -c "
 import json; a = json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M9\"][\"attempts\"][-1]
 assert 14390 <= a[\"down_s\"] <= 14470 and 290 <= a[\"secs\"] <= 440, a"'
@@ -997,7 +999,7 @@ echo agy > "$FH/pane-w1:p20.kind"; sleep 2; echo working > "$FH/codex-1.status" 
 out=$("$ORCH" resume 2>&1); code=$?
 check "running resume again is safe: the reviewer is named once herdr shows its kind, nothing is sent twice" '[ $code -eq 0 ] && grep -q "^NAMED   reviewer: pane w1:p20 " <<<"$out" && ! grep -q "^DOWN" <<<"$out" && [ "$(grep -c "M9/task.md" "$FH/prompts.log")" -eq 2 ]'
 out=$(ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1); code=$?
-check "team up starts the agent again in its old pane instead of opening a second one" '[ $code -eq 0 ] && grep -q "^OPENED  claude-1: pane w1:p8 " <<<"$out" && grep -q "^run w1:p8 claude" "$FH/team.log" && ! grep -q "^split" "$FH/team.log"'
+check "team up starts the agent again in its old pane instead of opening a second one" '[ $code -eq 0 ] && grep -q "^OPENED  claude-1: pane w1:p8 " <<<"$out" && grep -q "^run w1:p8 cd .*app-wt/claude-1 && claude" "$FH/team.log" && ! grep -q "^split" "$FH/team.log"'
 touch "$FH/codex-1.missing"; rm -f "$FH"/pane-w1:p7.*; echo idle > "$FH/codex-1.status"
 out=$("$ORCH" resume 2>&1); code=$?
 check "an agent with work in progress that is really gone: resume stops (exit 3) and says what to do" '[ $code -eq 3 ] && grep -q "^LOST    codex-1: no pane is left in its folder .*orch team up" <<<"$out" && grep -q "^NOT SENT M9: codex-1 is not found" <<<"$out" && grep -q "^NOT STARTED: codex-1 (M9) must be running first" <<<"$out"'
@@ -1440,7 +1442,7 @@ out=$(HERDR_PANE_ID=w1:p9 "$ORCH" lead plan 2>&1)
 check "the name is never taken from another pane that runs an agent" 'grep -q "pane w1:p4 already has the name .boss. and runs an agent" <<<"$out" && [ "$(grep -c "^rename" "$FH/team.log")" -eq 1 ]'
 rm -f "$FH/lead.missing"
 out=$(HERDR_PANE_ID=w1:p9 "$ORCH" lead whoami 2>&1)
-check "orch lead whoami names the pane too" 'grep -q "^NAMED   this pane (w1:p9) is now .lead." <<<"$out" && ! grep -q "Name it:" <<<"$out"'
+check "orch lead whoami keeps the plan's lead name (boss), never renames the pane to lead" 'grep -q "pane w1:p4 already has the name .boss." <<<"$out" && grep -q "Name it:  herdr agent rename .* boss$" <<<"$out" && ! grep -q "rename w1:p9 lead$" "$FH/team.log"'
 # a run that starts without its lead (the developer ran `orch autopilot` by hand) says so at once and at the end
 newrepo lnv; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead.missing"; printf "$LNPLAN" > .orchestrate/plan.md
 ORCH_LEAD_WAIT_MIN=0 timeout 120 "$ORCH" autopilot > "$WORK/lnv.log" 2>&1; code=$?
@@ -1607,6 +1609,86 @@ assert all(os.path.exists(os.path.join(r,x)) for x in p[\"extensions\"])
 assert {\"extensions\",\"pi\"} <= set(d[\"files\"])
 " "$ROOT"'
 unset ORCH_CONFIG_FILE PI_CODING_AGENT_DIR ORCH_PI
+echo "49. a coder moved off its milestone is really stopped (bug: STOP note queued, coder shown free while it still worked)"
+HPLAN='# Plan: t\nBranch: feature/halt\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M20: long job\nDepends on: none\nAcceptance criteria:\n- it works\nOpen questions:\n- none\n\n## [x] M8: next job\nDepends on: none\nOpen questions:\n- none\n'
+newrepo halt; printf "$HPLAN" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null && "$ORCH" prepare M20 codex-1 >/dev/null && "$ORCH" write-task M20 >/dev/null && "$ORCH" send M20 task.md >/dev/null
+sleep 1.5; pkill -f -- "behave.sh codex-1 $WORK/halt" 2>/dev/null    # the fake coder never finishes by itself here
+touch "$FH/codex-1.ignores-esc"; echo working > "$FH/codex-1.status"   # like agy: busy with a long step
+# plan.md edited while codex-1 works on M20: its task.md is not rewritten, and sync says so
+sed -i 's/^- it works$/- it works\n- it is fast/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "sync warns when a running milestone changed in plan.md, and says how to send the new text" 'grep -q "^WARN: M20 changed in plan.md, but codex-1 is already working from its old task.md" <<<"$out" && grep -q "orch set M20 paused., then .orch dispatch M20" <<<"$out"'
+sed -i 's/^## \[x\] M8: next job$/## [x] M8: next job, renamed/' .orchestrate/plan.md
+check "a change to a milestone nobody works on gives no warning" '! "$ORCH" sync 2>&1 | grep -q "M8 changed"'
+out=$(ORCH_HALT_WAIT_S=1 ORCH_HALT_SETTLE_S=3 "$ORCH" set M20 paused "moving it to claude-1" 2>&1); code=$?
+check "pausing a milestone whose coder still works presses its interrupt key (Esc) before the STOP note" '[ $code -eq 0 ] && grep -q "^codex-1 keys esc$" "$FH/keys.log" && grep -q "^STOP_NOTE M20 -> codex-1: interrupted (esc) and told to stop" <<<"$out" && grep -q "^codex-1 <- STOP: M20 is paused (moving it to claude-1). orch interrupted you" "$FH/prompts.log"'
+check "…and it is not marked free: it stays busy (stopping) while herdr shows it working" 'grep -q "^STOPPING codex-1: herdr still shows it working; it stays busy" <<<"$out"'
+out=$("$ORCH" status 2>&1)
+check "orch status shows the coder as stopping M20, not free" 'grep -q "worker codex-1 .*state=stopping M20 (told to stop" <<<"$out" && ! grep -q "worker codex-1 .*state=free" <<<"$out"'
+out=$("$ORCH" dispatch M20 --to claude-1 2>&1)
+check "the milestone itself moves on to the other coder" 'grep -q "^DISPATCH M20 -> claude-1" <<<"$out"'
+"$ORCH" bench claude-1 off "test" >/dev/null
+out=$("$ORCH" pick M8 2>&1); code=$?
+check "a stopping coder is never picked for new work (bug: M8 went to it)" '[ $code -eq 3 ] && grep -q "^NONE" <<<"$out"'
+out=$("$ORCH" prepare M8 codex-1 2>&1); code=$?
+check "…and can't be given work by hand either" '[ $code -eq 3 ] && grep -q "^BUSY codex-1 is still stopping M20" <<<"$out" && [ "$(status_of M8)" = pending ]'
+out=$("$ORCH" ready 2>&1)
+check "ready counts no free coder while it stops" 'grep -q "^SLOTS 0" <<<"$out"'
+# the event manager presses the key again when it keeps going
+ORCH_HALT_REPEAT_S=0 timeout 20 "$ORCH" autopilot > "$WORK/halt.log" 2>&1
+check "the event manager interrupts it again when it is still working, and says so" '[ "$(grep -c "^codex-1 keys esc$" "$FH/keys.log")" -ge 2 ] && grep -q "codex-1 is still working .* after it was told to stop M20: pressed esc again" "$WORK/halt.log"'
+check "…and still hands it no work" '[ "$(status_of M8)" = pending ] && ! grep -q "M8 -> codex-1" "$WORK/halt.log"'
+rm -f "$FH/codex-1.ignores-esc"; echo idle > "$FH/codex-1.status"; sleep 1.2
+out=$("$ORCH" status 2>&1)
+check "once herdr shows it idle (and it stayed idle a moment), it is free again" 'grep -q "worker codex-1 .*state=free" <<<"$out"'
+out=$("$ORCH" pick M8 2>&1)
+check "…and it can take new work" '[ "$out" = codex-1 ]'
+stpy "st['workers']['codex-1']['stopping'] = {'task': 'M20', 'ts': now}"
+echo working > "$FH/codex-1.status"
+out=$("$ORCH" free codex-1 2>&1)
+check "orch free: you looked at its pane, it has stopped; it is free at once" 'grep -q "^FREE    codex-1: no longer waits to stop M20" <<<"$out" && python3 -c "import json,sys;sys.exit(\"stopping\" in json.load(open(\".orchestrate/state.json\"))[\"workers\"][\"codex-1\"])"'
+echo idle > "$FH/codex-1.status"
+check "every agent kind has an interrupt key; OpenCode needs Esc twice" 'python3 -c "
+import importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader(\"orch\", \"$ROOT/bin/orch\"); m = importlib.util.module_from_spec(importlib.util.spec_from_loader(\"orch\", l)); l.exec_module(m)
+assert m.interrupt_keys(\"opencode\") == [\"esc\", \"esc\"], m.interrupt_keys(\"opencode\")
+for k in (\"claude\", \"codex\", \"agy\", \"amp\", \"hermes\", \"pi\", \"unknown-kind\"): assert m.interrupt_keys(k) == [\"esc\"], k"'
+
+# team up never names the lead's pane (or the pane it runs in) as the reviewer (bug: lead pane became rs-reviewer)
+TPLAN='# Plan: t\nBranch: feature/tl\nCheck command: true\nIsolation: worktree\nLead: rs-lead (claude)\nWorkers: claude-1 (claude)\nReviewer: rs-reviewer (claude)\n\n## [x] M1: e\nDepends on: none\nOpen questions:\n- none\n'
+newrepo tl; printf "$TPLAN" > .orchestrate/plan.md
+echo "$APP" > "$FH/pane-w1:p1.cwd"; echo claude > "$FH/pane-w1:p1.kind"; echo claude > "$FH/pane-w1:p1.cmd"; echo w1:p1 > "$FH/rs-lead.paneid"
+echo 1 > "$FH/pane-seq"; touch "$FH/rs-reviewer.missing"
+"$ORCH" sync >/dev/null && HERDR_PANE_ID=w1:p1 "$ORCH" start >/dev/null 2>&1
+out=$(env -u HERDR_PANE_ID ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1); code=$?
+check "team up does not give the lead's pane (same kind, same folder) the reviewer's name" '! grep -q "rename w1:p1 rs-reviewer" "$FH/team.log" && grep -q "^OPENED  rs-reviewer: pane w1:p2 in " <<<"$out"'
+check "the reviewer is started inside the repo folder, whatever folder the split starts in" "grep -q \"^run w1:p2 cd $APP && claude\" \"\$FH/team.log\""
+check "orch start still finds the lead afterwards" 'HERDR_PANE_ID=w1:p1 "$ORCH" start 2>&1 | grep -q "^LEAD rs-lead kind=claude herdr=found"'
+newrepo tl2; printf "$TPLAN" | grep -v "^Lead:" > .orchestrate/plan.md
+echo "$APP" > "$FH/pane-w1:p1.cwd"; echo claude > "$FH/pane-w1:p1.kind"; echo claude > "$FH/pane-w1:p1.cmd"
+echo 1 > "$FH/pane-seq"; touch "$FH/rs-reviewer.missing"
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null 2>&1
+out=$(HERDR_PANE_ID=w1:p1 ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1)
+check "with no lead in the plan, the pane team up runs in is never renamed either" '! grep -q "rename w1:p1 " "$FH/team.log" && grep -q "^OPENED  rs-reviewer: pane w1:p2" <<<"$out"'
+
+# the lead's pane keeps the plan's lead name (bug: lead whoami / lead run renamed it to `lead`)
+newrepo lw; printf "$TPLAN" > .orchestrate/plan.md; "$ORCH" sync >/dev/null
+sed -i 's/^Lead: rs-lead/Lead: rs-boss/' .orchestrate/plan.md           # changed after the last sync
+touch "$FH/rs-boss.missing"; echo "$APP" > "$FH/pane-w1:p9.cwd"; echo claude > "$FH/pane-w1:p9.cmd"
+out=$(HERDR_PANE_ID=w1:p9 "$ORCH" lead whoami 2>&1)
+check "orch lead whoami names the pane with the plan's Lead name, not lead" 'grep -q "^NAMED   this pane (w1:p9) is now .rs-boss." <<<"$out" && grep -q "Lead: rs-boss" <<<"$out" && ! grep -q "rename w1:p9 lead$" "$FH/team.log"'
+touch "$FH/rs-boss.missing"
+out=$(HERDR_PANE_ID=w1:p9 "$ORCH" lead run 2>&1)
+check "orch lead run uses plan.md's Lead name even before orch sync" 'grep -q "^NAMED   this pane (w1:p9) is now .rs-boss." <<<"$out" && [ "$(grep -c "^rename w1:p9 lead$" "$FH/team.log")" -eq 0 ]'
+
+# --help prints help and never runs the command (bug: `orch team up --help` opened panes)
+rm -f "$FH/team.log"; touch "$FH/rs-reviewer.missing"
+out=$(ORCH_TEAM_WAIT_S=1 "$ORCH" team up --help 2>&1); code=$?
+check "orch team up --help prints the team up help and opens nothing" '[ $code -eq 0 ] && grep -q "^  team up \[--dry-run\]" <<<"$out" && [ ! -f "$FH/team.log" ]'
+out=$("$ORCH" set M1 paused -h 2>&1); code=$?
+check "orch set ... -h changes nothing" '[ $code -eq 0 ] && grep -q "^  set <Mn> <status>" <<<"$out" && [ "$(status_of M1)" = pending ]'
+check "orch --help exits 0" '"$ORCH" --help >/dev/null 2>&1'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

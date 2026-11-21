@@ -36,6 +36,11 @@ LEAD_WAIT_S = int(os.environ.get("ORCH_LEAD_WAIT_MIN", "15")) * 60   # ready wor
 LEAD_IDLE_MAX_S = int(os.environ.get("ORCH_LEAD_IDLE_MAX_MIN", "720")) * 60   # give up waiting for answers after this
 DOWN_MIN_S = int(os.environ.get("ORCH_DOWN_MIN_S", "120"))   # the event manager silent for longer than this was down
 STOP_WAIT_S = float(os.environ.get("ORCH_STOP_WAIT_S", "60"))   # `orch stop` waits this long for the step it is on
+# a coder whose milestone is paused or moved away while it works: it gets the interrupt key, and stays busy
+# ("stopping") until herdr shows it idle for this long, so nobody hands it new work while it still edits files
+HALT_WAIT_S = float(os.environ.get("ORCH_HALT_WAIT_S", "5"))      # `orch set/park` waits this long for it to go idle
+HALT_SETTLE_S = float(os.environ.get("ORCH_HALT_SETTLE_S", "10"))  # idle at least this long after the stop note
+HALT_REPEAT_S = float(os.environ.get("ORCH_HALT_REPEAT_S", "90"))  # still working after this: interrupt it again
 TEAM_CONFIRM_S = float(os.environ.get("ORCH_TEAM_CONFIRM_S", "5"))   # `team up` looks again after this: still running?
 LOG_MAX_B = int(float(os.environ.get("ORCH_LOG_MAX_MB", "2")) * 1024 * 1024)   # autopilot.log; one old copy is kept
 CRASH_KEEP = int(os.environ.get("ORCH_CRASH_KEEP", "20"))         # saved agent screens in .orchestrate/crash/
@@ -163,7 +168,7 @@ def state_lock():
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
 LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "defer",
-              "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story", "check"}
+              "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story", "check", "free"}
 _LEASE = None
 
 
@@ -1325,6 +1330,7 @@ def cmd_sync(args):
         st["workers"][name] = {"kind": kind, "task": ow.get("task"), "cooldown_until": ow.get("cooldown_until", 0),
                                "cooldown_reason": ow.get("cooldown_reason", ""),
                                **({"off": ow["off"]} if ow.get("off") else {}),     # kept until `orch bench <w> on`
+                               **({"stopping": ow["stopping"]} if ow.get("stopping") else {}),   # told to stop
                                "dir": ow.get("dir"), "setup_done": ow.get("setup_done", False),
                                "setup_hash": ow.get("setup_hash"), "delivery_fails": ow.get("delivery_fails", 0),
                                "pane": pane, "detect": detect(kind, pane, "Workers"),
@@ -1375,6 +1381,14 @@ def cmd_sync(args):
     rb = st["tasks"].get(st["reviewer_busy"]) if st.get("reviewer_busy") else None
     if st.get("reviewer_busy") and (rb is None or rb["status"] != "reviewing"):
         st["reviewer_busy"] = None
+    # a coder works from the task.md it got; a plan.md edit made meanwhile does not reach it by itself
+    secs_, glob_ = plan_sections()
+    for tid, t in st["tasks"].items():
+        if t.get("task_src") and holds(st, tid) and tid in secs_ and task_source(secs_[tid], glob_) != t["task_src"]:
+            warns.append(f"{tid} changed in plan.md, but {t['worker']} is already working from its old task.md, which "
+                         f"is not rewritten while it works. To give it the new text: `orch set {tid} paused`, then "
+                         f"`orch dispatch {tid}` (its work so far is kept). Or let it finish and send the change "
+                         f"after it lands: `orch fix {tid} \"<the change>\"`")
     migrate(st)
     save(st)
     for w in warns:
@@ -1528,20 +1542,85 @@ def shared_fold(st, tid):
             f"are kept in {keep} (`git stash show -p {new[:12]}` to look); {tid} keeps its earlier saved work")
 
 
-def stop_note(st, agent, tid, status, reason):
-    """Tell a coder whose milestone was just paused or failed to stop. Only when it is (or may be) still working;
-    whatever it writes anyway is saved the next time the milestone or its folder is used."""
-    if watched(st, agent):
+def interrupt_keys(kind):
+    """The keys that stop the agent's current step (a registry setting per kind, `interrupt_keys`); default Esc."""
+    v = (registry(required=False) or {}).get(kind) or {}
+    keys = v.get("interrupt_keys")
+    return [str(k) for k in keys] if isinstance(keys, list) and keys else ["esc"]
+
+
+def interrupt(st, agent):
+    """Press the agent's interrupt key(s) in its pane, like a person pressing Esc. A typed message is not a stop:
+    an agent busy with a step only reads it after that step (agy queues it), so the key comes first.
+    Returns the keys sent, or None when herdr could not send them."""
+    info = agent_info(st, agent)
+    keys = interrupt_keys(info.get("kind"))
+    pane = info.get("pane")
+    try:
+        _herdr_run([HERDR, "pane", "send-keys", pane, *keys] if pane else [HERDR, "agent", "send-keys", agent, *keys])
+    except DeliveryError:
+        return None
+    return keys
+
+
+def busy_word(s):
+    return word(s, "working", "blocked")
+
+
+def stop_coder(st, agent, tid, status, reason):
+    """Stop a coder whose milestone was just paused or failed (or moved to another coder). Only when it is (or may
+    be) still working. It gets the interrupt key first, then the STOP note; whatever it writes anyway is saved the
+    next time the milestone or its folder is used. Returns None (nothing to stop) or
+    {"keys": [...] or None, "idle": bool, "note": bool, "watched": bool}."""
+    watch = watched(st, agent)
+    if watch:
         s = herdr_state(agent)
-        if s is None or not word(s, "working"):
-            return False
+        if s is None or not busy_word(s):
+            return None
+    keys = interrupt(st, agent)
+    idle = False
+    if watch:
+        end = time.time() + (0 if os.environ.get("ORCH_DRIVER") else HALT_WAIT_S)   # the event manager never waits
+        while True:
+            s = herdr_state(agent)
+            if s is None or not busy_word(s):
+                idle = True
+                break
+            if time.time() >= end:
+                break
+            time.sleep(0.5)
     why = " ".join((reason or status).split())[:160]
     try:
-        deliver(st, agent, f"STOP: {tid} is {status} ({why}). Stop working on it now and do not change any more "
-                           f"files. What you did so far is saved. You get a new prompt if it continues.")
+        deliver(st, agent, f"STOP: {tid} is {status} ({why}). orch interrupted you: stop working on it now and do "
+                           f"not change any more files. What you did so far is saved. You get a new prompt if it "
+                           f"continues.")
+        note = True
     except DeliveryError:
+        note = False
+    return {"keys": keys, "idle": idle, "note": note, "watched": watch}
+
+
+def still_stopping(st, name, w=None):
+    """True while a coder that was told to stop may still be working: herdr shows it working (or blocked), or it
+    went idle less than ORCH_HALT_SETTLE_S after the stop. Such a coder is busy: it gets no new work."""
+    w = w if w is not None else st["workers"].get(name) or {}
+    h = w.get("stopping")
+    if not h or not w.get("detect", True):
         return False
-    return True
+    s = herdr_state(name)
+    if s is None:                       # no agent left in herdr: nothing is running there
+        return False
+    if busy_word(s):
+        return True
+    # idle now: free once it has stayed idle long enough. The event manager records since when it has seen it idle
+    # (a working reading in between starts the count again), so one idle blink between two steps does not free it
+    return now() - (h.get("idle_since") or h.get("ts", 0)) < HALT_SETTLE_S
+
+
+def stopping_line(st, name, w):
+    h = w.get("stopping") or {}
+    return (f"stopping {h.get('task') or '?'} (told to stop {_fmt_secs(now() - h.get('ts', now()))} ago; "
+            f"it gets no new work until herdr shows it idle — `orch free {name}` if you checked its pane)")
 
 
 def commit_message(st, tid):
@@ -1934,6 +2013,7 @@ def cmd_ready(args):
         slots = 1          # shared mode: a queued fix job IS the active milestone, and it needs a coder
     # only coders herdr can see count as free: a coder with no agent can't take work, whatever its task field says
     present = [n for n, w in st["workers"].items() if not w.get("task") and not w.get("off") and not cooling(n, w)
+               and not still_stopping(st, n, w)
                and (not w.get("detect", True) or w.get("pane") or herdr_state(n) is not None)]
     gone = [n for n, w in st["workers"].items() if not w.get("task") and not w.get("off") and w.get("detect", True)
             and not w.get("pane") and herdr_state(n) is None]
@@ -1959,7 +2039,7 @@ def cooling(name, info):
 
 
 def worker_free(st, name, w):
-    if w.get("task") or w.get("off") or cooling(name, w):
+    if w.get("task") or w.get("off") or cooling(name, w) or still_stopping(st, name, w):
         return False
     if not w.get("detect", True):      # herdr can't watch it: no task + no cooldown = free
         return True
@@ -1998,6 +2078,12 @@ def cmd_prepare(args):
         die(f"{tid} is {t['status']}, expected pending/paused/needs-fix/conflict")
     if w.get("task") and w["task"] != tid:
         die(f"{worker} is busy with {w['task']}")
+    if still_stopping(st, worker, w):
+        print(f"BUSY {worker} is still stopping {w['stopping'].get('task')}: herdr shows it working, or it stopped "
+              f"less than {int(HALT_SETTLE_S)}s ago. Try again when `orch status` shows it free "
+              f"(or `orch free {worker}` after you checked its pane)")
+        sys.exit(3)
+    w.pop("stopping", None)
     if not holds(st, tid) and free_slots(st) <= 0 and not (st["isolation"] == "shared" and t["status"] in ("conflict", "needs-fix")):
         die("no free slot (max parallel reached)")
     d = Path(w["dir"] or ROOT)
@@ -2849,8 +2935,24 @@ def _park(st, tid, status, reason, force=False):
     move(st, tid, status, reason, force=force)
     t["wait"] = None
     save(st)
-    if note_to and stop_note(st, note_to, tid, status, reason):
-        print(f"STOP_NOTE {tid} -> {note_to}: told to stop and not change more files")
+    if note_to:
+        res = stop_coder(st, note_to, tid, status, reason)
+        if res:
+            keys = "+".join(res["keys"]) if res["keys"] else None
+            if res["note"]:
+                print(f"STOP_NOTE {tid} -> {note_to}: " + (f"interrupted ({keys}) and " if keys else "")
+                      + "told to stop and not change more files")
+            if res["watched"]:
+                st["workers"][note_to]["stopping"] = {"task": tid, "ts": now(), "keys": res["keys"] or [],
+                                                      "again": 0}
+                save(st)
+                print(f"STOPPING {note_to}: " + ("herdr shows it idle now; " if res["idle"] else
+                      "herdr still shows it working; ") + f"it stays busy (no new work) until it has been idle "
+                      f"{int(HALT_SETTLE_S)}s. `orch status` says when it is free"
+                      + ("" if keys else f" — the interrupt key could not be sent: press Esc in its pane"))
+            else:
+                print(f"CHECK   {note_to}: herdr can't watch {agent_info(st, note_to).get('kind')}, so orch can't "
+                      f"tell when it has stopped: look at its pane before you give it new work")
 
 
 def cmd_park(args):
@@ -2918,6 +3020,22 @@ def cmd_bench(args):
                   f"`orch set {w['task']} paused`, then `orch dispatch {w['task']}`")
         if not eligible_workers(st, {"tier": None, "min_tier": None}):
             print("WARN    every coder is off now: nothing new starts until one is back on")
+
+
+def cmd_free(args):
+    """orch free <worker> -> you looked at its pane: the coder that was told to stop HAS stopped, so it can take work
+    again now (orch otherwise waits until herdr shows it idle)."""
+    need(args, 1, "free <worker>")
+    name = args[0]
+    with state_lock():
+        st = load()
+        w = st["workers"].get(name) or die(f"unknown worker {name!r} — workers: {', '.join(st['workers'])}")
+        if w.get("task"):
+            die(f"{name} holds {w['task']}: to take it away, `orch set {w['task']} paused` (it is then told to stop)")
+        h = w.pop("stopping", None)
+        save(st)
+    print(f"FREE    {name}: " + (f"no longer waits to stop {h.get('task')}; it can take new work" if h else
+                                 "it was not stopping anything"))
 
 
 def cmd_stop(args):
@@ -3003,7 +3121,10 @@ def cmd_status(args):
         h = here[n]
         state = ("OFF (" + (w["off"].get("why") or "developer") + ")" if w.get("off") else
                  f"coding {w['task']}" if w.get("task") else
+                 stopping_line(st, n, w) if still_stopping(st, n, w) else
                  f"benched {cd // 60}m ({w.get('cooldown_reason') or 'cooldown'})" if cd else "free")
+        if state == "free" and h == "ok" and w.get("detect", True) and busy_word(herdr_state(n)):
+            state = "free, but herdr shows it working: look at its pane before it gets new work"
         print(f"  worker {n:<12} {w['kind']:<8} task={w.get('task') or '-':<5} "
               + (f"model={w['model']} ({w.get('tier') or 'unrated'}) " if w.get("model") else "")
               + f"{'cooldown ' + str(cd // 60) + 'm' if cd else ''}"
@@ -3218,6 +3339,18 @@ def cmd_finish(args):
 
 
 # ---------------------------------------------------------------- v4: task files, nudge, autopilot
+TASK_SRC_SKIP = ("notes from user", "plain")   # answers reach the coder by their own prompt; Plain is not in task.md
+
+
+def task_source(section, glob=""):
+    """A fingerprint of what task.md is written from (the milestone's plan text + Global instructions), so `orch
+    sync` can tell when plan.md changed under a coder that is already working from an older task.md."""
+    _, ts = parse_plan(section)
+    f = {k: v for k, v in (ts[0]["fields"] if ts else {}).items() if k not in TASK_SRC_SKIP}
+    title = ts[0]["title"] if ts else section.split("\n", 1)[0]
+    return hashlib.sha1(json.dumps([title, f, glob.strip()], sort_keys=True).encode()).hexdigest()[:12]
+
+
 def plan_sections():
     """Return ({task_id: section_text}, global_instructions_text) straight from plan.md."""
     text = (ORCH / "plan.md").read_text()
@@ -3324,6 +3457,8 @@ def cmd_write_task(args):
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(parts))
     (out.parent / "task.json").write_text(json.dumps(contract, indent=2))
+    t["task_src"] = task_source(secs[tid], glob)
+    save(st)
     print(f"WROTE {out}")
     print(f"WROTE {out.parent / 'task.json'}")
 
@@ -3419,6 +3554,9 @@ def cmd_dispatch(args):
             if st["workers"][to].get("off"):
                 die(f"{to} is off ({st['workers'][to]['off'].get('why')}): `orch bench {to} on` first, or pick another "
                     f"worker")
+            if still_stopping(st, to):
+                print(f"NOTE     {to} is still stopping {st['workers'][to]['stopping'].get('task')}: the work starts "
+                      f"there once herdr shows it idle (`orch status`)")
             here = presence_word(st, to)
             if here not in ("ok", "detect:off"):
                 die(f"{to} has no agent in herdr ({here}" + (": only a plain shell is left in its pane" if here ==
@@ -4759,8 +4897,43 @@ def _autopilot(args):
         elif t["status"] == "committed":
             land(tid)
 
+    def tend_stops():
+        """Coders told to stop: free once herdr shows them idle; interrupted again (twice at most) if they keep going."""
+        st_ = load()
+        for n, w in st_["workers"].items():
+            h = w.get("stopping")
+            if not h:
+                continue
+            s = herdr_state(n) if w.get("detect", True) else None
+            busy = s is not None and busy_word(s)
+            if busy and h.get("idle_since"):
+                h["idle_since"] = None
+                patch_state(lambda s_, n=n: n in s_["workers"] and s_["workers"][n].get("stopping") is not None
+                            and s_["workers"][n]["stopping"].update(idle_since=None))
+            elif s is not None and not busy and not h.get("idle_since"):
+                h["idle_since"] = now()
+                patch_state(lambda s_, n=n, t=h["idle_since"]: n in s_["workers"]
+                            and s_["workers"][n].get("stopping") is not None
+                            and s_["workers"][n]["stopping"].update(idle_since=t))
+            if not still_stopping(st_, n, w):
+                patch_state(lambda s_, n=n: n in s_["workers"] and s_["workers"][n].pop("stopping", None))
+                say(f"STOPPED {n}: it is idle after the stop for {h.get('task')}, so it can take new work")
+                continue
+            if now() - h.get("last", h.get("ts", 0)) >= HALT_REPEAT_S and h.get("again", 0) < 2:
+                keys = interrupt(st_, n)
+                patch_state(lambda s_, n=n: n in s_["workers"] and s_["workers"][n].get("stopping") is not None
+                            and s_["workers"][n]["stopping"].update(again=h.get("again", 0) + 1, last=now()))
+                say(f"{n} is still working {_fmt_secs(now() - h.get('ts', now()))} after it was told to stop "
+                    f"{h.get('task')}: " + (f"pressed {'+'.join(keys)} again" if keys else
+                                             "the interrupt key could not be sent")
+                    + f". It gets no new work until it is idle; look at its pane (`orch free {n}` once it has "
+                    f"stopped)", h.get("again", 0) >= 1)
+
     def dispatch(kind, tid, worker):
-        _, prep = run("prepare", tid, worker)
+        code, prep = run("prepare", tid, worker, ok=(0, 3))
+        if code == 3:                  # the coder is busy after all (still stopping its last milestone): next loop
+            say(f"{tid}: {worker} is not free yet ({prep.splitlines()[-1][:160] if prep else 'busy'}) — tried again soon")
+            return
         if "SETUP_NEEDED" in prep:
             d = load()["tasks"][tid]["dir"]
             say(f"installing dependencies in {d}" + (" (dependency files changed)" if "changed" in prep else ""))
@@ -4956,6 +5129,7 @@ def _autopilot(args):
             procs = run_processes(st)
             patch_state(lambda s_: (s_["run"].get("manager") or {}).update(procs))
         watch_herdr()
+        tend_stops()
         # 0. budget: driving time adds up across restarts (time spent only waiting for an answer doesn't count)
         el, last_tick = time.time() - last_tick, time.time()
         asleep = slept()
@@ -5638,7 +5812,8 @@ def team_up(args):
         die(f"run `orch start` first: it makes each coder's folder ({', '.join(missing_dirs)} have none yet)")
     # after a restart: panes that only lost their name get it back, and a coder's own pane that came back as a
     # plain shell gets its agent started again, instead of a second pane next to it
-    empty = {} if dry else rename_lost(dict(st, lead=None), hints=False)
+    lead_pane = agent_pane(st["lead"]["name"]) if (st.get("lead") or {}).get("name") else None
+    empty = {} if dry else rename_lost(dict(st, lead=None), hints=False, keep_out=[lead_pane] if lead_pane else [])
     todo = []
     for name, w, d in agents:
         if w.get("pane"):
@@ -5681,7 +5856,9 @@ def team_up(args):
                 failed += 1
                 continue
             last = pid
-        ok, _, out = _herdr_json([HERDR, "pane", "run", pid, cmd])
+        # `cd` first: a split can start in the folder of the pane it splits from (herdr's new-pane folder setting),
+        # and the reviewer must sit in the repo, not in a coder's worktree
+        ok, _, out = _herdr_json([HERDR, "pane", "run", pid, f"cd {shlex.quote(str(d))} && {cmd}"])
         if not ok:
             print(f"FAILED  {name}: pane {pid} is there, but `herdr pane run` failed ({out[-120:]})")
             failed += 1
@@ -5777,12 +5954,14 @@ def _inside(path, folder):
     return a == b or a.startswith(b.rstrip("/") + "/")
 
 
-def rename_lost(st, hints=True):
+def rename_lost(st, hints=True, keep_out=()):
     """herdr brings panes back after a restart, but not the agents' names, and orch reaches agents by name. For
     every agent in the plan that herdr can't find, look for its pane by folder and give the name back. A coder's
     worktree is its own folder, so one pane there is its pane. The reviewer and the lead sit in the main folder,
     next to the developer's own panes, so there the pane must also show the agent's kind. Where that can't be
     decided, print the exact command (hints=False: only say what was named).
+    Never gives a coder's or the reviewer's name to the pane this command runs in (that is the developer's or the
+    lead's own pane), nor to a pane in keep_out (the lead's, when the lead is not renamed here).
     Returns {name: pane id or None} for the agents still not found; a pane id means "its pane is there (a
     coder's own folder), but no agent runs in it"."""
     plan = [(n, w, w.get("dir") or str(ROOT), st["isolation"] == "worktree" and bool(w.get("dir")))
@@ -5803,7 +5982,9 @@ def rename_lost(st, hints=True):
                 f"open?). Find its pane with `herdr agent list` (folder {short(d)}), then: herdr agent rename <pane> {n}")
         return {x[0]: None for x in lost}
     found = {x[0] for x in plan} - {x[0] for x in lost}
-    taken = {agent_pane(n) for n in found} - {None}
+    taken = ({agent_pane(n) for n in found} | set(keep_out)) - {None}
+    me = os.environ.get("HERDR_PANE_ID")
+    lead_name = (st.get("lead") or {}).get("name")
     reg = registry(required=False) or {}
     still, pending, progress, cands = {}, list(lost), True, {}
     while pending and progress:                # a pane given to one agent can settle who gets another
@@ -5811,7 +5992,8 @@ def rename_lost(st, hints=True):
         for item in list(pending):
             n, w, d, own = item
             kind = (w.get("kind") or "").lower()
-            here = [pid for pid, p in panes.items() if pid not in taken and any(_inside(x, d) for x in p["cwds"])]
+            here = [pid for pid, p in panes.items() if pid not in taken and any(_inside(x, d) for x in p["cwds"])
+                    and not (me and pid == me and n != lead_name)]
             same = [pid for pid in here if kind and panes[pid]["kind"]
                     and (kind in panes[pid]["kind"] or panes[pid]["kind"] in kind)]
             cands[n] = here
@@ -5942,11 +6124,11 @@ COMMANDS = {
     "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
     "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer, "defer": cmd_defer,
     "escalate": cmd_escalate, "fix": cmd_fix, "plan": cmd_plan, "story": cmd_story, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
-    "doctor": lambda a: cmd_doctor_crash(a), "check": lambda a: cmd_check(a), "sub": lambda a: cmd_sub(a),
+    "free": cmd_free, "doctor": lambda a: cmd_doctor_crash(a), "check": lambda a: cmd_check(a), "sub": lambda a: cmd_sub(a),
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
 UNLOCKED = {"autopilot", "poll", "merge", "events", "dispatch", "answer", "defer", "fix", "team", "resume", "bench", "stop",
-            "doctor", "check"}
+            "doctor", "check", "free"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
@@ -5956,7 +6138,7 @@ USAGE = """usage: orch <command> [args]
   lead plan quick|full     the rest of the plan playbook: a quick run's rules, or steps 3-10 of the full process
   lead run --section <EVENT|ALL_DONE|rules>   one part of the run playbook (orch events prints these for you)
   lead check               preflight: is this agent in a Herdr pane / can it reach herdr?
-  lead whoami              show the lead's own herdr pane and how to name it `lead`
+  lead whoami              show the lead's own herdr pane and name it as the plan's `Lead:` (default `lead`)
   team <kind> [--coders N] [--models a,b] [--no-reviewer]
                            the plan's team built from one installed tool: coders + reviewer on its catalog models
   team up [--dry-run] [--mode panes|subagent]
@@ -6005,9 +6187,13 @@ USAGE = """usage: orch <command> [args]
   park <Mn> paused|failed|pending [--lost] [reason]   free the worker, keep its work in a hidden ref (refs/orch/...)
   cooldown <agent> <min> [reason]  bench a worker or the reviewer (reason `gone`: ends once herdr sees it again)
   bench <worker> off [reason] | on   keep a coder out of the run until you turn it back on (survives restarts)
+  free <worker>            a coder told to stop (`orch status`: stopping) has stopped: you checked its pane; it
+                           takes work again (orch otherwise waits until herdr shows it idle)
   stop [--now]             stop the event manager cleanly (it finishes its current step); `orch resume` starts it again
   doctor --crash           (in a repo) why the event manager last stopped, and the last crash / lost notes
-  set <Mn> <status> [reason] [--force]  manual override: pending/paused/failed/skipped (others need --force)
+  set <Mn> <status> [reason] [--force]  manual override: pending/paused/failed/skipped (others need --force);
+                           a coder still working on a paused/failed Mn gets the interrupt key (Esc) and a STOP note,
+                           and stays busy ("stopping") until herdr shows it idle
   approve <Mn>             let a milestone held for risky changes land (works while autopilot runs)
   cleanup                  remove clean worker worktrees
   finish [--no-push] [--recheck]  final check (reused if it passed on these exact files), remove the <repo>-wt
@@ -6195,20 +6381,29 @@ def run_playbook_part(text, name):
     return "\n".join(rows) + ("\n" if rows else "")
 
 
-def lead_self_name():
-    """`orch lead plan` / `orch lead run` (not a wake-up's --section): name the pane they run in as the lead. The
-    name is the run's `Lead:` (from state.json, else plan.md), else `lead`. Prints one line; never fails."""
-    st, name = None, "lead"
+def lead_name_here():
+    """(state or None, the lead's name) for the repo this runs in: plan.md's `Lead:` first (it is what the developer
+    wrote, even before `orch sync`), then the run's state.json, else `lead`. Never fails."""
+    st, name = None, None
     with contextlib.suppress(Exception):
         r = git("rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
         if r.returncode == 0:
             o = Path(r.stdout.strip()).parent / ".orchestrate"
             if (o / "state.json").exists():
                 st = json.loads((o / "state.json").read_text())
-                name = (st.get("lead") or {}).get("name") or name
-            elif (o / "plan.md").exists():
-                m = re.search(r"(?mi)^Lead:\s*([\w.-]+)", (o / "plan.md").read_text())
-                name = m.group(1) if m and m.group(1).lower() != "none" else name
+            if (o / "plan.md").exists():
+                m = re.search(r"(?mi)^Lead:[ \t]*([\w.-]+)", (o / "plan.md").read_text())
+                if m and m.group(1).lower() != "none":
+                    name = m.group(1)
+            if not name and st:
+                name = (st.get("lead") or {}).get("name")
+    return st, name or "lead"
+
+
+def lead_self_name():
+    """`orch lead plan` / `orch lead run` (not a wake-up's --section): name the pane they run in as the lead. The
+    name is the plan's `Lead:` (plan.md, else state.json), else `lead`. Prints one line; never fails."""
+    st, name = lead_name_here()
     if not os.environ.get("HERDR_PANE_ID"):
         pid, _ = herdr_current_pane()
         if pid:
@@ -6269,12 +6464,13 @@ def cmd_lead(args):
             pid = (re.search(r'"?pane_id"?\s*[:=]\s*"?([\w:.-]+)', out) or [None, None])[1]
             print(out)
         named = False
+        st, name = lead_name_here()
         if os.environ.get("HERDR_PANE_ID"):
-            named, line = name_lead("lead")
+            named, line = name_lead(name, st)
             print(line)
         if not named:
-            print(f"This pane is YOU (the lead). Name it:  herdr agent rename {pid or '<pane id>'} lead")
-        print("Write `Lead: lead (<your kind>)` in the plan header, and never prompt this pane.")
+            print(f"This pane is YOU (the lead). Name it:  herdr agent rename {pid or '<pane id>'} {name}")
+        print(f"Write `Lead: {name} (<your kind>)` in the plan header, and never prompt this pane.")
         return
     die("usage: orch lead plan | run | check | whoami")
 
@@ -7407,7 +7603,31 @@ def auto_update_at_plan():
         update_log(f"auto-update error: {e!r}")
 
 
+def command_help(words):
+    """The USAGE lines of one command (`orch team up --help` -> the `team up` lines), or of all its forms."""
+    blocks, cur = [], None
+    for line in USAGE.splitlines()[1:]:
+        if line.startswith("  ") and not line.startswith("   ") and line.strip():
+            cur = [line]
+            blocks.append(cur)
+        elif cur is not None and line.startswith("   ") and line.strip():
+            cur.append(line)
+        else:
+            cur = None
+    mine = [b for b in blocks if b[0].split()[0] == words[0]]
+    if len(words) > 1:
+        sub = [b for b in mine if len(b[0].split()) > 1 and words[1] in re.split(r"[|\[\]\s]+", b[0].split(None, 1)[1])]
+        mine = sub or mine
+    return "\n".join("\n".join(b) for b in mine)
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and any(a in ("--help", "-h") for a in sys.argv[2:]):   # never run the command itself
+        words = [sys.argv[1]] + [a for a in sys.argv[2:sys.argv.index("--help") if "--help" in sys.argv[2:]
+                                                  else sys.argv.index("-h")] if not a.startswith("-")][:1]
+        text = command_help(words)
+        print("usage: orch <command> [args]\n" + text if text else USAGE)
+        sys.exit(0)
     if len(sys.argv) >= 2 and sys.argv[1] in ("version", "--version", "-v"):
         print(f"herdr-orchestra {installed_version()}")
         update_notice()
@@ -7426,7 +7646,7 @@ if __name__ == "__main__":
         sys.exit(0)
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(USAGE)
-        sys.exit(0 if len(sys.argv) < 2 else 2)
+        sys.exit(0 if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h", "help") else 2)
     ROOT = main_root()
     ORCH = ROOT / ".orchestrate"
     ORCH.mkdir(exist_ok=True)
