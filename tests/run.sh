@@ -111,6 +111,7 @@ check "finish removes a coder folder that holds only an agent's settings file" '
 check "finish removes the folder of a coder no longer in the plan" '[ ! -d "$APP/../app-wt/gone-1" ] && ! git worktree list | grep -q gone-1'
 check "finish removes the empty app-wt folder" '[ ! -e "$APP/../app-wt" ] && grep -q "REMOVED .*/app-wt$" <<<"$out" && [ "$(git worktree list | wc -l)" -eq 1 ]'
 check "finish says how to open the PR" 'grep -q "OPEN A PR from feature/cat into main" <<<"$out"'
+check "finish with no lead and no checklist says the manual tests are not written, and wakes nobody" 'grep -q "^MANUAL TESTS: not written yet" <<<"$out" && ! grep -q "LEAD" <<<"$out"'
 check "only the feature branch was pushed" '[ "$(git --git-dir="$WORK/remote.git" for-each-ref --format="%(refname)" | tr "\n" " ")" = "refs/heads/feature/cat " ]'
 git worktree add -q --detach "$APP/../app-wt/keep-1" HEAD && echo "not in any milestone" >> "$APP/../app-wt/keep-1/shared.txt"
 out=$("$ORCH" finish --no-push 2>&1); code=$?
@@ -675,6 +676,27 @@ check "the summary asks for a manual checklist of only what a person must see or
 check "the coder is given the role the lead wrote, in task.md and task.json" 'grep -q "For this task you are: \*\*senior backend engineer who cares about clear error messages\*\*" ../app-wt/claude-1/.orch-task/M5/task.md && grep -q "\"role\": \"senior backend engineer" ../app-wt/claude-1/.orch-task/M5/task.json'
 check "task.md leaves out the lines only orch uses, and lists the criteria once, with their ids" 'T=../app-wt/claude-1/.orch-task/M5/task.md; ! grep -qE "^(Depends on|Role|Tier|Estimate|Prefer|Review|Model why|Needs|Why separate|Parallel):" $T && [ "$(grep -c "e.txt exists" $T)" -eq 1 ] && grep -q "^- AC1: e.txt exists" $T && grep -q "^Title: e" $T'
 check "the playbooks ask for a role per milestone and a by-hand-only checklist" 'grep -q "^Role:" "$ROOT/playbooks/plan.md" && grep -q "Checked by the lead" "$ROOT/playbooks/run.md"'
+echo "25b. orch finish: the manual tests go to the developer and to the lead's chat"
+out=$("$ORCH" finish --no-push 2>&1); code=$?
+check "finish prints the summary's manual tests, numbered, a wrapped line kept with its item" '[ $code -eq 0 ] && grep -q "^MANUAL TESTS: 2 to try by hand before you merge" <<<"$out" && grep -q "^  1. check totals by hand$" <<<"$out" && grep -q "^  2. open /totals on a phone -> the table fits the screen$" <<<"$out"'
+check "...and saves them in manual-tests.md" 'grep -q "^2. open /totals on a phone" .orchestrate/manual-tests.md'
+check "finish queues FINISHED for the lead and wakes it" 'grep -q "^TOLD THE LEAD (lead)" <<<"$out" && tail -1 "$FH/lead-wakes.log" | grep -q "orch finish. ran on feature/ll"'
+for _ in $(seq 20); do grep -q "^#[0-9]* FINISHED" "$FH/lead-events.log" && break; sleep 0.5; done
+check "the woken lead reads FINISHED with the list and the playbook row to post it in chat" 'grep -q "^#[0-9]* FINISHED: cleaned up, not pushed (--no-push).*2 manual test" "$FH/lead-events.log" && grep -q "^    MANUAL TESTS: 2 to try" "$FH/lead-events.log" && grep -q "^    SAY: The run is finished" "$FH/lead-events.log" && grep -q "^| \`FINISHED\` | .*Try these by hand before you merge" "$FH/lead-events.log"'
+check "orch manual prints the same list again" '"$ORCH" manual | grep -q "^  2. open /totals on a phone"'
+HERDR_PANE_ID=w9:p1; echo w9:p1 > "$FH/lead.paneid"; export HERDR_PANE_ID
+nw=$(wc -l < "$FH/lead-wakes.log"); out=$("$ORCH" finish --no-push 2>&1)
+check "the lead running finish itself is told to post the list, and not woken" 'grep -q "^LEAD: you ran .orch finish. yourself: post the MANUAL TESTS list" <<<"$out" && [ "$(wc -l < "$FH/lead-wakes.log")" -eq "$nw" ]'
+unset HERDR_PANE_ID; rm -f "$FH/lead.paneid"
+cp .orchestrate/summary.md "$WORK/sum.bak"; python3 - .orchestrate/summary.md <<'PY'
+import re,sys; p=sys.argv[1]; s=open(p).read()
+s=s[:s.index("## Manual verification checklist")]+"**Manual verification checklist**\nNothing to check by hand: a CLI change, its tests cover it.\n"
+open(p,"w").write(s)
+PY
+check "a checklist with nothing by hand says so (bold heading too)" '"$ORCH" manual | grep -q "^MANUAL TESTS: none. Nothing to check by hand: a CLI change"'
+sed -i "/Manual verification checklist\*\*/,\$d" .orchestrate/summary.md
+check "no checklist yet: orch manual says the lead has not written it (the Still-to-write line is not a list)" '"$ORCH" manual | grep -q "^MANUAL TESTS: not written yet"'
+cp "$WORK/sum.bak" .orchestrate/summary.md
 newrepo lgone; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead.gone"
 printf '# Plan: t\nBranch: feature/lg\nCheck command: true\nIsolation: worktree\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 ORCH_LEAD_WAIT_MIN=0 timeout 120 "$ORCH" autopilot > "$WORK/lgone.log" 2>&1; code=$?
@@ -1591,6 +1613,7 @@ out=$("$ORCH" sub "done" M2 2>&1)
 check "the last one prints ALL_DONE" 'grep -q "^ALL_DONE" <<<"$out" && "$ORCH" sub next | grep -q "^ALL_DONE"'
 out=$("$ORCH" finish --no-push 2>&1); code=$?
 check "orch finish works on a subagent run, reusing the passing check" '[ $code -eq 0 ] && grep -q "^CLEAN feature/pis" <<<"$out"'
+check "subagent finish tells the lead to post the manual tests in its chat" 'grep -q "^LEAD: post the MANUAL TESTS list above in your chat" <<<"$out"'
 out=$("$ORCH" mode panes 2>&1)
 check "orch mode panes switches the machine and this run" 'grep -q "this repo.s run: panes" <<<"$out" && [ "$("$ORCH" mode)" = "mode: panes (this repo'"'"'s run)" ] && grep -q "\"mode\": \"panes\"" "$ORCH_CONFIG_FILE"'
 check "orch sub refuses a panes run" '! "$ORCH" sub next >/dev/null 2>&1'

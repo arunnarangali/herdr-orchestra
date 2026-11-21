@@ -17,7 +17,7 @@ if [[ $prompt == orch:* ]]; then                        # the lead being woken b
   ready=$(grep -oE 'orch dispatch M[0-9]+$' <<<"$out" | grep -oE 'M[0-9]+' | sort -u | tr '\n' ' ')
   # shellcheck disable=SC2086
   [ -n "$ready" ] && ORCH_NO_AUTOSTART=1 "$ORCH_BIN" dispatch $ready >> "$FH/lead-events.log" 2>&1
-  grep -q "ALL_DONE" <<<"$out" && echo "- [ ] check totals by hand" >> .orchestrate/summary.md
+  grep -q "ALL_DONE" <<<"$out" && printf '\n## Manual verification checklist\n- [ ] check totals by hand\n- [ ] open /totals on a phone -> the table\n  fits the screen\n' >> .orchestrate/summary.md
   echo idle > "$FH/$agent.status"; exit 0
 fi
 if [[ $prompt == STOP:* ]]; then                        # orch told it to stop: it answers and goes idle,

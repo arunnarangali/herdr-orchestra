@@ -2,6 +2,27 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.4.0] - 2026-11-21
+
+At the end of a run, the things you should try by hand now come to you as a plain numbered list: `orch finish` prints them, and the lead posts them in its chat. Nothing else changes: the lead writes the same "Manual verification checklist" in the summary as before, and orch reads it from there.
+
+Example: you run `orch finish` in a terminal. It ends with
+
+```
+MANUAL TESTS: 2 to try by hand before you merge (from the summary's Manual verification checklist):
+  1. Open /settings, click Save → a green "Saved" note appears
+  2. Open /settings on a phone → the form fits the screen
+```
+
+and the lead's chat shows "Try these by hand before you merge:" with the same two lines, next to the PR link.
+
+### Added
+- **Manual tests at `orch finish`.** It reads the summary's "Manual verification checklist" (any heading level, or a bold line) and prints it as a numbered list after the push and PR lines, also with `--no-push`. It says so when the lead wrote `Nothing to check by hand: <why>`, and when the checklist is not written yet. The list is also saved in `.orchestrate/manual-tests.md`.
+- **`orch manual`** prints the same list again, at any time (also while the event manager runs).
+- **`FINISHED` lead event.** With a lead in the run, `orch finish` queues `FINISHED` (pushed or not, the PR link, how many manual tests) and wakes the lead. `orch events` prints the list under it, and the playbook row tells the lead to post it in its chat, numbered and word for word. When the lead ran `orch finish` itself (from its own pane), it is not woken: the output tells it to post the list. In a subagent run the output tells the lead the same.
+
+### Changed
+- **ALL_DONE:** the lead now lists the manual checklist items themselves in its chat (it used to give only how many there are), so you can try them before you run `orch finish`. Same in subagent runs.
 ## [6.3.0] - 2026-11-21
 
 Moving a milestone away from a coder now really stops that coder. Before, `orch set M7 paused` only typed a STOP note into the coder's pane and marked the coder free at once. An agent in the middle of a step (agy, for example) only reads a typed message after that step, so it kept editing files while `orch status` showed it as free, and it could be handed the next milestone.
