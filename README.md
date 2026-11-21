@@ -246,6 +246,43 @@ Full stack: M1 contract (API + types) → M2 backend ∥ M3 UI → M4 integratio
 ### Review pipelining (worktree mode)
 When a milestone passes its checks it's saved to its hidden ref and the coder is **freed immediately**, so it takes the next ready milestone while the reviewer works. Blockers come back as a **fix job** for the next free coder (preferring the one who built it); fix jobs go before new milestones.
 
+### Pi: panes or one window (subagent mode)
+
+herdr-orchestra is also a [Pi](https://pi.dev) package:
+
+```bash
+pi install npm:herdr-orchestra
+```
+
+Pi then has the `orch-plan` and `orch-run` skills and two commands. The first time, Pi says the `orch` command is missing: type `/orch-setup` once and it runs this package's installer. Pi may warn once that `orch-plan` / `orch-run` were found twice (the installer also puts them in `~/.agents/skills` for Codex, Amp and OpenCode); it keeps one copy and works.
+
+Runs have two modes. Nothing changes for anyone who never picks the second one.
+
+| Mode | Where the coder and reviewer run | Who drives the run |
+|---|---|---|
+| `panes` (default) | herdr panes, as described above | the event manager; the lead dispatches and pauses |
+| `subagent` | inside one Pi window, as Pi subagents ([pi-subagents](https://www.npmjs.com/package/@tintinweb/pi-subagents)) | the lead, one milestone at a time |
+
+Switch with `/orch-mode subagent` in Pi, or `orch mode subagent` in a terminal; `/orch-mode` alone shows the mode, and Pi's footer shows it too (`orch: subagent`). The choice is saved in `~/.config/herdr-orchestra/config.json`, and a run keeps the mode it was planned in. Set up subagent mode once:
+
+```bash
+orch setup --mode subagent          # or: npx herdr-orchestra@latest --mode subagent, or orch team up --mode subagent
+```
+
+It writes `~/.pi/agent/agents/coder.md` and `reviewer.md` (the reviewer cannot edit files) and installs `npm:@tintinweb/pi-subagents`. Pick their models in the config file; with none, they use the lead's model. A model the policy denies is refused, and a file you edited yourself (without orch's line in it) is left alone.
+
+```json
+{
+  "mode": "subagent",
+  "subagent": {
+    "coder":    { "model": "anthropic/claude-sonnet-4-5", "thinking": "medium" },
+    "reviewer": { "model": "openai/gpt-5", "thinking": "high" }
+  }
+}
+```
+
+A subagent run: `/orch-plan` as usual (the plan's team is `Workers: coder (pi)`, `Reviewer: reviewer (pi)`, `Isolation: shared`), say go, and the lead repeats for each milestone: `orch sub next` (the next milestone and its task file) → the `coder` subagent builds it → `orch check Mn` (failures go back to the same coder) → the `reviewer` subagent when the milestone has `Review: yes` → `orch sub done Mn` (orch commits it on the feature branch; risky changes still wait for `orch approve`). At the end you get the summary and run `orch finish`, as always. It is simpler and needs no herdr, but slower than panes mode: no coders in parallel, and the lead spends more tokens.
+
 ### Modes
 - **worktree**: each coder works in `../<repo>-wt/<name>`, independent tasks run in parallel, and each task is squash-merged when it passes checks and review. Start each coder inside its own worktree.
 - **shared**: everyone works in your folder, one milestone at a time. Two agents in one folder would overwrite each other's files and mix their changes, so this is only safe sequentially. Use it when every milestone depends on the previous one.
@@ -324,7 +361,7 @@ Every status change is written to `.orchestrate/events.jsonl`, and `orch report 
 Optional plan header lines: `Lead mode: events | off` (default `events` when the plan has a `Lead:` line) · `Scope: warn | strict` · `Risk hold: on | off` · `Budget: 3h` (autopilot stops when its running time is used up) · `Estimate: 1h30m` (the lead's estimate for the feature) · `Setup inputs: <globs>` (which files mean "run setup again"; default: lockfiles and manifests). Per milestone: `Why separate` (why it is its own milestone; needed when the plan has more than one) · `Tier`, `Needs`, `Model why` (see [Models and tiers](#models-and-tiers)) · `Estimate: 40m` (dispatch to landed if nothing goes wrong) · `Parallel: allow` lets it run next to a milestone that shares its `Likely files`.
 
 ### Commands
-`orch status` · `orch resume` · `orch report` · `orch approve Mn` · `orch models [show|check <id>]` · `orch events [--peek]` · `orch dispatch Mn... [--to <worker>] [--tier <tier>]` · `orch answer Mn [--defer AC2] "<answer>"` · `orch defer Mn AC2 "<reason>"` · `orch fix Mn "<change>" [--to <worker>]` · `orch doctor [kind]` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind> [--model <id>]|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch bench claude-1 off|on` · `orch stop [--now]` · `orch doctor --crash` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch update [--check] [--version vX.Y.Z]` · `orch config [auto-update on|off]` · `orch` (full help)
+`orch status` · `orch resume` · `orch report` · `orch approve Mn` · `orch models [show|check <id>]` · `orch events [--peek]` · `orch dispatch Mn... [--to <worker>] [--tier <tier>]` · `orch answer Mn [--defer AC2] "<answer>"` · `orch defer Mn AC2 "<reason>"` · `orch fix Mn "<change>" [--to <worker>]` · `orch doctor [kind]` · `orch ready` · `orch autopilot` · `orch lead plan|run|check|whoami` · `orch agents [launch <kind> [--model <id>]|sync|check]` · `orch handoff Mn` · `orch needs-fix Mn` · `orch set M3 pending` · `orch park M2 paused "why"` · `orch cooldown claude-1 60` · `orch bench claude-1 off|on` · `orch stop [--now]` · `orch doctor --crash` · `orch cleanup` · `orch finish [--no-push]` · `orch version` · `orch update [--check] [--version vX.Y.Z]` · `orch config [auto-update on|off]` · `orch mode [panes|subagent]` · `orch setup [--mode panes|subagent]` · `orch check [Mn]` · `orch sub next|done Mn` · `orch` (full help)
 
 Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH_CHECK_TIMEOUT_MIN` (30) · `ORCH_COOLDOWN_MIN` (60) · `ORCH_MAX_TASKS` (unset: no limit) · `ORCH_GONE_COOLDOWN_MIN` (10) · `ORCH_SEND_RETRY_S` (120) · `ORCH_HERDR_TIMEOUT_S` (30) · `ORCH_MAX_LOST` (4) · `ORCH_UNREACHABLE_MIN` (30) · `ORCH_CONFIRM_S` (30) · `ORCH_DOWN_MIN_S` (120: an event manager silent for longer was down, and that time is not counted) · `ORCH_RISK_MAX_LINES` (1500) · `ORCH_LEAD_WAIT_MIN` (15: ready work the lead hasn't dispatched starts by itself) · `ORCH_LEAD_CONFIRM_S` (30: a wake-up the lead did not pick up is sent again, doubling) · `ORCH_LEAD_REWAKE_S` (300) · `ORCH_LEAD_MAX_WAKES` (3) · `ORCH_LEAD_IDLE_MAX_MIN` (720: how long the event manager waits for an answer) · `ORCH_NO_AUTOSTART=1` (the lead's commands never start the event manager)
 

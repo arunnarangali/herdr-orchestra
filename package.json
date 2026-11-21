@@ -1,7 +1,7 @@
 {
   "name": "herdr-orchestra",
-  "version": "6.1.0",
-  "description": "Orchestrate AI coding agents (Claude Code, Codex, OpenCode, Amp) as one team in Herdr: a lead plans, coders build in parallel, a reviewer checks, you get one PR.",
+  "version": "6.2.0",
+  "description": "Orchestrate AI coding agents (Claude Code, Codex, OpenCode, Amp, Pi) as one team: a lead plans, coders build, a reviewer checks, you get one PR. Runs in Herdr panes, or in one Pi window with subagents.",
   "license": "MIT",
   "bin": {
     "herdr-orchestra": "npm/cli.js"
@@ -14,6 +14,8 @@
     "opencode-commands",
     "claude-commands",
     "playbooks",
+    "extensions",
+    "pi",
     "agents.default.toml",
     "models.default.toml",
     "VERSION",
@@ -44,13 +46,34 @@
     "amp",
     "llm",
     "cli",
-    "developer-tools"
+    "developer-tools",
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "subagents"
   ],
+  "pi": {
+    "skills": [
+      "./pi/skills/orch-plan",
+      "./skills/orch-run"
+    ],
+    "extensions": [
+      "./extensions/orch-mode.ts"
+    ]
+  },
   "engines": {
     "node": ">=16"
   },
   "publishConfig": {
     "access": "public"
   },
-  "author": "arunnarangali (https://github.com/arunnarangali)"
+  "author": "arunnarangali (https://github.com/arunnarangali)",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
 }

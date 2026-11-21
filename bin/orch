@@ -163,7 +163,7 @@ def state_lock():
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
 LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "defer",
-              "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story"}
+              "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story", "check"}
 _LEASE = None
 
 
@@ -1274,6 +1274,7 @@ def cmd_sync(args):
         "title": title_m.group(1) if title_m else branch,
         "commits": commits,
         "mode": mode,
+        "orch_mode": old.get("orch_mode") or config_mode(),     # panes (herdr) or subagent (Pi): kept for the run
         "quick_because": quick_because if quick else None,
         "green_tree": old.get("green_tree"),
         "integration_broken": old.get("integration_broken"),
@@ -3363,6 +3364,9 @@ def start_manager():
     detached from this shell, when none is running. Says what happened."""
     if driver_alive():
         return f"the event manager is running ({driver_line(driver_info())})"
+    with contextlib.suppress(OSError, ValueError):
+        if STATE.exists() and run_mode(json.loads(STATE.read_text())) == "subagent":
+            return "subagent mode: no event manager (the lead drives the run with `orch sub next`)"
     if os.environ.get("ORCH_NO_AUTOSTART") == "1":
         return "the event manager is NOT running — ask the developer to run `orch autopilot` in a terminal"
     _rotate(ORCH / "manager.out", LOG_MAX_B // 2)
@@ -3404,6 +3408,9 @@ def cmd_dispatch(args):
     need(args, 1, "dispatch <Mn> [Mn...] [--to <worker>] [--tier small|medium|high]")
     with state_lock():
         st = load()
+        if run_mode(st) == "subagent":
+            die("this run is in subagent mode: the lead starts milestones with `orch sub next` (no event manager); "
+                "`orch mode panes` switches back while nothing is in progress")
         require_lead(st, "orch dispatch")
         if opts.get("--to") and opts["--to"] not in st["workers"]:
             die(f"unknown worker {opts['--to']!r} — workers: {', '.join(st['workers'])}")
@@ -4045,6 +4052,9 @@ def cmd_autopilot(args):
     """The event manager (see _autopilot). This wrapper records how it ends: every stop writes a last line to
     autopilot.log, a Python error writes the traceback, and a manager that was killed without a word (memory guard,
     a crash of the whole terminal) is found by the next one, which looks up why in the computer's own log."""
+    with contextlib.suppress(OSError, ValueError):
+        if STATE.exists() and run_mode(json.loads(STATE.read_text())) == "subagent":
+            die("this run is in subagent mode: there is no event manager; the lead drives it with `orch sub next`")
     take_lease()
     if STATE.exists():
         manager_begin()
@@ -5608,8 +5618,17 @@ def _herdr_json(cmd):
 def team_up(args):
     """Open a pane for every worker and the reviewer in the plan that herdr can't find: split from this pane, cd
     into the agent's folder (its worktree, or the repo), start it on its plan model, and give it its plan name."""
+    args = list(args)
+    flag = mode_flag(args, "usage: orch team up [--dry-run] [--mode panes|subagent]")
     dry = "--dry-run" in args
+    if flag and not dry:
+        set_mode(flag, hint=False)
     st = load()
+    if (flag or run_mode(st)) == "subagent":
+        print("mode subagent: no panes to open; the coder and the reviewer are Pi subagents")
+        if dry:
+            return
+        sys.exit(1 if pi_setup() else 0)
     reg = registry(required=False) or {}
     agents = [(n, w, w.get("dir")) for n, w in st["workers"].items()]
     if st.get("reviewer"):
@@ -5923,11 +5942,11 @@ COMMANDS = {
     "requeue-review": cmd_requeue_review, "finish": cmd_finish, "resend": cmd_resend, "approve": cmd_approve,
     "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer, "defer": cmd_defer,
     "escalate": cmd_escalate, "fix": cmd_fix, "plan": cmd_plan, "story": cmd_story, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
-    "doctor": lambda a: cmd_doctor_crash(a),
+    "doctor": lambda a: cmd_doctor_crash(a), "check": lambda a: cmd_check(a), "sub": lambda a: cmd_sub(a),
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
 UNLOCKED = {"autopilot", "poll", "merge", "events", "dispatch", "answer", "defer", "fix", "team", "resume", "bench", "stop",
-            "doctor"}
+            "doctor", "check"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
@@ -5940,7 +5959,12 @@ USAGE = """usage: orch <command> [args]
   lead whoami              show the lead's own herdr pane and how to name it `lead`
   team <kind> [--coders N] [--models a,b] [--no-reviewer]
                            the plan's team built from one installed tool: coders + reviewer on its catalog models
-  team up [--dry-run]      open a herdr pane for every agent in the plan herdr can't find, in its folder, and name it
+  team up [--dry-run] [--mode panes|subagent]
+                           open a herdr pane for every agent in the plan herdr can't find, in its folder, and name it
+                           (subagent mode: no panes; sets up the Pi coder/reviewer subagents instead)
+  mode [panes|subagent]    which mode runs use: panes (herdr panes, the default) or subagent (one Pi window)
+  setup [--mode panes|subagent]  get this machine ready for a mode; subagent: write ~/.pi/agent/agents/coder.md and
+                           reviewer.md from ~/.config/herdr-orchestra/config.json and install pi-subagents
   agents                   the agent registry: kinds, installed?, roles, herdr detection, launch commands
   agents launch <kind> [--model <id>]  print the command that starts <kind> in a pane (auto-approve edits)
   models                   the model catalog: tiers (small / medium / high), ratings, and what policy forbids
@@ -5951,6 +5975,8 @@ USAGE = """usage: orch <command> [args]
   plan show                the plan for a person: each milestone in plain words, who builds it, how long, the order
   events [--peek]          (lead) what you were woken for; reading acknowledges it
   dispatch <Mn>... [--to <worker>] [--tier <tier>]   (lead) start or restart milestones; starts the event manager
+  check [Mn]               run the plan's check command in the main folder: CHECK PASS, or CHECK FAIL (exit 1)
+  sub next | sub done <Mn> (lead, subagent mode) the next milestone and its task file | save a finished milestone
   answer <Mn> [--defer AC2,AC3] <text>   (lead) the developer's answer: into plan.md, and back to the same coder;
                            --defer records that the developer approved leaving those criteria undone
   defer <Mn> <AC2,AC3> <reason>   (lead, only with the developer's yes) these criteria stay undone in Mn: no fix
@@ -6209,9 +6235,15 @@ def cmd_lead(args):
             print(run_playbook_part(pb.read_text(), args[2] if len(args) > 2 else ""), end="")
             return
         label = f"{sub} ({part})" if part else sub
+        subagent = current_mode()[0] == "subagent"
+        if subagent and sub == "run":
+            pb = asset("playbooks/subagent.md") or die("playbooks/subagent.md not found next to orch or in the install")
+            label = "run (subagent mode)"
         print(f"herdr-orchestra {installed_version()} — lead playbook: {label}\n")
-        if not part:
+        if not part and not subagent:
             lead_self_name()
+        if subagent and sub == "plan":
+            print(SUBAGENT_PLAN_NOTE, end="")
         print(plan_playbook_part(pb.read_text(), part) if sub == "plan" else pb.read_text(), end="")
         return
     if sub == "check":
@@ -6942,6 +6974,361 @@ def cmd_update(args):
         print(f"Go back any time: orch update --version v{cur}")
 
 
+# ---------------------------------------------------------------- run modes: panes (herdr) or subagent (one Pi window)
+# `panes` is today's workflow and the default: coders and the reviewer are agents in herdr panes, the event manager
+# drives them. `subagent` is for Pi (https://pi.dev) with the @tintinweb/pi-subagents extension: the lead stays in one
+# window and starts the coder and the reviewer as Pi subagents, one milestone at a time. Nothing about panes mode
+# changes when nobody picks subagent.
+ORCH_MODES = ("panes", "subagent")
+PI_SUBAGENTS = "npm:@tintinweb/pi-subagents"
+PI_AGENT_MARK = "<!-- written by `orch setup` (herdr-orchestra). orch rewrites this file; delete this line to keep your own edits. -->"
+
+
+def user_config_file():
+    return Path(os.environ.get("ORCH_CONFIG_FILE") or Path.home() / ".config/herdr-orchestra/config.json")
+
+
+def config_load():
+    try:
+        data = json.loads(user_config_file().read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def config_save(data):
+    p = user_config_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, p)
+
+
+def config_mode():
+    m = str(config_load().get("mode") or "panes").lower()
+    return m if m in ORCH_MODES else "panes"
+
+
+def run_mode(st):
+    """A run keeps the mode it was planned in. Runs from before 6.2.0 have no `orch_mode`: they are panes runs."""
+    m = (st or {}).get("orch_mode") or "panes"
+    return m if m in ORCH_MODES else "panes"
+
+
+def _repo_state_path():
+    """.orchestrate/state.json of the repo this shell is in, or None (outside a repo, or no run yet)."""
+    r = git("rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+    if r.returncode != 0:
+        return None
+    p = Path(r.stdout.strip()).parent / ".orchestrate" / "state.json"
+    return p if p.exists() else None
+
+
+def current_mode():
+    """(mode, where it comes from): this repo's run, else the machine's config, else panes."""
+    with contextlib.suppress(Exception):
+        p = _repo_state_path()
+        if p:
+            return run_mode(json.loads(p.read_text())), "this repo's run"
+    if "mode" in config_load():
+        return config_mode(), short(user_config_file())
+    return "panes", "default"
+
+
+def mode_flag(args, usage):
+    """Take `--mode <panes|subagent>` (or `--mode=...`) out of args; returns the mode or None."""
+    for i, a in enumerate(list(args)):
+        if a == "--mode" or a.startswith("--mode="):
+            val = a.split("=", 1)[1] if "=" in a else (args[i + 1] if len(args) > i + 1 else "")
+            del args[i:i + (1 if "=" in a else 2)]
+            val = val.lower()
+            if val not in ORCH_MODES:
+                die(f"--mode must be panes or subagent, got {val!r} — {usage}")
+            return val
+    return None
+
+
+def pi_bin():
+    return os.environ.get("ORCH_PI") or "pi"
+
+
+def pi_agents_dir():
+    return Path(os.environ.get("PI_CODING_AGENT_DIR") or Path.home() / ".pi/agent") / "agents"
+
+
+PI_CODER_BODY = """You are a coder in a herdr-orchestra run. The lead gives you one milestone at a time: the path of its task file
+is in your prompt. Read it and build what it asks. The task says what and why; you decide how.
+
+- Work only in this folder, on the branch that is checked out. Never commit, push, stash, reset or switch branches:
+  orch saves your work when the milestone is done.
+- Never weaken, skip or delete tests to make the check pass.
+- Before you finish, run the check command named in the task file and fix what fails.
+- If something only the developer can decide blocks you, stop and reply `QUESTION: <the question>` with 2 or 3
+  concrete options. Don't guess.
+- When the lead sends you a failing check or review findings, fix exactly those and run the check again.
+
+End every reply with: the files you changed, the check result (PASS or FAIL), and one line per acceptance criterion:
+`AC<n>: met|not met - <evidence: a test, a command, or file:line>`.
+"""
+
+PI_REVIEWER_BODY = """You are the reviewer in a herdr-orchestra run. The lead sends you one milestone: its task file and what changed.
+You never edit files. Read the task file, then the change (`git diff HEAD` and `git status --short` for new files),
+and the code around it.
+
+Reply with one line per finding, most serious first:
+- `BLOCKER: <file:line> - <problem> - <why it matters> (AC<n> when it breaks a criterion)` for a bug, a broken or
+  missing acceptance criterion, a missing test for new behaviour, or a security problem.
+- `SUGGESTION: <file:line> - <idea>` for something nice to have.
+- `NO FINDINGS` when there is nothing to report.
+Then one line per acceptance criterion: `AC<n>: met|not met - <evidence>`.
+"""
+
+
+def pi_agent_text(role, conf):
+    """coder.md / reviewer.md for pi-subagents: front matter from the config, then the role's instructions."""
+    model, thinking = (conf or {}).get("model"), (conf or {}).get("thinking")
+    desc = ("herdr-orchestra coder: builds one milestone from its task file" if role == "coder" else
+            "herdr-orchestra reviewer: reviews one milestone, never edits files")
+    fm = [f"name: {role}", f"description: {desc}"]
+    if role == "reviewer":
+        fm.append("tools: read, bash, grep, find, ls")
+    if model:
+        fm.append(f"model: {model}")
+    if thinking:
+        fm.append(f"thinking: {thinking}")
+    fm += ["prompt_mode: append", "skills: false", "run_in_background: false"]
+    body = PI_CODER_BODY if role == "coder" else PI_REVIEWER_BODY
+    return "---\n" + "\n".join(fm) + "\n---\n\n" + PI_AGENT_MARK + "\n\n" + body
+
+
+def pi_setup():
+    """Subagent mode: write ~/.pi/agent/agents/coder.md and reviewer.md from the config, and install pi-subagents.
+    Returns the number of problems (0 = ready)."""
+    conf = config_load().get("subagent") or {}
+    if not isinstance(conf, dict):
+        conf = {}
+    cat = models_catalog()
+    problems = 0
+    for role in ("coder", "reviewer"):
+        rc = conf.get(role) if isinstance(conf.get(role), dict) else {}
+        why = model_denied(cat, str(rc.get("model") or "").lower() or None)
+        if why:
+            print(f"REFUSED {role}: model {rc['model']!r} is not allowed in runs (pattern {why!r}) — pick another "
+                  f"in {short(user_config_file())}")
+            problems += 1
+            continue
+        p = pi_agents_dir() / f"{role}.md"
+        text = pi_agent_text(role, rc)
+        if p.exists() and PI_AGENT_MARK not in p.read_text():
+            print(f"KEPT    {short(p)}: you edited it (no orch line in it), so orch leaves it alone")
+            continue
+        if p.exists() and p.read_text() == text:
+            print(f"ok      {short(p)}")
+            continue
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+        print(f"WROTE   {short(p)} (model: {rc.get('model') or 'the same as the lead'}"
+              + (f", thinking: {rc['thinking']}" if rc.get("thinking") else "") + ")")
+    pi = shutil.which(pi_bin())
+    if not pi:
+        print(f"NO PI   `{pi_bin()}` is not on PATH. Install Pi (npm install -g @earendil-works/pi-coding-agent), "
+              f"then run `orch setup --mode subagent` again to add pi-subagents")
+        return problems + 1
+    try:
+        listed = subprocess.run([pi, "list"], text=True, capture_output=True, timeout=60)
+        have = "@tintinweb/pi-subagents" in (listed.stdout + listed.stderr)
+    except (OSError, subprocess.TimeoutExpired):
+        have = False
+    if have:
+        print(f"ok      {PI_SUBAGENTS} is installed")
+        return problems
+    print(f"INSTALL {PI_SUBAGENTS} (pi install)")
+    try:
+        r = subprocess.run([pi, "install", PI_SUBAGENTS], text=True, capture_output=True, timeout=600)
+        ok = r.returncode == 0
+        out = (r.stdout + r.stderr).strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        ok, out = False, str(e)
+    if ok:
+        print(f"INSTALLED {PI_SUBAGENTS}: restart Pi (or /reload) so it loads the Agent tool")
+        return problems
+    print(f"FAILED  pi install {PI_SUBAGENTS}:\n" + "\n".join(out.splitlines()[-10:])
+          + f"\n        run it yourself: pi install {PI_SUBAGENTS}")
+    return problems + 1
+
+
+def cmd_setup(args):
+    """orch setup [--mode panes|subagent] -> get this machine ready for a mode (and save it with --mode)."""
+    usage = "usage: orch setup [--mode panes|subagent]"
+    args = list(args)
+    flag = mode_flag(args, usage)
+    if args:
+        die(usage)
+    if flag:
+        set_mode(flag, hint=False)
+    mode = flag or current_mode()[0]
+    if mode == "panes":
+        print("mode panes: nothing to set up here. Coders and the reviewer run in herdr panes; `orch team up` opens "
+              "them when a run starts.")
+        return
+    sys.exit(1 if pi_setup() else 0)
+
+
+def cmd_mode(args):
+    """orch mode -> which mode is active and where it comes from; orch mode panes|subagent -> switch."""
+    if not args:
+        mode, src = current_mode()
+        print(f"mode: {mode} ({src})")
+        return
+    if len(args) != 1 or args[0].lower() not in ORCH_MODES:
+        die("usage: orch mode [panes|subagent]")
+    set_mode(args[0].lower())
+
+
+def set_mode(mode, hint=True):
+    """Save the machine's mode, and switch this repo's run too when nothing in it is in progress."""
+    c = config_load()
+    c["mode"] = mode
+    config_save(c)
+    print(f"mode: {mode} (saved in {short(user_config_file())})")
+    p = None
+    with contextlib.suppress(Exception):
+        p = _repo_state_path()
+    if p:
+        global ROOT, ORCH, STATE
+        ROOT, ORCH, STATE = p.parent.parent, p.parent, p
+        with state_lock():
+            st = load()
+            busy = [k for k, v in st["tasks"].items() if v["status"] in ACTIVE]
+            if run_mode(st) != mode and (driver_alive() or busy):
+                print(f"NOT CHANGED this repo's run stays {run_mode(st)}: "
+                      + (f"{', '.join(busy)} in progress" if busy else "the event manager is running")
+                      + ". Switch when nothing is in progress.")
+            elif run_mode(st) != mode:
+                st["orch_mode"] = mode
+                save(st)
+                print(f"this repo's run: {mode}")
+    if mode == "subagent" and hint:
+        missing = [r for r in ("coder", "reviewer") if not (pi_agents_dir() / f"{r}.md").exists()]
+        if missing:
+            print(f"NEXT    run `orch setup --mode subagent`: it writes the {' and '.join(missing)} agent file(s) "
+                  f"and installs pi-subagents")
+
+
+SUBAGENT_PLAN_NOTE = """SUBAGENT MODE (Pi, one window). This replaces every herdr step below:
+- Skip `orch lead check` and `herdr agent ...`: no panes are used. Skip step 3 (Discover the team) and `orch team`.
+- Write the team exactly like this in the plan header:
+    Lead: lead (pi)
+    Lead mode: off
+    Workers: coder (pi)
+    Reviewer: reviewer (pi)
+    Isolation: shared
+  `coder` and `reviewer` are the Pi subagents `orch setup --mode subagent` made (~/.pi/agent/agents). They run on
+  the models in ~/.config/herdr-orchestra/config.json, so keep each milestone's Tier and Model why as usual, and
+  ignore `orch sync` WARNs that Workers names no model.
+- One milestone runs at a time (one folder). Everything else in this playbook applies.
+
+"""
+
+
+def subagent_ready_or_die(st):
+    if run_mode(st) != "subagent":
+        die("this run is in panes mode — `orch sub` is for subagent mode (`orch mode subagent`); "
+            "in panes mode use `orch dispatch`")
+    if st["isolation"] != "shared":
+        die("subagent mode works in one folder: put `Isolation: shared` in the plan header, then `orch sync`")
+    if git("rev-parse", "--abbrev-ref", "HEAD", cwd=ROOT).stdout.strip() != st["branch"]:
+        die(f"not on {st['branch']} — run `orch start` first")
+
+
+def cmd_check(args):
+    """orch check [Mn] -> run the plan's check command in the main folder: CHECK PASS / CHECK FAIL (exit 1)."""
+    if len(args) > 1:
+        die("usage: orch check [Mn]")
+    st = load()
+    if args:
+        task(st, args[0])
+    if not st.get("check"):
+        print("CHECK NONE: the plan has no `Check command`")
+        return
+    ok, tail, secs = run_check(st, ROOT)
+    if not driver_alive():
+        with state_lock():
+            st = load()
+            note_green(st, ROOT, ok)          # `orch finish` reuses a pass on exactly these files
+            save(st)
+    label = f" {args[0]}" if args else ""
+    if ok:
+        print(f"CHECK PASS{label} ({secs}s): {st['check']}")
+        return
+    print(f"CHECK FAIL{label} ({secs}s): {st['check']}\n" + "\n".join(tail.splitlines()[-30:]))
+    sys.exit(1)
+
+
+def cmd_sub(args):
+    """orch sub next | done <Mn> -> subagent mode: the next milestone and its task file; save a finished one."""
+    usage = "usage: orch sub next | orch sub done <Mn>"
+    sub = args[0] if args else die(usage)
+    st = load()
+    subagent_ready_or_die(st)
+    coder = next(iter(st["workers"]), None) or die("the plan has no Workers line")
+    if sub == "next":
+        cur = [k for k in st["order"] if st["tasks"][k]["status"] in ("coding", "verifying")]
+        if cur:
+            tid = cur[0]
+            t = st["tasks"][tid]
+            print(f"CURRENT {tid}: {t['title']} (not saved yet: finish it, then `orch sub done {tid}`)")
+            print(f"TASK {Path(t['dir']) / TASK_DIR / tid / 'task.md'}")
+            print(f"REVIEW {'yes' if t.get('review') else 'no'}")
+            return
+        held = [k for k in st["order"] if st["tasks"][k]["status"] == "held"]
+        ready = [k for k in st["order"] if st["tasks"][k]["status"] == "pending" and deps_met(st, st["tasks"][k])]
+        if not ready:
+            left = {k: v["status"] for k, v in st["tasks"].items() if v["status"] not in ("merged", "skipped")}
+            if not left:
+                print(f"ALL_DONE every milestone is saved on {st['branch']}")
+                return
+            if held:
+                print("HELD " + ", ".join(held) + ": risky changes wait for the developer (`orch status` shows why; "
+                      "they run `orch approve <Mn>`, then `orch sub done <Mn>`)")
+            print("WAITING " + ", ".join(f"{k} ({s})" for k, s in left.items() if k not in held)
+                  + " — nothing is ready to start")
+            sys.exit(3)
+        tid = ready[0]
+        if is_dirty(ROOT):
+            die("the folder has uncommitted changes that no milestone owns — commit, stash or discard them first")
+        cmd_prepare([tid, coder])
+        cmd_write_task([tid])
+        st = load()
+        t = st["tasks"][tid]
+        print(f"NEXT {tid}: {t['title']}")
+        print(f"TASK {Path(t['dir']) / TASK_DIR / tid / 'task.md'}")
+        print(f"REVIEW {'yes' if t.get('review') else 'no'}")
+        return
+    if sub == "done":
+        need(args, 2, "sub done <Mn>")
+        tid = args[1]
+        t = task(st, tid)
+        if t["status"] == "merged":
+            print(f"MERGED {tid} (already saved)")
+            return
+        if t["status"] == "coding":
+            move(st, tid, "verifying")
+            save(st)
+        elif t["status"] not in ("verifying", "committed"):
+            die(f"{tid} is {t['status']}: only a milestone from `orch sub next` can be saved"
+                + (" (the developer runs `orch approve` first)" if t["status"] == "held" else ""))
+        story_note(st, f"{tid} saved by the subagent run")
+        save(st)
+        cmd_commit([tid])
+        st = load()
+        left = [k for k, v in st["tasks"].items() if v["status"] not in ("merged", "skipped")]
+        print("ALL_DONE every milestone is saved; write the summary, then the developer runs `orch finish`"
+              if not left else "NEXT run `orch sub next`")
+        return
+    die(usage)
+
+
 def cmd_config(args):
     """orch config -> this machine's settings; orch config auto-update on|off."""
     if args[:1] == ["auto-update"] and args[1:2] and args[1].lower() in ("on", "off"):
@@ -7026,7 +7413,8 @@ if __name__ == "__main__":
         update_notice()
         sys.exit(0)
     NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents, "doctor": cmd_doctor, "models": cmd_models,
-                        "team": cmd_team, "update": cmd_update, "config": cmd_config}
+                        "team": cmd_team, "update": cmd_update, "config": cmd_config, "mode": cmd_mode,
+                        "setup": cmd_setup}
     if (len(sys.argv) >= 2 and sys.argv[1] in NO_REPO_COMMANDS      # work outside a git repo
             and sys.argv[2:3] != ["up"] and sys.argv[2:3] != ["--crash"]):                           # (`orch team up` reads the run's state)
         try:

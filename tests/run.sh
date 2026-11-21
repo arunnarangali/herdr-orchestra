@@ -13,6 +13,8 @@ export ORCH_MODELS_FILE="$WORK/user-models.toml" ORCH_NO_AUTOSTART=1   # ...and 
 export ORCH_JOURNALCTL=false ORCH_COREDUMPCTL=false ORCH_NO_SCOPE=1 ORCH_TEAM_CONFIRM_S=0.3
 # no test asks the network for a new version, waits for a keyboard, or writes into the developer's own install
 export ORCH_NO_UPDATE_CHECK=1 ORCH_TTY=/dev/null ORCH_SHARE="$WORK/share"
+# ...nor into their orch config (mode) or their Pi agents folder
+export ORCH_CONFIG_FILE="$WORK/config/config.json" PI_CODING_AGENT_DIR="$WORK/pi-agent" ORCH_PI="$WORK/pibin/pi"
 pass=0 fail=0
 ok()   { echo "  ok   $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $*"; fail=$((fail+1)); }
@@ -1530,6 +1532,81 @@ check "a commit an agent made with its own credit is named, and only that one" '
 git remote remove origin; git init -q --bare "$WORK/prc-remote2.git"; git remote add origin "$WORK/prc-remote2.git"
 out=$("$ORCH" finish 2>&1)
 check "without gh, finish names the title and the PR text to use, and says to add no credit line" 'grep -q "^OPEN A PR from feature/prc into main — title: .t., text: .orchestrate/pr-body.md (use them as they are: add no \"Generated with\" or Co-Authored-By line)" <<<"$out"'
+
+echo "48. Pi: panes stays the default and unchanged; subagent mode runs in one Pi window"
+newrepo pim
+printf '# Plan: t\nBranch: feature/pim\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M1: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null 2>&1
+check "no config: the mode is panes (default)" '[ "$("$ORCH" mode)" = "mode: panes (this repo'"'"'s run)" ] && (cd "$WORK" && [ "$("$ORCH" mode)" = "mode: panes (default)" ])'
+check "a run synced with no config is recorded as panes" '[ "$(python3 -c "import json;print(json.load(open(\".orchestrate/state.json\"))[\"orch_mode\"])")" = panes ]'
+python3 -c "import json;p='.orchestrate/state.json';d=json.load(open(p));d.pop('orch_mode');json.dump(d,open(p,'w'))"
+check "a run from before 6.2.0 (no orch_mode) is a panes run" '[ "$("$ORCH" mode)" = "mode: panes (this repo'"'"'s run)" ]'
+out=$("$ORCH" lead run 2>&1)
+check "panes: orch lead run prints the same run playbook as before" 'grep -q "lead playbook: run$" <<<"$out" && grep -qF "$(head -1 "$ROOT/playbooks/run.md")" <<<"$out" && ! grep -q "subagent" <<<"$out"'
+out=$("$ORCH" lead plan 2>&1)
+check "panes: orch lead plan has no subagent note" '! grep -q "SUBAGENT MODE" <<<"$out"'
+out=$("$ORCH" setup 2>&1)
+check "orch setup in panes mode changes nothing" 'grep -q "^mode panes: nothing to set up here" <<<"$out" && [ ! -e "$ORCH_CONFIG_FILE" ] && [ ! -e "$PI_CODING_AGENT_DIR" ]'
+check "orch setup refuses an unknown mode" '! "$ORCH" setup --mode tabs >/dev/null 2>&1 && ! "$ORCH" mode tabs >/dev/null 2>&1'
+mkdir -p "$WORK/pibin"; printf '#!/usr/bin/env bash\necho "$*" >> "%s/pi.log"\n[ "$1" = list ] && cat "%s/pi.list" 2>/dev/null\n[ "$1" = install ] && echo "$2" >> "%s/pi.list"\nexit 0\n' "$WORK/pibin" "$WORK/pibin" "$WORK/pibin" > "$WORK/pibin/pi"; chmod +x "$WORK/pibin/pi"
+mkdir -p "$WORK/config"; printf '{"subagent": {"coder": {"model": "anthropic/claude-sonnet-4-5", "thinking": "medium"}}}\n' > "$ORCH_CONFIG_FILE"
+out=$(cd "$WORK" && "$ORCH" setup --mode subagent 2>&1); code=$?
+check "setup --mode subagent saves the mode and keeps the rest of the config" '[ $code -eq 0 ] && python3 -c "import json,sys;d=json.load(open(sys.argv[1]));assert d[\"mode\"]==\"subagent\" and d[\"subagent\"][\"coder\"][\"thinking\"]==\"medium\"" "$ORCH_CONFIG_FILE"'
+check "it writes coder.md with the config model, and reviewer.md that cannot edit" 'grep -qx "model: anthropic/claude-sonnet-4-5" "$PI_CODING_AGENT_DIR/agents/coder.md" && grep -qx "thinking: medium" "$PI_CODING_AGENT_DIR/agents/coder.md" && grep -qx "name: reviewer" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && grep -qx "tools: read, bash, grep, find, ls" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && ! grep -q "^model:" "$PI_CODING_AGENT_DIR/agents/reviewer.md"'
+check "it installs pi-subagents with pi, once" 'grep -qx "install npm:@tintinweb/pi-subagents" "$WORK/pibin/pi.log" && (cd "$WORK" && "$ORCH" setup --mode subagent | grep -q "^ok      npm:@tintinweb/pi-subagents is installed") && [ "$(grep -c "^install" "$WORK/pibin/pi.log")" -eq 1 ]'
+printf -- '---\nname: coder\n---\nmy own coder\n' > "$PI_CODING_AGENT_DIR/agents/coder.md"
+check "a coder.md the developer wrote is never overwritten" '(cd "$WORK" && "$ORCH" setup | grep -q "^KEPT .*coder.md: you edited it") && grep -qx "my own coder" "$PI_CODING_AGENT_DIR/agents/coder.md"'
+rm "$PI_CODING_AGENT_DIR/agents/coder.md"
+printf '{"mode": "subagent", "subagent": {"reviewer": {"model": "claude-fable-5"}}}\n' > "$ORCH_CONFIG_FILE"
+out=$(cd "$WORK" && "$ORCH" setup 2>&1); code=$?
+check "a model the policy denies is refused for a subagent" '[ $code -ne 0 ] && grep -q "^REFUSED reviewer" <<<"$out" && [ -e "$PI_CODING_AGENT_DIR/agents/coder.md" ]'
+printf '{"mode": "subagent"}\n' > "$ORCH_CONFIG_FILE"
+check "the old panes run keeps panes after the machine switched to subagent" '[ "$("$ORCH" mode)" = "mode: panes (this repo'"'"'s run)" ]'
+out=$("$ORCH" team up --dry-run 2>&1)
+check "team up in a panes run still looks for panes" '! grep -q "mode subagent" <<<"$out"'
+newrepo pis
+printf '# Plan: t\nBranch: feature/pis\nCheck command: test ! -f broken.txt\nSetup command: none\nIsolation: shared\nLead: lead (pi)\nLead mode: off\nWorkers: coder (pi)\nReviewer: reviewer (pi)\n\n## [x] M1: one\nDepends on: none\nReview: yes\nLikely files: one.txt\nOpen questions:\n- none\n\n## [x] M2: two\nDepends on: M1 (needs one)\nLikely files: two.txt\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null 2>&1
+check "a new run follows the machine's mode (subagent)" '[ "$("$ORCH" mode)" = "mode: subagent (this repo'"'"'s run)" ]'
+out=$("$ORCH" lead run 2>&1)
+check "subagent: orch lead run prints the subagent playbook" 'grep -q "lead playbook: run (subagent mode)" <<<"$out" && grep -q "subagent_type: \"coder\"" <<<"$out"'
+out=$("$ORCH" lead plan 2>&1)
+check "subagent: orch lead plan starts with the subagent team note, then the usual playbook" 'grep -q "^SUBAGENT MODE" <<<"$out" && grep -q "Workers: coder (pi)" <<<"$out" && grep -q "## 1. Preflight" <<<"$out"'
+"$ORCH" start >/dev/null 2>&1
+check "subagent: dispatch is refused (no event manager)" '! "$ORCH" dispatch M1 >/dev/null 2>&1 && [ "$(status_of M1)" = pending ]'
+out=$("$ORCH" sub next 2>&1)
+check "orch sub next starts M1 and prints its task file" 'grep -q "^NEXT M1: one" <<<"$out" && grep -q "^REVIEW yes" <<<"$out" && [ -f "$(sed -n "s/^TASK //p" <<<"$out")" ] && [ "$(status_of M1)" = coding ]'
+check "orch sub next again names the same milestone, unsaved" '"$ORCH" sub next | grep -q "^CURRENT M1"'
+echo 1 > one.txt; touch broken.txt
+out=$("$ORCH" check M1 2>&1); code=$?
+check "orch check fails with exit 1 when the check fails" '[ $code -eq 1 ] && grep -q "^CHECK FAIL M1" <<<"$out"'
+rm broken.txt
+check "orch check passes" '"$ORCH" check M1 | grep -q "^CHECK PASS M1"'
+out=$("$ORCH" sub "done" M1 2>&1)
+check "orch sub done commits M1 on the branch" 'grep -q "^MERGED M1" <<<"$out" && [ "$(status_of M1)" = merged ] && git log -1 --format=%s | grep -q . && git show --stat HEAD | grep -q one.txt && [ -z "$(git status --porcelain)" ]'
+"$ORCH" sub next >/dev/null 2>&1; echo 2 > two.txt
+out=$("$ORCH" sub "done" M2 2>&1)
+check "the last one prints ALL_DONE" 'grep -q "^ALL_DONE" <<<"$out" && "$ORCH" sub next | grep -q "^ALL_DONE"'
+out=$("$ORCH" finish --no-push 2>&1); code=$?
+check "orch finish works on a subagent run, reusing the passing check" '[ $code -eq 0 ] && grep -q "^CLEAN feature/pis" <<<"$out"'
+out=$("$ORCH" mode panes 2>&1)
+check "orch mode panes switches the machine and this run" 'grep -q "this repo.s run: panes" <<<"$out" && [ "$("$ORCH" mode)" = "mode: panes (this repo'"'"'s run)" ] && grep -q "\"mode\": \"panes\"" "$ORCH_CONFIG_FILE"'
+check "orch sub refuses a panes run" '! "$ORCH" sub next >/dev/null 2>&1'
+check "the Pi copy of orch-plan says exactly what skills/orch-plan says" 'python3 -c "
+import json,re,sys
+a=open(sys.argv[1]).read(); b=open(sys.argv[2]).read()
+q=re.search(r\"^description: (.*)$\",b,re.M).group(1)
+assert re.sub(r\"^description: .*$\",\"description: \"+json.loads(q),b,count=1,flags=re.M)==a
+" "$ROOT/skills/orch-plan/SKILL.md" "$ROOT/pi/skills/orch-plan/SKILL.md"'
+check "package.json: the pi block names files that exist" 'python3 -c "
+import json,os,sys
+r=sys.argv[1]; d=json.load(open(r+\"/package.json\")); p=d[\"pi\"]
+assert \"pi-package\" in d[\"keywords\"]
+assert all(os.path.exists(os.path.join(r,x,\"SKILL.md\")) for x in p[\"skills\"])
+assert all(os.path.exists(os.path.join(r,x)) for x in p[\"extensions\"])
+assert {\"extensions\",\"pi\"} <= set(d[\"files\"])
+" "$ROOT"'
+unset ORCH_CONFIG_FILE PI_CODING_AGENT_DIR ORCH_PI
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

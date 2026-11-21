@@ -42,6 +42,8 @@ Options:
   --no-herdr-skill     don't install/refresh the official herdr skill via npx
   --auto-update        keep herdr-orchestra up to date automatically (no question asked)
   --no-auto-update     never update by itself (also: ORCH_AUTO_UPDATE=1 or 0)
+  --mode <panes|subagent>  save the mode runs use (default panes); subagent also sets up Pi's coder and
+                       reviewer subagents (same as: orch setup --mode subagent)
   -h, --help           this help
 EOF
 }
@@ -57,6 +59,8 @@ while [[ $# -gt 0 ]]; do
     --no-herdr-skill) HERDR_SKILL=0; shift;;
     --auto-update) AUTO_UPDATE=1; shift;;
     --no-auto-update) AUTO_UPDATE=0; shift;;
+    --mode) MODE_ARG="${2:?--mode needs panes or subagent}"; shift 2;;
+    --mode=*) MODE_ARG="${1#*=}"; shift;;
     -h|--help) usage; exit 0;;
     *) die "unknown option: $1 (see --help)";;
   esac
@@ -265,6 +269,10 @@ else
 fi
 
 case ":$PATH:" in *":$BIN:"*) ;; *) warn "$BIN is not on your PATH — add: export PATH=\"\$HOME/.local/bin:\$PATH\"";; esac
+
+if [[ -n "${MODE_ARG:-}" ]]; then
+  "$BIN/orch" setup --mode "$MODE_ARG" || warn "orch setup --mode $MODE_ARG did not finish — run it again after fixing what it says"
+fi
 
 say "herdr-orchestra $VER is active"
 cat <<'MSG'
