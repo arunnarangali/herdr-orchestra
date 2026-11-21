@@ -86,6 +86,38 @@ async function orchCommand(pi: ExtensionAPI): Promise<string | undefined> {
   return r.code === 0 && path ? path : undefined;
 }
 
+function packageVersion(): string | undefined {
+  try {
+    return JSON.parse(readFileSync(join(packageRoot(), "package.json"), "utf8")).version;
+  } catch {
+    return undefined;
+  }
+}
+
+/** "6.1.0" or "6.2.0-dev" -> [6, 1, 0]; undefined when it is not a version. */
+function parseVersion(text: string | undefined): number[] | undefined {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(text ?? "");
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+}
+
+function olderThan(a: number[], b: number[]): boolean {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i];
+  return false;
+}
+
+/** What orch is on this machine: missing, older than this package (an old install next to a new Pi package, which
+ *  has no `orch mode` yet), or ok. */
+async function orchState(pi: ExtensionAPI): Promise<{ state: "missing" | "old" | "ok"; path?: string; version?: string }> {
+  const path = await orchCommand(pi);
+  if (!path) return { state: "missing" };
+  const r = await pi.exec(path, ["version"], { timeout: 10000 });
+  const have = parseVersion(r.stdout);
+  const want = parseVersion(packageVersion());
+  const version = have?.join(".");
+  if (r.code !== 0 || !have || (want && olderThan(have, want))) return { state: "old", path, version };
+  return { state: "ok", path, version };
+}
+
 function showStatus(ctx: ExtensionContext, mode: Mode): void {
   ctx.ui.setStatus(STATUS_KEY, `orch: ${mode}`);
 }
@@ -96,8 +128,14 @@ export default function orchMode(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     mode = (await readMode(pi, ctx.cwd)).mode;
     showStatus(ctx, mode);
-    if (!(await orchCommand(pi))) {
+    const o = await orchState(pi);
+    if (o.state === "missing") {
       ctx.ui.notify("herdr-orchestra: the `orch` command is not installed yet. Type /orch-setup once to install it.", "warning");
+    } else if (o.state === "old") {
+      ctx.ui.notify(
+        `herdr-orchestra: this Pi package is ${packageVersion() ?? "newer"} but the orch command on this machine is ${o.version ?? "older"}, which does not know the modes. Type /orch-setup to update it.`,
+        "warning",
+      );
     }
   });
 
@@ -129,7 +167,8 @@ export default function orchMode(pi: ExtensionAPI) {
         ctx.ui.notify(`Unknown mode "${want}". Use /orch-mode panes or /orch-mode subagent.`, "error");
         return;
       }
-      const orch = await orchCommand(pi);
+      const o = await orchState(pi);
+      const orch = o.state === "ok" ? o.path : undefined;
       if (orch) {
         // `orch mode` saves the machine's default and, when nothing is in progress, this repo's run too
         const r = await pi.exec(orch, ["mode", next], { cwd: ctx.cwd, timeout: 30000 });
@@ -141,13 +180,18 @@ export default function orchMode(pi: ExtensionAPI) {
         ctx.ui.notify(out, "info");
       } else {
         saveConfigMode(next);
-        ctx.ui.notify(`orch mode: ${next} (saved in ${configFile()}). Type /orch-setup to install the orch command.`, "info");
+        ctx.ui.notify(
+          `orch mode: ${next} (saved in ${configFile()}). ` +
+            (o.state === "old" ? `The orch command here is ${o.version ?? "older"} and does not know the modes yet: ` : "") +
+            "Type /orch-setup to install the orch command.",
+          "info",
+        );
       }
       const now = await readMode(pi, ctx.cwd);
       mode = now.mode;
       showStatus(ctx, mode);
       if (now.mode !== next) {
-        ctx.ui.notify(`This repo's run stays ${now.mode} (${orch ? "something is in progress" : "switch it with /orch-mode once orch is installed"}). New runs use ${next}.`, "warning");
+        ctx.ui.notify(`This repo's run stays ${now.mode} (${orch ? "something is in progress" : "switch it with /orch-mode after /orch-setup"}). New runs use ${next}.`, "warning");
       }
     },
   });
