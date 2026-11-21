@@ -90,7 +90,7 @@ orch status          # every coder and milestone, and why something waits
 orch events --peek   # what is waiting for the lead, without marking it read
 ```
 
-A worker line shows `herdr=ok` or `NO AGENT`, and `state=free`, `coding M3`, `benched 42m` or `OFF`.
+A worker line shows `herdr=ok` or `NO AGENT`, and `state=free`, `coding M3`, `stopping M3`, `benched 42m` or `OFF`. `stopping M3` means M3 was paused or moved while that coder worked: orch pressed Esc and told it to stop, and it gets no new work until herdr shows it idle.
 
 ### Can I make a milestone go to one particular coder?
 

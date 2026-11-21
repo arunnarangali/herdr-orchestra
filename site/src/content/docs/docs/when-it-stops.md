@@ -20,6 +20,7 @@ Most things never reach you: the event manager retries, and the lead decides. A 
 | A coder vanished mid-task (`WORKER-LOST`) | The lead tells you the exact fix: `orch resume` after a herdr restart, or `orch team up` when the agent quit and left a plain shell. The milestone waits with its work so far |
 | You don't want one coder any more (for example, no Claude today) | `orch bench <worker> off` (or ask the lead). It stays out until `orch bench <worker> on` |
 | You want to swap a coder | `orch stop`, change `Workers:` in plan.md, `orch sync`, `orch team up`, `orch resume` |
+| You want one milestone on another coder | `orch set M7 paused`, then `orch dispatch M7 --to <worker>`. The old coder is interrupted and shows `stopping M7` until it is idle |
 | A milestone lost 4 attempts | The agents were unreachable, gone or rate-limited. Restart or wait for them |
 | The lead is not reading its events | Look at its pane. Nothing is lost: `orch events --peek` lists what waits, and ready work starts by itself after 15 minutes |
 | The run's budget is used up | Raise or remove `Budget:` in the plan header |

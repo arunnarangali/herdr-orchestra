@@ -2,6 +2,23 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.3.0] - 2026-11-21
+
+Moving a milestone away from a coder now really stops that coder. Before, `orch set M7 paused` only typed a STOP note into the coder's pane and marked the coder free at once. An agent in the middle of a step (agy, for example) only reads a typed message after that step, so it kept editing files while `orch status` showed it as free, and it could be handed the next milestone.
+
+### Fixed
+- **A paused or moved milestone's coder is interrupted, and stays busy until it has stopped.** orch first presses the agent's interrupt key (Esc, like you would), waits a few seconds for it to go idle, then types the STOP note. Until herdr shows the coder idle (and it stays idle for 10 seconds), `orch status` shows `state=stopping M7 (told to stop 0m40s ago ...)`, it is not picked for new work, and `orch prepare` refuses it (`BUSY rs-agy-1 is still stopping M7`). If it is still working 90 seconds later, the event manager presses the key again (twice at most) and says so in the log. Example: `orch set M7 paused` prints `STOP_NOTE M7 -> rs-agy-1: interrupted (esc) and told to stop ...` and `STOPPING rs-agy-1: herdr still shows it working; it stays busy ...`. For an agent herdr can't watch, orch says to look at its pane before giving it new work.
+- **`orch team up` no longer renames the lead's pane.** When the reviewer's pane was missing, team up looked for a pane of the same kind in the repo folder and could pick the lead's own pane, name it `rs-reviewer`, and then `orch start` refused with NO LEAD. The lead's pane, and the pane you run `orch team up` in, are never given a coder's or the reviewer's name now.
+- **`orch lead whoami` and `orch lead run` keep the plan's lead name.** `whoami` always named the pane `lead`; `lead run` used the name from the last `orch sync`. Both now use `Lead:` from plan.md (then the run's state, then `lead`), so `Lead: rs-lead` stays `rs-lead`.
+- **`--help` never runs the command.** `orch team up --help` used to open panes. Now `orch <command> --help` (or `-h`) prints that command's help and exits; `orch --help` exits 0.
+- **The reviewer starts in the repo folder.** herdr can start a split pane in the folder of the pane it splits from (a coder's worktree), so team up now starts each agent with `cd <its folder> && <launch command>`.
+
+### Added
+- **`orch free <worker>`**: you checked the pane and the coder that was told to stop has stopped, so it can take work again now.
+- **`interrupt_keys` in the agent registry**, per kind, as herdr names keys: `["esc"]` for Claude Code, Codex, agy, Amp and Hermes, `["esc", "esc"]` for OpenCode, and `["esc"]` for Pi and for any kind that does not set it. Override it in `~/.config/herdr-orchestra/agents.toml`.
+- **`orch sync` warns when plan.md changed under a running milestone.** A coder works from the task.md it got, which is not rewritten mid-work, so an edit to that milestone's plan text does not reach it by itself. sync now says, for example, `WARN: M7 changed in plan.md, but rs-claude-1 is already working from its old task.md ... orch set M7 paused, then orch dispatch M7`. Answers (`Notes from user`) still reach the coder as before and give no warning.
+- `orch status` says `free, but herdr shows it working` for a coder with no task whose pane is busy.
+- Tests (section 49): the interrupt key before the STOP note; the stopping coder is not free in status, pick, prepare or ready; the event manager presses the key again; it is free once idle; `orch free`; the interrupt keys per kind; team up leaves the lead's pane and its own pane alone; the reviewer starts with `cd` into the repo; whoami and lead run use the plan's lead name; `--help` and `-h` run nothing; the plan-changed warning. Section 44's whoami test now expects the plan's lead name instead of `lead`.
 ## [6.2.1] - 2026-11-21
 
 Fixes `/orch-setup` and `/orch-mode` not working in Pi when an older `orch` is already on the machine.

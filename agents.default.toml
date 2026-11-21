@@ -6,6 +6,9 @@
 #   model_flag    the launch option that picks the model (`orch agents launch <kind> --model <id>`); leave it
 #                 out when the tool has none or it is unverified, and choose the model inside the tool
 #   herdr_detect  herdr can tell idle / working / blocked for it (false: orch relies on the done file only)
+#   interrupt_keys the keys that stop its current step, as `herdr agent send-keys` names them (default ["esc"]).
+#                 orch presses them when a milestone is paused or moved while the coder still works, before the
+#                 STOP note: a typed message is only read after the current step (agy queues it)
 #   roles         any of "lead", "coder", "reviewer"
 #   skills_dirs   global SKILL.md folders the installer may put the thin orch-plan / orch-run skills into
 #                 (first = preferred)
@@ -31,6 +34,7 @@ binary = "claude"
 launch = "claude --permission-mode acceptEdits"
 model_flag = "--model"
 herdr_detect = true
+interrupt_keys = ["esc"]
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.claude/skills"]
 skills_one_wins = true
@@ -44,6 +48,7 @@ binary = "codex"
 launch = "codex --approve-for-me"
 model_flag = "--model"
 herdr_detect = true
+interrupt_keys = ["esc"]
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.agents/skills", "~/.codex/skills"]
 skills_reads = ["~/.agents/skills", "~/.codex/skills"]
@@ -55,6 +60,7 @@ notes = "codex-cli 0.167: --full-auto is gone; --approve-for-me routes approvals
 binary = "amp"
 launch = "amp"
 herdr_detect = true
+interrupt_keys = ["esc"]
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.config/agents/skills", "~/.agents/skills"]
 skills_reads = ["~/.config/agents/skills", "~/.agents/skills"]
@@ -68,6 +74,7 @@ binary = "opencode"
 launch = "opencode"
 model_flag = "--model"
 herdr_detect = true
+interrupt_keys = ["esc", "esc"]
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = []
 skills_reads = ["~/.agents/skills", "~/.claude/skills"]
@@ -83,6 +90,7 @@ notes = "Reads ~/.agents/skills and ~/.claude/skills, so only its slash commands
 binary = "hermes"
 launch = "hermes"
 herdr_detect = true
+interrupt_keys = ["esc"]
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.hermes/skills"]
 invoke = "use the orch-plan skill: <feature>"
@@ -93,6 +101,7 @@ notes = "Not installed on the machine this was written on: launch flag and skill
 binary = "agy"
 launch = "agy --mode accept-edits"
 herdr_detect = true
+interrupt_keys = ["esc"]
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.gemini/config/skills"]
 invoke = "use the orch-plan skill: <feature>"
@@ -104,6 +113,7 @@ binary = "pi"
 launch = "pi"
 model_flag = "--model"
 herdr_detect = false
+interrupt_keys = ["esc"]
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.agents/skills"]
 skills_reads = ["~/.pi/agent/skills", "~/.agents/skills"]

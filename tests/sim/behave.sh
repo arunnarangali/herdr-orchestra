@@ -20,6 +20,11 @@ if [[ $prompt == orch:* ]]; then                        # the lead being woken b
   grep -q "ALL_DONE" <<<"$out" && echo "- [ ] check totals by hand" >> .orchestrate/summary.md
   echo idle > "$FH/$agent.status"; exit 0
 fi
+if [[ $prompt == STOP:* ]]; then                        # orch told it to stop: it answers and goes idle,
+  echo "$prompt" >> "$FH/$agent.stops"                  # unless it is still busy with its step (agy queues the note)
+  [ -f "$FH/$agent.ignores-esc" ] && { echo working > "$FH/$agent.status"; exit 0; }
+  sleep 1; echo idle > "$FH/$agent.status"; exit 0
+fi
 file=$(grep -oE '(\.orch-task|\.orchestrate/review)/M[0-9]+/[a-z0-9-]+\.md' <<<"$prompt" | head -1)
 report=$(grep -oE '\.orch-task/M[0-9]+/report-[0-9]+\.md' <<<"$prompt" | head -1)
 result=$(grep -oE '\.orch-task/M[0-9]+/result-[0-9]+\.json' <<<"$prompt" | head -1)
