@@ -2,6 +2,16 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.2.1] - 2026-11-21
+
+Fixes `/orch-setup` and `/orch-mode` not working in Pi when an older `orch` is already on the machine.
+
+### Fixed
+- **Old `orch` next to the new Pi package.** If the `orch` command installed on the machine is older than the Pi package (for example 6.1.0 with package 6.2.0), it does not know `orch mode` or `orch setup`, so `/orch-mode` failed with a bare `usage: orch <command>`. Now Pi says at start-up: `this Pi package is 6.2.0 but the orch command on this machine is 6.1.0 ... Type /orch-setup to update it`. `/orch-mode` still saves your choice (and says the old orch does not know modes yet), and `/orch-setup` installs the matching `orch`, switching the active version to the package's.
+
+### Changed
+- README: `pi install git:github.com/arunnarangali/herdr-orchestra@v6.2.1` is listed as a way to install the Pi package straight from GitHub (works without the npm package).
+
 ## [6.2.0] - 2026-11-21
 
 herdr-orchestra is now a Pi package, and runs can use a second mode: everything in one Pi window, with the coder and the reviewer as Pi subagents. Nothing changes for anyone who doesn't pick it: `panes` stays the default, runs from older versions are panes runs, and Claude Code, Codex, OpenCode, Amp, Hermes and Antigravity see the same skills and commands as before.
