@@ -98,3 +98,15 @@ skills_dirs = ["~/.gemini/config/skills"]
 invoke = "use the orch-plan skill: <feature>"
 verified = true
 notes = "Antigravity CLI 1.5: --mode accept-edits|auto|plan and --dangerously-skip-permissions. The binary documents ~/.gemini/config/skills/<name>/SKILL.md as the global skills folder."
+
+[pi]
+binary = "pi"
+launch = "pi"
+model_flag = "--model"
+herdr_detect = false
+roles = ["lead", "coder", "reviewer"]
+skills_dirs = ["~/.agents/skills"]
+skills_reads = ["~/.pi/agent/skills", "~/.agents/skills"]
+invoke = "/skill:orch-plan <feature>"
+verified = false
+notes = "Pi (pi.dev, npm @earendil-works/pi-coding-agent 1.6): `pi install npm:herdr-orchestra` adds the orch skills and the orch-mode extension (/orch-mode, /orch-setup). Pi also reads ~/.agents/skills, so it may warn once that orch-plan / orch-run are found twice; it keeps the first copy. Docs list `--model`; herdr detection of Pi is unverified, so orch relies on the done file in panes mode. Subagent mode (one Pi window): `orch setup --mode subagent`."

@@ -2,6 +2,22 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.2.0] - 2026-11-21
+
+herdr-orchestra is now a Pi package, and runs can use a second mode: everything in one Pi window, with the coder and the reviewer as Pi subagents. Nothing changes for anyone who doesn't pick it: `panes` stays the default, runs from older versions are panes runs, and Claude Code, Codex, OpenCode, Amp, Hermes and Antigravity see the same skills and commands as before.
+
+### Added
+- **Pi package.** `pi install npm:herdr-orchestra` gives Pi the `orch-plan` and `orch-run` skills and the `orch-mode` extension. `package.json` has the `pi-package` keyword and a `pi` block; only Pi reads them. The extension shows the mode in Pi's footer (`orch: subagent`), tells Pi the mode on every turn, and adds `/orch-mode [panes|subagent]` and `/orch-setup` (installs the `orch` command from the package, needed once). Pi's YAML reader rejects the `orch-plan` skill's description as written, so Pi loads a copy with the same text in quotes (`pi/skills/orch-plan`); every other agent keeps the original, unchanged, and a test checks the two say the same thing.
+- **Two modes.** `panes` (default): coders and the reviewer in herdr panes, driven by the event manager, as before. `subagent`: one Pi window; the lead starts the `coder` and `reviewer` subagents (the `Agent` tool of `@tintinweb/pi-subagents`), one milestone at a time. `orch mode [panes|subagent]` shows or switches it; the choice is saved in `~/.config/herdr-orchestra/config.json`, and each run keeps the mode it was planned in (`orch_mode` in `.orchestrate/state.json`; a state file without it is a panes run). A run's mode is not switched while a milestone is in progress.
+- **`orch setup [--mode panes|subagent]`**, also `npx herdr-orchestra@latest --mode subagent` and `orch team up --mode subagent`: in subagent mode it writes `~/.pi/agent/agents/coder.md` and `reviewer.md` from the config (model and thinking level; the reviewer cannot edit files) and installs `npm:@tintinweb/pi-subagents`. A denied model is refused; a file you edited yourself is never overwritten. In panes mode it does nothing.
+- **`orch check [Mn]`**: runs the plan's check command in the main folder and prints `CHECK PASS`, or `CHECK FAIL` with the last 30 lines (exit 1). A pass is reused by `orch finish` when the files did not change.
+- **`orch sub next` / `orch sub done Mn`** (subagent mode): the next ready milestone and its task file; save a finished one (orch commits it on the feature branch, holding risky changes for `orch approve` as in panes mode). `orch finish` works the same at the end.
+- **`orch lead run` in subagent mode** prints the new `playbooks/subagent.md` (coder → `orch check` → reviewer → `orch sub done`, then the summary and `orch finish`); `orch lead plan` starts with a short note on the subagent team. The `orch-run` and `orch-plan` skills are unchanged.
+- **`pi` in the agent registry**, so Pi can also be a lead, coder or reviewer in panes mode (herdr detection of Pi is unverified, so orch relies on its done file).
+
+### Changed
+- In a subagent run, `orch dispatch` and `orch autopilot` refuse with a clear message (there is no event manager), and `orch answer` never starts one.
+
 ## [6.1.0] - 2026-11-19
 
 The website gets a new look: a dark, terminal-style design. Every page keeps the same words, links and features; only the design changed.
