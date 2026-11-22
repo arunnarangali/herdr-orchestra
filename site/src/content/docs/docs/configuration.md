@@ -43,6 +43,7 @@ Defaults ship in `agents.default.toml`. Add or change kinds in `~/.config/herdr-
 ```toml
 [claude]
 launch = "claude --permission-mode acceptEdits"
+review_launch = "claude --permission-mode acceptEdits --disallowedTools Edit,NotebookEdit"
 model_flag = "--model"
 
 [myagent]
@@ -57,6 +58,7 @@ skills_dirs = ["~/.myagent/skills"]
 |---|---|
 | `binary` | Executable that must be on `PATH` for the kind to count as installed |
 | `launch` | Command to start it in a pane, with edits auto-approved |
+| `review_launch` | Optional: the command for the reviewer pane, with the tool's edit tools off (Claude Code: `--disallowedTools Edit,NotebookEdit`). `orch team up` uses it; `orch agents launch <kind> --role reviewer` prints it. Your own `launch` without a `review_launch` is used for the reviewer too |
 | `model_flag` | The option that picks the model, used by `orch agents launch <kind> --model <id>`. Leave it out when the tool has none |
 | `herdr_detect` | Herdr can tell when it is idle, working or blocked |
 | `roles` | Any of `lead`, `coder`, `reviewer` |

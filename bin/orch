@@ -734,6 +734,8 @@ def registry(required=True):
         if uf.exists():
             for kind, vals in tomllib.loads(uf.read_text()).items():
                 if isinstance(vals, dict):
+                    if "launch" in vals and "review_launch" not in vals:
+                        reg.get(kind, {}).pop("review_launch", None)   # your own launch command wins for the reviewer too
                     reg.setdefault(kind, {}).update(vals)
     except tomllib.TOMLDecodeError as e:
         die(f"agent registry: {e}")
@@ -6132,10 +6134,11 @@ def cmd_report(args):
             print(f"  rule broken {n}x: {r}")
 
 
-def launch_cmd(kind, v, model=None, strict=True):
+def launch_cmd(kind, v, model=None, strict=True, role=None):
     """The shell command that starts agent `kind` in a pane, on `model` when given. With strict=False a kind
-    without a model_flag starts on its default model instead of failing (the caller says so)."""
-    cmd = v.get("launch") or v.get("binary", kind)
+    without a model_flag starts on its default model instead of failing (the caller says so). role="reviewer"
+    uses the kind's `review_launch` when it has one: the same tool with its code-editing tools turned off."""
+    cmd = (v.get("review_launch") if role == "reviewer" else None) or v.get("launch") or v.get("binary", kind)
     if model:
         cat = models_catalog()
         why = model_denied(cat, model)
@@ -6302,7 +6305,7 @@ def team_up(args):
             print(f"SKIP    {name}: kind {kind!r} is not in the agent registry — start it yourself in {d}")
             failed += 1
             continue
-        cmd = launch_cmd(kind, v, model, strict=False)
+        cmd = launch_cmd(kind, v, model, strict=False, role="reviewer" if name == st.get("reviewer") else None)
         split = [HERDR, "pane", "split"] + ([last] if last else []) + \
                 ["--direction", "down" if last else "right", "--cwd", d, "--no-focus"]
         if dry:
@@ -6474,7 +6477,9 @@ def rename_lost(st, hints=True, keep_out=()):
                 continue
             still[n] = pick if own else None
             v = reg.get(w.get("kind"))
-            cmd = launch_cmd(w.get("kind"), v, w.get("model"), strict=False) if v else (w.get("kind") or "<its agent>")
+            cmd = (launch_cmd(w.get("kind"), v, w.get("model"), strict=False,
+                              role="reviewer" if n == st.get("reviewer") else None)
+                   if v else (w.get("kind") or "<its agent>"))
             say(f"LOST    {n}: pane {pick} is in its folder ({short(d)}), but herdr sees no agent running in it. "
                 + (f"`orch team up` starts it there; or start it yourself (`{cmd}`)" if own else
                    f"Start it there (`{cmd}`)") + f", then: herdr agent rename {pick} {n}")
@@ -6613,7 +6618,8 @@ USAGE = """usage: orch <command> [args]
   setup [--mode panes|subagent]  get this machine ready for a mode; subagent: write ~/.pi/agent/agents/coder.md and
                            reviewer.md from ~/.config/herdr-orchestra/config.json and install pi-subagents
   agents                   the agent registry: kinds, installed?, roles, herdr detection, launch commands
-  agents launch <kind> [--model <id>]  print the command that starts <kind> in a pane (auto-approve edits)
+  agents launch <kind> [--model <id>] [--role reviewer]  print the command that starts <kind> in a pane
+                           (auto-approve edits; --role reviewer: its read-only reviewer command when it has one)
   models                   the model catalog: tiers (small / medium / high), ratings, and what policy forbids
   models show|check <id>   one model's ratings and evidence / is it allowed?
   resume                   after a restart (computer off, herdr closed): name the agents' panes again, save unsaved
@@ -7203,15 +7209,22 @@ def cmd_agents(args):
     installed = {k: bool(shutil.which(v.get("binary", k))) for k, v in reg.items()}
     if sub == "launch":
         rest = args[1:]
-        model = None
+        model, role = None, None
+        use = "usage: orch agents launch <kind> [--model <id>] [--role coder|reviewer]"
         if "--model" in rest:
             i = rest.index("--model")
-            model = rest[i + 1] if len(rest) > i + 1 else die("usage: orch agents launch <kind> [--model <id>]")
+            model = rest[i + 1] if len(rest) > i + 1 else die(use)
             del rest[i:i + 2]
-        kind = rest[0] if rest else die("usage: orch agents launch <kind> [--model <id>]")
+        if "--role" in rest:
+            i = rest.index("--role")
+            role = rest[i + 1] if len(rest) > i + 1 else die(use)
+            if role not in ("coder", "reviewer", "lead"):
+                die(f"--role must be coder, reviewer or lead, got {role!r} — {use}")
+            del rest[i:i + 2]
+        kind = rest[0] if rest else die(use)
         v = reg.get(kind) or die(f"unknown agent kind {kind!r} — known: {', '.join(reg)} "
                                  f"(add it in {user_agents_file()})")
-        print(launch_cmd(kind, v, model))
+        print(launch_cmd(kind, v, model, role=role))
         return
     if sub == "dirs":           # the folders `orch agents sync` writes: <skills|commands>\t<dir>[\t<commands_from>]
         sdirs, _, cdirs, _ = sync_plan(reg, installed)
@@ -7279,11 +7292,13 @@ def doctor_kind(kind, v, full=True):
         out.append((True, f"version: {first}" if code == 0 and first else f"version: unknown (`{vcmd}` failed)"))
     hcmd = v.get("help_cmd") or f"{binary} --help"
     code, help_ = _probe(hcmd)
-    try:
-        launch = shlex.split(v.get("launch") or binary)
-    except ValueError:
-        launch = [binary]
-    flags = [tok.split("=")[0] for tok in launch[1:] if tok.startswith("-")]
+    flags = []
+    for key in ("launch", "review_launch"):
+        try:
+            launch = shlex.split(v.get(key) or binary)
+        except ValueError:
+            launch = [binary]
+        flags += [f for f in (tok.split("=")[0] for tok in launch[1:] if tok.startswith("-")) if f not in flags]
     for fl in flags:
         if code is None:
             out.append((False, f"launch flag {fl}: `{hcmd}` did not run ({help_.strip()[:80]})"))
@@ -7784,15 +7799,23 @@ Then one line per acceptance criterion: `AC<n>: met|not met - <evidence>`.
 def pi_agent_text(role, conf):
     """coder.md / reviewer.md for pi-subagents: front matter from the config, then the role's instructions."""
     model, thinking = (conf or {}).get("model"), (conf or {}).get("thinking")
-    desc = ("herdr-orchestra coder: builds one milestone from its task file" if role == "coder" else
-            "herdr-orchestra reviewer: reviews one milestone, never edits files")
+    turns = (conf or {}).get("max_turns")
+    # One description per agent that names who starts it, so a normal Pi chat never hands its own work to them
+    # (Claude Code's subagent docs: write descriptions that single out one subagent).
+    desc = ("Only for a herdr-orchestra run: the orch lead starts it with one milestone's task file and it builds "
+            "that milestone. Not for other coding work." if role == "coder" else
+            "Only for a herdr-orchestra run: the orch lead starts it to review one milestone. Read-only, never edits "
+            "files. Not for other reviews.")
     fm = [f"name: {role}", f"description: {desc}"]
     if role == "reviewer":
         fm.append("tools: read, bash, grep, find, ls")
+        fm.append("disallowed_tools: edit, write")
     if model:
         fm.append(f"model: {model}")
     if thinking:
         fm.append(f"thinking: {thinking}")
+    if isinstance(turns, int) and not isinstance(turns, bool) and turns > 0:
+        fm.append(f"max_turns: {turns}")
     fm += ["prompt_mode: append", "skills: false", "run_in_background: false"]
     body = PI_CODER_BODY if role == "coder" else PI_REVIEWER_BODY
     return "---\n" + "\n".join(fm) + "\n---\n\n" + PI_AGENT_MARK + "\n\n" + body
@@ -7825,7 +7848,8 @@ def pi_setup():
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text)
         print(f"WROTE   {short(p)} (model: {rc.get('model') or 'the same as the lead'}"
-              + (f", thinking: {rc['thinking']}" if rc.get("thinking") else "") + ")")
+              + (f", thinking: {rc['thinking']}" if rc.get("thinking") else "")
+              + (f", max_turns: {rc['max_turns']}" if f"max_turns: {rc.get('max_turns')}" in text else "") + ")")
     pi = shutil.which(pi_bin())
     if not pi:
         print(f"NO PI   `{pi_bin()}` is not on PATH. Install Pi (npm install -g @earendil-works/pi-coding-agent), "

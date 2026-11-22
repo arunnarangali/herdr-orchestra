@@ -2,6 +2,19 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.7.0] - 2026-11-22
+
+The coder and reviewer agents now follow Claude Code's subagent guide (code.claude.com/docs/en/sub-agents): each agent does one job, has only the tools that job needs, and has a description that names exactly when to use it.
+
+Example: your reviewer pane is Claude Code. `orch team up` now starts it as `claude --permission-mode acceptEdits --disallowedTools Edit,NotebookEdit --model opus`, so it can read the change and write its review file, but it cannot "just fix" the code itself and slip an unreviewed change into the milestone. In Pi subagent mode, asking Pi "fix this typo" in a normal chat no longer starts orch's `coder`: its description now says it is only for orch runs.
+
+### Added
+- **Read-only Claude reviewer.** New optional registry key `review_launch`: the command for the reviewer pane. Claude Code's turns off `Edit` and `NotebookEdit` (it keeps `Write` for its review file). `orch team up` uses it for the reviewer, the "start it yourself" hints after a restart show it, `orch agents launch <kind> --role reviewer` prints it, and `orch doctor` checks its flags too. A kind without it starts its reviewer like a coder, as before. If your own `agents.toml` sets `launch` for a kind but no `review_launch`, your `launch` is used for the reviewer too.
+- **Pi subagents: `max_turns`.** `"max_turns": 80` under `subagent.coder` or `subagent.reviewer` in `~/.config/herdr-orchestra/config.json` stops a looping subagent after that many turns. The subagent playbook tells the lead to resume a coder that stopped early once, then ask you. Not set: no limit, as before.
+
+### Changed
+- **Pi subagent descriptions** say they are only for herdr-orchestra runs, so Pi does not pick `coder` or `reviewer` for other work. The Pi reviewer also lists `disallowed_tools: edit, write`, so an extension's edit tool cannot reach it either. Run `orch setup --mode subagent` (or `/orch-mode subagent` in Pi) to refresh the two agent files.
+
 ## [6.6.0] - 2026-11-22
 
 Three upgrades that make plans and reviews follow your project, and show you where the risk is. Each one stays out of the way when you don't use it: a repo without the new files, and a plan without the new lines, run exactly as before.

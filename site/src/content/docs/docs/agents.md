@@ -77,6 +77,7 @@ Add or fix kinds in `~/.config/herdr-orchestra/agents.toml`, merged key by key o
 ```toml
 [claude]
 launch = "claude --permission-mode acceptEdits"
+review_launch = "claude --permission-mode acceptEdits --disallowedTools Edit,NotebookEdit"   # reviewer: read-only
 model_flag = "--model"        # what `launch claude --model <id>` appends
 
 [myagent]                     # a new kind
