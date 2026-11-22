@@ -1252,6 +1252,52 @@ def cmd_sync(args):
             if has_open_questions(by_id[tid]):
                 errors.append(f"{tid} has open questions — a quick run needs a clear change; answer them or use "
                               f"`Mode: full`")
+    # hard to undo (`Door: one-way (why)`): always waits for the developer's `orch approve` before it lands
+    doors = {}
+    for tid in ids:
+        dv = field(by_id[tid], "door")
+        if not dv:
+            continue
+        kind_ = re.match(r"\s*(one|two)[\s-]*way", dv, re.I)
+        if not kind_:
+            warns.append(f"{tid}: `Door: {dv}` — write `Door: one-way (why it is hard to undo)`, or leave the line out "
+                         f"(easy to undo)")
+            continue
+        why_ = dv[kind_.end():].strip(" \t:-—–").strip()
+        why_ = why_[1:-1].strip() if why_.startswith("(") and why_.endswith(")") else why_
+        if kind_.group(1).lower() == "one":
+            doors[tid] = why_
+            if tid in enabled and not why_:
+                warns.append(f"{tid} is `Door: one-way` without a reason — say why it is hard to undo, e.g. "
+                             f"`Door: one-way (rewrites the orders table, 2M rows)`")
+            if tid in enabled and quick:
+                errors.append(f"{tid} is `Door: one-way` (hard to undo) — a quick run never is; use `Mode: full`")
+            if tid in enabled and not risk_hold:
+                warns.append(f"{tid} is `Door: one-way`, but `Risk hold: off` lets it land without your `orch approve`")
+    # the repo's own words: the plan should use them, and a new word or decision needs a milestone that writes it down
+    dst = {"docs": (get("docs").split() or [None])[0]}
+    drel = docs_root(dst)[1]
+    secs_all, glob_all = plan_sections()
+    gl = glossary(dst)
+    for tid in [*enabled, None]:
+        text = glob_all if tid is None else re.split(r"(?im)^notes from user:", secs_all.get(tid, ""))[0]
+        hits = sorted({(a, g["term"]) for g in gl for a in g["avoid"] if word_in(a, text) and not word_in(g["term"], a)})
+        for a, term in hits:
+            warns.append(f"{tid or 'Global instructions'} says {a!r}, but {drel}/glossary.md says to use {term!r} "
+                         f"instead — use the project's word, or change the glossary on purpose")
+    gloss_add = glossary_additions(plan_text)
+    gpath = f"{drel}/glossary.md"
+    if gloss_add and not any(path_allowed(gpath, files[tid]) for tid in enabled):
+        warns.append(f"`## Glossary additions` lists {len(gloss_add)} new word(s), but no milestone has {gpath} in its "
+                     f"Likely files — give the milestone that brings the word an acceptance criterion like "
+                     f"\"{gpath} defines <word>\" and list the file")
+    for tid in enabled:
+        crit = " ".join(by_id[tid]["fields"].get("acceptance criteria", []))
+        named = sorted(set(re.findall(re.escape(drel) + r"/(?:adr/[\w.\-]+\.md|glossary\.md|coding-standards\.md)", crit)))
+        for pth in named:
+            if not path_allowed(pth, files[tid]):
+                warns.append(f"{tid}'s acceptance criteria name {pth}, which is not in its Likely files — add it, so "
+                             f"the coder may write it")
     max_tasks = int(os.environ.get("ORCH_MAX_TASKS", "0") or 0)     # no limit unless you set one
     if max_tasks and len(enabled) > max_tasks:
         warns.append(f"{len(enabled)} enabled milestones (> ORCH_MAX_TASKS={max_tasks}). Merge coupled milestones "
@@ -1293,6 +1339,8 @@ def cmd_sync(args):
         "setup_inputs": [p.strip("`") for p in re.split(r"[,\s]+", get("setup inputs")) if p.strip("`")],
         "scope": scope,
         "risk_hold": risk_hold,
+        "docs": (get("docs").split() or [None])[0],        # where the repo keeps glossary.md, adr/, coding-standards.md
+        "glossary_additions": gloss_add,
         "parallel_checks": par_checks,
         "early_review": early_review,
         "branch_check": branch_check,
@@ -1363,6 +1411,8 @@ def cmd_sync(args):
             "estimate_s": estimates[tid],
             # for the developer (`orch plan show`): the milestone in plain words, and the plan's own reasons
             "plain": field(t, "plain"), "why_sep": field(t, "why separate"), "deps_text": field(t, "depends on"),
+            # hard to undo: always held for `orch approve`, with the coder's proof (None = easy to undo)
+            "door": "one-way" if tid in doors else None, "door_why": doors.get(tid) or None,
         }
         if status != st["tasks"][tid]["status"]:
             move(st, tid, status, {"skipped": "unticked in plan.md", "needs-answer": "open questions in plan.md"}
@@ -1659,12 +1709,14 @@ RESULT_FORMAT = {
     "criteria": [{"id": "AC1", "met": True, "evidence": "test 'rejects a missing amount column' passes"}],
     "questions": ["only when status is question: what you need decided, with 2-3 options"],
     "usage": {"input_tokens": None, "output_tokens": None, "cost_usd": None},
+    "proof": "only when task.md says the milestone is hard to undo: what you ran to show it is safe, and what it showed",
 }
 REVIEW_FORMAT = {
     "verdict": "approve | changes",
     "criteria": [{"id": "AC1", "met": True, "note": "covered by test_upload_rejects_missing_amount"}],
-    "findings": [{"severity": "blocker | suggestion", "file": "src/upload.ts", "line": 42,
-                  "problem": "what is wrong", "why": "why it matters", "criterion": "AC1"}],
+    "findings": [{"severity": "blocker | suggestion", "axis": "spec | rules", "file": "src/upload.ts", "line": 42,
+                  "problem": "what is wrong", "why": "why it matters", "criterion": "AC1",
+                  "rule": "only for axis rules: the written rule it breaks, e.g. ADR 0001: money is whole paise"}],
 }
 
 
@@ -1698,6 +1750,77 @@ def read_usage(path):
     return {k: v for k, v in u.items() if v is not None} or None if isinstance(u, dict) else None
 
 
+def finding_axis(f):
+    """Which of the reviewer's two questions a finding answers: "spec" (built what was asked?) or "rules" (follows
+    the repo's written rules?); None for a review written before 6.6.0 that does not say."""
+    a = str(f.get("axis") or "").strip().lower()
+    return "rules" if a.startswith(("rule", "standard")) else "spec" if a.startswith("spec") else None
+
+
+def review_axes(st):
+    """Every finding of every review round in this run, by question: {"spec": [...], "rules": [...]}, and
+    {rule: count} for the rules findings. Rounds without an `axis` (older reviews, .md reviews) are left out."""
+    by, rules = {"spec": [], "rules": []}, {}
+    for tid, t in st["tasks"].items():
+        for k in range(1, t.get("review_round", 0) + 1):
+            d, _ = read_json(ORCH / "review" / tid / f"review-{k}.json")
+            for f in (d or {}).get("findings", []) if isinstance(d, dict) and isinstance(d.get("findings"), list) else []:
+                ax = finding_axis(f) if isinstance(f, dict) else None
+                if not ax:
+                    continue
+                sev = "blocker" if str(f.get("severity", "")).lower().startswith("block") else "suggestion"
+                by[ax].append(f"- {tid} round {k}, {sev}: " + (f"[{f['rule']}] " if ax == "rules" and f.get("rule") else "")
+                              + f"{f.get('file', '?')}:{f.get('line', '?')} — {f.get('problem', '')}")
+                if ax == "rules":
+                    r = str(f.get("rule") or "(rule not named)").strip()
+                    rules[r] = rules.get(r, 0) + 1
+    return by, rules
+
+
+def review_axes_section(st):
+    """The summary's review findings by question, or "" when no review said which question it answers."""
+    by, rules = review_axes(st)
+    if not (by["spec"] or by["rules"]):
+        return ""
+    return ("## Review findings: spec and rules\nEvery finding of every review round (fixed or not), by the question it "
+            "answers. Spec: did it build what was asked? Rules: does it follow the repo's written rules?\n\n"
+            f"Spec ({len(by['spec'])}):\n" + ("\n".join(by["spec"]) or "none") + "\n\n"
+            f"Rules ({len(by['rules'])}):\n" + ("\n".join(by["rules"]) or "none") + "\n\n"
+            + ("Rules broken most often: " + "; ".join(f"{r} ({n}x)" for r, n in
+                                                      sorted(rules.items(), key=lambda x: (-x[1], x[0]))[:10]) + "\n\n"
+               if rules else ""))
+
+
+def risk_rows(st):
+    """One row per landed milestone: (Mn and title, easy|hard to undo and why, could break, proof)."""
+    rows = []
+    for tid in st["order"]:
+        t = st["tasks"][tid]
+        if t.get("status") != "merged" or not (t.get("blast") or t.get("door")):
+            continue
+        b = t.get("blast") or {}
+        hard = t.get("door") == "one-way"
+        rows.append((f"{tid} {t['title']}", ("**hard**" + (f": {t['door_why']}" if t.get("door_why") else "")) if hard
+                     else "easy", (f"{b['level']}: " + "; ".join(b.get("why", []))) if b else "-",
+                     (t.get("proof") or "none given") if hard else "-"))
+    # only worth a table when something in it is hard to undo or could break more than a little
+    keep = any(st["tasks"][tid].get("door") == "one-way" or (st["tasks"][tid].get("blast") or {}).get("level") != "small"
+               for tid in st["order"] if st["tasks"][tid].get("status") == "merged" and st["tasks"][tid].get("blast"))
+    return rows if keep else []
+
+
+def risk_section(st):
+    """The summary's (and so the PR's) table: what is hard to undo and how much each milestone could break."""
+    rows = risk_rows(st)
+    if not rows:
+        return ""
+    esc = lambda x: str(x).replace("|", "\\|").replace("\n", " ")
+    return ("## Undo and blast radius\nWhere to look hardest before you merge. Hard to undo = the plan says it can't "
+            "simply be reverted (it waited for your `orch approve`). Could break = measured from the change: risky "
+            "files, how many milestones build on it, its size.\n\n| Milestone | Undo | Could break | Proof |\n"
+            "|---|---|---|---|\n" + "\n".join("| " + " | ".join(esc(c) for c in r) + " |" for r in rows) + "\n\n")
+
+
 def review_findings(tid, k):
     """(blockers, suggestions, known) for review round k: review-k.json, else the BLOCKER:/SUGGESTION: lines of
     review-k.md. known=False when neither is usable."""
@@ -1709,6 +1832,9 @@ def review_findings(tid, k):
             if not isinstance(f, dict):
                 continue
             line = f"{f.get('file', '?')}:{f.get('line', '?')} — {f.get('problem', '')} — {f.get('why', '')}"
+            ax = finding_axis(f)
+            if ax:
+                line = (f"[rules: {f['rule']}] " if ax == "rules" and f.get("rule") else f"[{ax}] ") + line
             if f.get("criterion"):
                 line += f" ({f['criterion']})"
             (blockers if str(f.get("severity", "")).lower().startswith("block") else sugg).append(line)
@@ -1817,13 +1943,68 @@ def changed_files(st, t):
     return sorted((vs_base & vs_tip) | untracked)
 
 
+def dependents_of(st, tid):
+    """Milestones that build on Mn, directly or through another milestone (skipped ones left out)."""
+    out, todo = set(), [tid]
+    while todo:
+        cur = todo.pop()
+        for k, v in st["tasks"].items():
+            if cur in v.get("deps", []) and k not in out and v.get("status") != "skipped":
+                out.add(k)
+                todo.append(k)
+    return sorted(out, key=lambda k: st["order"].index(k) if k in st.get("order", []) else 0)
+
+
+def blast_radius(st, tid, diff_args, cwd):
+    """How much could break if Mn is wrong, measured (no AI) from its real change and the plan: small, medium or
+    large, with the reasons in plain words. Saved on the task for the hold message, the summary and the PR."""
+    names = git("diff", "--name-status", "--no-renames", *diff_args, cwd=cwd, check=False).stdout.splitlines()
+    files, deleted, risky = [], [], []
+    for line in names:
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        files.append(parts[-1])
+        if parts[0].startswith("D"):
+            deleted.append(parts[-1])
+        risky += [what for rx, what in RISK_RULES if rx.search(parts[-1])]
+        if LOCKFILE_RE.search(parts[-1]):
+            risky.append("dependency change")
+    lines = 0
+    for line in git("diff", "--numstat", *diff_args, cwd=cwd, check=False).stdout.splitlines():
+        a, b = (line.split("\t") + ["0", "0"])[:2]
+        lines += (int(a) if a.isdigit() else 0) + (int(b) if b.isdigit() else 0)
+    hot = sorted({f for f in files if HOTSPOT_RE.search(f)})
+    deps = dependents_of(st, tid)
+    big, mid = [], []
+    if risky:
+        big.append(", ".join(sorted(set(risky))))
+    if len(deps) >= 2:
+        big.append(f"{len(deps)} milestones build on it ({', '.join(deps)})")
+    elif deps:
+        mid.append(f"{deps[0]} builds on it")
+    if lines > 500:
+        big.append(f"{lines} lines changed")
+    elif lines > 100:
+        mid.append(f"{lines} lines changed")
+    if deleted:
+        mid.append(f"deletes {len(deleted)} file(s)")
+    if hot:
+        mid.append("touches shared files: " + ", ".join(hot[:3]) + (" …" if len(hot) > 3 else ""))
+    if len(files) > 10:
+        mid.append(f"{len(files)} files changed")
+    level = "large" if big else "medium" if mid else "small"
+    why = big + mid or [f"{len(files)} file(s), {lines} lines, nothing else builds on it"]
+    return {"level": level, "why": why, "files": len(files), "lines": lines}
+
+
 def risk_flags(st, tid, diff_args, cwd):
     """Deterministic reasons to hold a milestone for the developer's approval before it lands."""
     if not st.get("risk_hold", True):
         return []
     t = st["tasks"][tid]
     likely = t.get("files") or []
-    out = []
+    out = [f"hard to undo: {t.get('door_why') or 'the plan says Door: one-way'}"] if t.get("door") == "one-way" else []
     for line in git("diff", "--name-status", "--no-renames", *diff_args, cwd=cwd, check=False).stdout.splitlines():
         parts = line.split("\t")
         if len(parts) < 2:
@@ -2435,12 +2616,32 @@ def cmd_review(args):
                     + ". Report each as `met: false` with a note; it is not a blocker. Don't raise a blocker for the "
                     "missing deferred part. Do review everything that WAS built, including partial work on it.\n\n"
                     ) if dfr else ""
+    try:
+        rules = project_rules(st, plan_sections()[0].get(tid, ""))
+    except OSError:
+        rules = project_rules(st, "")
+    rules_txt = "\n".join(project_rules_lines(st, rules))
+    scope = t.get("out_of_scope") or []
     (rd / f"review-task-{k}.md").write_text(
         f"# Review {tid}: {t['title']} (round {k})\n\n"
         f"Spec and acceptance criteria: {rel}/task.md (criteria ids AC1, AC2… in {rel}/task.json)\n"
-        f"Changes: {rel}/diff.patch\n\n" + resolution.replace("{rel}", rel) + deferred_txt +
-        "Review for correctness against the acceptance criteria, API/contract consistency, UI/UX, security, "
-        "edge cases and missing tests. Do NOT edit any code.\n"
+        f"Changes: {rel}/diff.patch\n\n" + resolution.replace("{rel}", rel) + deferred_txt
+        + (rules_txt + "\n" if rules_txt else "") +
+        "Answer two questions, separately, and give every finding the `axis` of the one it answers:\n"
+        "1. `spec`: did it build what the task asks, no more and no less? Every acceptance criterion met, nothing "
+        "missing, no behaviour the task did not ask for. Correctness, API/contract consistency, UI/UX, security, "
+        "edge cases and missing tests belong here."
+        + (f" orch saw changes outside the milestone's Likely files: {', '.join(scope)}. Say whether each one was "
+           "needed." if scope else "") + "\n"
+        "2. `rules`: does it follow the project's own written rules: "
+        + (f"{rules['standards']}" if rules["standards"] else "AGENTS.md / CLAUDE.md when the repo has them")
+        + (", the decisions listed above" if rules["adrs"] else "")
+        + (", the words listed above" if rules["glossary"] else "") +
+        "? A `rules` finding names the rule it breaks in `rule`. Only written rules count: a matter of taste is at "
+        "most a suggestion.\n"
+        f"The check command (`{st['check']}`) runs on this work by itself: don't report what lint, type checks or "
+        "tests already catch.\n"
+        "Do NOT edit any code.\n"
         "Report PROBLEMS, not solutions: the coder decides how to fix. At most 15 findings. A `blocker` must be "
         "fixed before merge; a `suggestion` is optional. Say for EVERY acceptance criterion whether it is met; an "
         "unmet criterion counts as a blocker.\n"
@@ -2676,6 +2877,7 @@ def cmd_commit(args):
     d = task_dir(t, tid)
     if st["isolation"] == "shared":
         git("add", "-A", cwd=d)
+        t["blast"] = blast_radius(st, tid, ["--cached", "HEAD"], d)
         risks = [] if t.get("approved") else risk_flags(st, tid, ["--cached", "HEAD"], d)
         if risks:
             git("reset", "-q", cwd=d)                # unstage; the work stays in the tree until approved
@@ -2770,8 +2972,9 @@ def _merge_start(tid):
         die(f"main tree must be clean and on {st['branch']}")
     src = work_ref(st, tid) or die(f"{tid} has no saved work ({task_ref(st, tid)}) — run `orch commit {tid}` first")
     src_sha = git("rev-parse", src, cwd=ROOT).stdout.strip()
+    mb = git("merge-base", st["branch"], src_sha, cwd=ROOT).stdout.strip()
+    t["blast"] = blast_radius(st, tid, [mb, src_sha], ROOT)
     if not t.get("approved"):
-        mb = git("merge-base", st["branch"], src_sha, cwd=ROOT).stdout.strip()
         risks = risk_flags(st, tid, [mb, src_sha], ROOT)
         if risks:
             _hold(st, tid, risks)
@@ -2827,10 +3030,18 @@ def _hold(st, tid, risks):
     if st["isolation"] == "worktree" and holds(st, tid):      # its work is saved in the hidden ref: free the coder
         st["workers"][t["worker"]]["task"] = None
         t["last_worker"], t["worker"] = t["worker"], None
+    b = t.get("blast") or {}
+    proof = ((t.get("proof") or ("the coder's PROOF: line, in the lead's chat" if run_mode(st) == "subagent"
+                                 else "none given by the coder")) if t.get("door") == "one-way" else None)
     move(st, tid, "held", "waiting for `orch approve " + tid + "`: " + "; ".join(risks[:3])
-         + (f" (+{len(risks) - 3} more)" if len(risks) > 3 else ""))
+         + (f" (+{len(risks) - 3} more)" if len(risks) > 3 else "")
+         + (f" · could break: {b['level']}" if b else "") + (f" · proof: {proof[:200]}" if proof else ""))
     save(st)
     print(f"HELD {tid} for approval — " + "; ".join(risks))
+    if b:
+        print(f"Could break: {b['level']} ({'; '.join(b['why'])})")
+    if proof:
+        print(f"Proof from the coder: {proof}")
     print(f"Look at it, then run `orch approve {tid}` (or `orch set {tid} paused` to stop it)")
     sys.exit(7)
 
@@ -3470,6 +3681,110 @@ def plan_sections():
     return secs, glob
 
 
+# ---------------------------------------------------------------- the repo's own rules: words, decisions, coding rules
+# Optional files in the repo (plan header `Docs: <folder>`, default docs/): glossary.md, adr/*.md, coding-standards.md.
+# A repo without them gets nothing new. Nothing here is AI: orch reads the files and matches words.
+GLOSS_BOLD_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)?\*\*([^*]+?)\*\*\s*(?:[:—–-]\s*)?(.*)$")
+GLOSS_HEAD_RE = re.compile(r"^#{2,4}\s+(.+?)\s*#*\s*$")
+AVOID_RE = re.compile(r"\bavoid\s*:\s*([^.\n;]+)", re.I)
+
+
+def glossary_additions(plan_text):
+    """The `- **Word**: meaning` lines under the plan's `## Glossary additions`: new words this feature brings."""
+    m = re.search(r"(?ims)^##\s+glossary additions\s*$(.*?)(?=^##\s|\Z)", plan_text or "")
+    items = [re.sub(r"^[-*+]\s+", "", l.strip()).strip() for l in (m.group(1).splitlines() if m else [])]
+    return [i for i in items if i and i.lower().strip("<>\"") != "none"]
+
+
+def docs_root(st=None):
+    """(absolute folder, folder as written) of the repo's rules files: plan header `Docs:`, default `docs`."""
+    rel = str((st or {}).get("docs") or "docs").strip().strip("`").strip("/") or "docs"
+    return ROOT / rel, rel
+
+
+def word_in(word, text):
+    """`word` (or its plural) appears in `text` as a whole word, any case."""
+    word = (word or "").strip()
+    return bool(word) and bool(re.search(r"(?<![\w-])" + re.escape(word) + r"(?:e?s)?(?![\w-])", text or "", re.I))
+
+
+def glossary(st=None):
+    """docs/glossary.md -> [{"term", "text", "avoid": [words]}]. An entry is a bold word at the start of a line
+    (`- **Discount**: money taken off an order total, in paise. Avoid: coupon, promo`); a glossary with no bold
+    entries uses its `##` / `###` headings as the words, with the text under each one."""
+    p = docs_root(st)[0] / "glossary.md"
+    try:
+        lines = p.read_text(errors="replace").splitlines() if p.is_file() else []
+    except OSError:
+        lines = []
+    bold = any(GLOSS_BOLD_RE.match(l) for l in lines)
+    out, cur = [], None
+    for line in lines:
+        m = GLOSS_BOLD_RE.match(line) if bold else None
+        h = GLOSS_HEAD_RE.match(line)
+        if m:
+            cur = {"term": m.group(1).strip().rstrip(":").strip(), "text": m.group(2).strip()}
+            out.append(cur)
+        elif h:
+            cur = {"term": h.group(1).strip().rstrip(":").strip(), "text": ""} if not bold else None
+            if cur:
+                out.append(cur)
+        elif cur is not None and line.strip() and (not bold or line[:1] in (" ", "\t")):
+            cur["text"] = (cur["text"] + " " + line.strip()).strip()
+        elif bold and not line.strip():
+            cur = None
+    for g in out:
+        g["avoid"] = [w for m in AVOID_RE.findall(g["text"])
+                      for w in (x.strip(" \t`'\"*") for x in re.split(r",|/|\bor\b", m)) if w]
+    return [g for g in out if g["term"]]
+
+
+def adrs(st=None):
+    """docs/adr/*.md -> [(path as the repo writes it, title)]: the decisions already made, one line each."""
+    root, rel = docs_root(st)
+    out = []
+    d = root / "adr"
+    for p in sorted(d.glob("*.md")) if d.is_dir() else []:
+        if p.name.lower() in ("readme.md", "template.md", "index.md") or "template" in p.stem.lower():
+            continue
+        try:
+            title = next((l[2:].strip() for l in p.read_text(errors="replace").splitlines() if l.startswith("# ")), "")
+        except OSError:
+            title = ""
+        out.append((f"{rel}/adr/{p.name}", title or p.stem))
+    return out
+
+
+def standards_file(st=None):
+    root, rel = docs_root(st)
+    return f"{rel}/coding-standards.md" if (root / "coding-standards.md").is_file() else None
+
+
+def project_rules(st, text):
+    """The repo's rules for one milestone: the glossary words that appear in its text (or a word the glossary says to
+    avoid), every decision record's title, and the coding rules file. Empty lists / None when the repo has none."""
+    words = [g for g in glossary(st) if word_in(g["term"], text) or any(word_in(a, text) for a in g["avoid"])]
+    return {"glossary": words, "adrs": adrs(st), "standards": standards_file(st)}
+
+
+def project_rules_lines(st, rules):
+    """The `## Project rules` block of a coder's task file and of a review task, or [] when the repo has no rules."""
+    if not (rules["glossary"] or rules["adrs"] or rules["standards"]):
+        return []
+    rel = docs_root(st)[1]
+    out = ["## Project rules", "This repo's own words, decisions and coding rules. Follow them: the review checks them."]
+    if rules["glossary"]:
+        out.append(f"Words (from {rel}/glossary.md): use these names exactly, in code, UI text and messages.")
+        out += [f"- **{g['term']}**" + (f": {g['text'][:300]}" if g["text"] else "") for g in rules["glossary"]]
+    if rules["adrs"]:
+        out.append(f"Decisions already made ({rel}/adr/): read the one your change touches; don't go against one "
+                   f"without asking (status `question`).")
+        out += [f"- {p}: {title}" for p, title in rules["adrs"]]
+    if rules["standards"]:
+        out.append(f"Coding rules: {rules['standards']}")
+    return out + [""]
+
+
 WORKER_RULES = """## Rules for you (the coder)
 - You own the HOW: the approach, the design inside this milestone, the code, the tests and every fix. This file says what and why; it deliberately doesn't say how.
 - Follow the repo's existing patterns (AGENTS.md / CLAUDE.md) and any Interfaces listed above exactly; other milestones rely on them.
@@ -3485,7 +3800,7 @@ WORKER_RULES = """## Rules for you (the coder)
 
 
 # plan.md lines that are for the lead and orch, not the coder: they stay in plan.md and task.json
-LEAD_ONLY_FIELDS = {"depends on", "why separate", "prefer", "tier", "needs", "model why", "estimate", "role",
+LEAD_ONLY_FIELDS = {"depends on", "why separate", "prefer", "tier", "needs", "model why", "estimate", "role", "door",
                     "review", "parallel", "plain"}
 
 
@@ -3527,6 +3842,20 @@ def cmd_write_task(args):
                             drop_criteria=bool(contract["acceptance_criteria"])), ""]
     if glob and glob.lower() not in ("none", "<empty — user may fill in>"):
         parts += ["## Global instructions", glob, ""]
+    rules = project_rules(st, secs[tid] + "\n" + (glob or ""))
+    parts += project_rules_lines(st, rules)
+    if t.get("door") == "one-way":
+        parts += ["## Hard to undo: show proof",
+                  "This milestone is hard to undo once it runs" + (f" ({t['door_why']})" if t.get("door_why") else "")
+                  + ". The check is not enough: the developer approves it before it lands, and decides from your "
+                  "proof. Run something that shows it is safe, and put what you ran and what it showed in `proof` in "
+                  "your result file, and on a last report line `PROOF: <the same, short>`. For example: the migration "
+                  "run on a copy of the data (rows, time, no lock), a rollback test, the exact request the new API "
+                  "answers, a screenshot path.", ""]
+        contract["door"] = {"kind": "one-way", "why": t.get("door_why")}
+    if rules["glossary"] or rules["adrs"] or rules["standards"]:
+        contract["project_rules"] = {"glossary": [g["term"] for g in rules["glossary"]],
+                                     "decisions": [p for p, _ in rules["adrs"]], "coding_rules": rules["standards"]}
     ctx = []
     for dep in t["deps"]:
         dd = st["tasks"][dep].get("dir")
@@ -4063,6 +4392,9 @@ def cmd_plan(args):
             bits.append(f"about {_short_dur(t['estimate_s'])}")
         bits.append(f"reviewed by {st['reviewer']}" if t.get("review") and st.get("reviewer") else "no review")
         print("   " + " · ".join(bits))
+        if t.get("door") == "one-way":
+            print("   Hard to undo" + (f": {t['door_why']}" if t.get("door_why") else "") + ". It waits for your OK "
+                  f"(`orch approve {tid}`) before it lands, with the coder's proof that it is safe.")
         if t["status"] != "pending":
             now_ = {"merged": "done, on the branch", "coding": "being built", "verifying": "being checked",
                     "awaiting-review": "waiting for the reviewer", "reviewing": "being reviewed",
@@ -4076,6 +4408,10 @@ def cmd_plan(args):
         for i, g in enumerate(steps, 1):
             print(f"  {i}. {' and '.join(g)}" + (" at the same time" if len(g) > 1 else "")
                   + ("" if i == 1 else f" (after {' and '.join(steps[i - 2])})"))
+    if st.get("glossary_additions"):
+        print(f"\nNew words this feature adds to {docs_root(st)[1]}/glossary.md:")
+        for g in st["glossary_additions"]:
+            print(f"  - {g}")
     if missing:
         print(f"\nWARN no `Plain:` line for {', '.join(missing)}: add one sentence in plain words to each "
               f"(what the developer will get, no code words), then `orch sync`.")
@@ -4593,7 +4929,9 @@ def _autopilot(args):
         write_and_send(tid, f"{fname_prefix}-{n}.md", body(n))
 
     def held(tid, out):
+        extra = [l.strip() for l in out.splitlines() if l.startswith(("Could break:", "Proof from the coder:"))]
         say(f"{tid} is HELD for your approval: {out.splitlines()[0].split('—', 1)[-1].strip()}. "
+            + "".join(f"{l}. " for l in extra) +
             f"Look at it, then run `orch approve {tid}`; autopilot keeps going with the rest", True)
 
     # ---- background jobs: a check or a merge runs beside the event loop, and its end is one more event (like a
@@ -4909,6 +5247,11 @@ def _autopilot(args):
                 if q:
                     park(tid, "paused", q[0].strip()[9:].strip() or "worker asked a question")
                     return False
+            # proof that a hard-to-undo milestone is safe: the result's `proof`, else the report's PROOF: line
+            pf = (str(res.get("proof") or "").strip() if res else "") or next(
+                (l.split(":", 1)[1].strip() for l in rtext.splitlines() if l.strip().upper().startswith("PROOF:")), "")
+            if pf:
+                patch_state(lambda s2: s2["tasks"][tid].update(proof=pf[:500]))
             # scope: the real diff against the milestone's Likely files
             s_ = load()
             allowed = s_["tasks"][tid].get("files") or []
@@ -5319,6 +5662,7 @@ def _autopilot(args):
                 f"\n\n## Commits\n```\n{log_}```\n\n## Files changed\n```\n{stat}```\n\n"
                 "## Changed outside Likely files\n" + ("\n".join(scope) or "none") + "\n\n"
                 "## Reviewer suggestions not applied\n" + ("\n".join(sugg) or "none") + "\n\n"
+                + review_axes_section(st) + risk_section(st)
                 + ("## Deferred: not done, follow-ups\nThe developer approved leaving these out of this run. They were "
                    "NOT built.\n" + "\n".join(deferred_lines(st)) + "\n\n" if deferred_lines(st) else "")
                 + ("## Models: planned and actual\n| Milestone | Planned tier | Ran on | Escalated | Why this tier |\n"
@@ -5391,6 +5735,7 @@ def _autopilot(args):
             continue
         waiting_since = None
         if not active and not ready:
+            bg_reap()        # a background merge that just ended (held, failed) says so before we stop
             waiting = [f"  {k} {v['status']}: {v.get('reason') or ''}" for k, v in tasks.items()
                        if v["status"] in ("paused", "failed", "needs-answer", "pending", "held")]
             say("STOPPED — needs you:\n" + "\n".join(waiting) +
@@ -5736,8 +6081,13 @@ def cmd_report(args):
     rate and wasted work for this run."""
     st = load()
     rep_ = run_report(st)
+    by_axis, rules_broken = review_axes(st)
     if "--json" in args:
         rep_["time"] = time_account(st)
+        rep_["review_axes"] = {"spec": len(by_axis["spec"]), "rules": len(by_axis["rules"]), "rules_broken": rules_broken}
+        rep_["risk"] = [{"task": k, "door": v.get("door") or "two-way", "door_why": v.get("door_why"),
+                         "blast": v.get("blast"), "proof": v.get("proof")}
+                        for k, v in st["tasks"].items() if v.get("blast") or v.get("door")]
         print(json.dumps(rep_, indent=2))
         return
     if "--no-time" not in args:
@@ -5767,6 +6117,19 @@ def cmd_report(args):
               f"{tot['output_tokens']} output tokens, ${tot['cost_usd']:.2f}")
     else:
         print("tokens/cost: unknown (no agent reported `usage` in its result file)")
+    if "--no-time" in args:          # the summary (its only caller) has its own sections for the lines below
+        return
+    rows = risk_rows(st)
+    if rows:
+        print("\nundo and blast radius (where to look hardest before you merge):")
+        for r in rows:
+            print(f"  {r[0]} — undo: {r[1].replace('**', '')} — could break: {r[2]}"
+                  + (f" — proof: {r[3]}" if r[3] != "-" else ""))
+    if by_axis["spec"] or by_axis["rules"]:
+        print(f"review findings: {len(by_axis['spec'])} spec (built what was asked?), {len(by_axis['rules'])} rules "
+              f"(followed the repo's rules?)")
+        for r, n in sorted(rules_broken.items(), key=lambda x: (-x[1], x[0])):
+            print(f"  rule broken {n}x: {r}")
 
 
 def launch_cmd(kind, v, model=None, strict=True):
@@ -6532,6 +6895,9 @@ def cmd_lead(args):
             auto_update_at_plan()       # a new feature starts on the newest release (never during a run)
         if sub == "run" and part == "--section":
             print(run_playbook_part(pb.read_text(), args[2] if len(args) > 2 else ""), end="")
+            return
+        if sub == "run" and asked_before_plan():
+            print(ASKED_NOTE, end="")
             return
         label = f"{sub} ({part})" if part else sub
         subagent = current_mode()[0] == "subagent"
@@ -7315,6 +7681,27 @@ def run_mode(st):
     return m if m in ORCH_MODES else "panes"
 
 
+ASKED_NOTE = """PLANNING, NOT A RUN. The lead asked the developer questions before writing the plan
+(.orchestrate/questions.md), and no plan was written after them. If the developer just answered them, this is not
+a go: carry on with planning from step 2b of the plan playbook (`orch lead plan` prints it again), with their
+answers written into the plan where they apply. Show the plan and wait for **go**. Nothing starts before that.
+"""
+
+
+def asked_before_plan():
+    """True when .orchestrate/questions.md (the lead's questions before planning) is newer than plan.md: the
+    developer's answer is part of planning, so `orch lead run` must not start a run from an old plan."""
+    r = git("rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+    if r.returncode != 0:
+        return False
+    d = Path(r.stdout.strip()).parent / ".orchestrate"
+    q, p = d / "questions.md", d / "plan.md"
+    try:
+        return q.exists() and (not p.exists() or q.stat().st_mtime > p.stat().st_mtime)
+    except OSError:
+        return False
+
+
 def _repo_state_path():
     """.orchestrate/state.json of the repo this shell is in, or None (outside a repo, or no run yet)."""
     r = git("rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
@@ -7366,6 +7753,8 @@ is in your prompt. Read it and build what it asks. The task says what and why; y
 - If something only the developer can decide blocks you, stop and reply `QUESTION: <the question>` with 2 or 3
   concrete options. Don't guess.
 - When the lead sends you a failing check or review findings, fix exactly those and run the check again.
+- When the task file says the milestone is hard to undo, run something that shows it is safe and end with
+  `PROOF: <what you ran and what it showed>`.
 
 End every reply with: the files you changed, the check result (PASS or FAIL), and one line per acceptance criterion:
 `AC<n>: met|not met - <evidence: a test, a command, or file:line>`.
@@ -7375,10 +7764,18 @@ PI_REVIEWER_BODY = """You are the reviewer in a herdr-orchestra run. The lead se
 You never edit files. Read the task file, then the change (`git diff HEAD` and `git status --short` for new files),
 and the code around it.
 
+Answer two questions, separately:
+- `spec`: did it build what the task asks, no more and no less? Every acceptance criterion, correctness, security,
+  edge cases, missing tests.
+- `rules`: does it follow the project's written rules: the task file's "Project rules" (coding rules file, decisions,
+  words), or AGENTS.md / CLAUDE.md? Only written rules count; name the rule it breaks.
+Don't report what the check command (lint, types, tests) already catches.
+
 Reply with one line per finding, most serious first:
-- `BLOCKER: <file:line> - <problem> - <why it matters> (AC<n> when it breaks a criterion)` for a bug, a broken or
-  missing acceptance criterion, a missing test for new behaviour, or a security problem.
-- `SUGGESTION: <file:line> - <idea>` for something nice to have.
+- `BLOCKER: [spec] <file:line> - <problem> - <why it matters> (AC<n> when it breaks a criterion)` for a bug, a broken
+  or missing acceptance criterion, a missing test for new behaviour, or a security problem.
+- `BLOCKER: [rules: <the rule>] <file:line> - <problem>` when it breaks a written rule.
+- `SUGGESTION: [spec] <file:line> - <idea>` (or `[rules: ...]`) for something nice to have.
 - `NO FINDINGS` when there is nothing to report.
 Then one line per acceptance criterion: `AC<n>: met|not met - <evidence>`.
 """

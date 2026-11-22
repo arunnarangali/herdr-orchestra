@@ -76,7 +76,8 @@ Notes from user:
 | `Reviewer:` | `name (kind: model)` or `none` |
 | `Scope:` | Optional. `warn` (default) notes files changed outside a milestone's Likely files; `strict` sends them back to the coder |
 | `Parallel:` | Optional. `allow` lets milestones with overlapping Likely files run at once |
-| `Risk hold:` | Optional. `off` stops risky changes being held for `orch approve` |
+| `Risk hold:` | Optional. `off` stops risky changes (and milestones marked `Door: one-way`) being held for `orch approve` |
+| `Docs:` | Optional. The folder with your repo's own rules files: `glossary.md`, `adr/` and `coding-standards.md` (default `docs`). See [House rules](/docs/how-to/#how-do-i-give-the-coders-and-the-reviewer-my-projects-rules) |
 | `Budget:` | Optional. A time limit for the whole run, e.g. `4h`; the event manager stops when it is used up. Time spent waiting for your answer does not count |
 | `Estimate:` | How long the whole feature should take, e.g. `1h30m`. Milestones that run side by side count once. The summary compares it with the real time |
 | `Parallel checks:` | Optional. How many check commands may run at once (default `1`). The event manager keeps going while a check runs either way; raise it only if your machine can run two test suites side by side. Shared mode always uses 1 |
@@ -100,6 +101,7 @@ Notes from user:
 | `Plain:` | One sentence for the developer: what this milestone gives them, in everyday words, e.g. `the screen where you see and add categories`. `orch plan show` puts it on the milestone's card; the coder's task file leaves it out |
 | `Role:` | The specialist the coder works as, and what they care about in this milestone. orch puts it at the top of the coder's task file. It sets the standard, never the method |
 | `Review:` | `yes` or `no` |
+| `Door:` | Optional. `one-way (why)` for a milestone that is hard to undo once it runs (a migration on real data, a public API others call, deleting data, sending emails). It always waits for your `orch approve`, and its coder must show proof. Leave it out for everything else (easy to undo) |
 | `Likely files:` | Where the work probably lands; used for the scope check and to run overlapping milestones one after the other |
 | `Goal`, `Why` | The outcome and the reason |
 | `Acceptance criteria:` | Observable, testable statements |
@@ -109,5 +111,7 @@ Notes from user:
 | `Out of scope:` | What this milestone must not do |
 | `Open questions:` | `- none`, or questions with options. Unanswered questions block the milestone |
 | `Notes from user:` | Your answers and extra guidance. Coders see them. `orch answer Mn "..."` adds a line here |
+
+Optional section `## Glossary additions`: one line per new word the feature brings, `- **Discount**: money taken off an order total, in paise`. The milestone that introduces the word writes it into `docs/glossary.md` (it has an acceptance criterion for it and the file in its Likely files); `orch sync` warns when no milestone does, and `orch plan show` lists the words.
 
 Each section must stand alone: the coder receives it as written, plus the global instructions and the reports of the milestones it depends on.

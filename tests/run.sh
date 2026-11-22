@@ -1735,5 +1735,109 @@ out=$("$ORCH" set M1 paused -h 2>&1); code=$?
 check "orch set ... -h changes nothing" '[ $code -eq 0 ] && grep -q "^  set <Mn> <status>" <<<"$out" && [ "$(status_of M1)" = pending ]'
 check "orch --help exits 0" '"$ORCH" --help >/dev/null 2>&1'
 
+echo "50. house rules: the repo's words, decisions and coding rules reach the coder and the reviewer; two-question review"
+newrepo hrules
+mkdir -p docs/adr
+printf '# Glossary\n\n- **Discount**: money taken off an order total, in paise. Avoid: coupon, promo\n- **Refund**: money sent back to a customer.\n' > docs/glossary.md
+printf '# Money is whole paise\n\nWe store money as whole paise, never decimals.\n' > docs/adr/0001-money-in-paise.md
+printf '# Coding rules\n- No floats for money.\n' > docs/coding-standards.md
+git add docs && git commit -qm docs
+HRPLAN='# Plan: Discounts\nBranch: feature/hr\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: reviewer (agy)\n\n## [x] M23: Discount\nDepends on: none\nReview: yes\nLikely files: dd.txt\nGoal: orders can have a WORD off the total\nAcceptance criteria:\n- an order shows its discount\nOpen questions:\n- none\n'
+printf "$HRPLAN" | sed 's/WORD/discount/' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "a plan that uses the glossary's word gets no word warning" '! grep -q "glossary.md says to use" <<<"$out"'
+printf "$HRPLAN" | sed 's/WORD/coupon/' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "orch sync warns when the plan uses a word the glossary says to avoid" "grep -q \"^WARN: M23 says 'coupon', but docs/glossary.md says to use 'Discount' instead\" <<<\"\$out\""
+printf "$HRPLAN" | sed 's/WORD/discount/' > .orchestrate/plan.md
+timeout 120 "$ORCH" autopilot > "$WORK/hrules.log" 2>&1; code=$?
+T=$(ls "$APP"/../app-wt/claude-1/.orch-task/M23/task.md 2>/dev/null)
+check "the run lands" '[ $code -eq 0 ] && [ "$(status_of M23)" = merged ]'
+check "the coder's task file has the Project rules: only the words its milestone uses, every decision, the coding rules" '[ -n "$T" ] && grep -q "^## Project rules" "$T" && grep -q "^- \*\*Discount\*\*: money taken off an order total, in paise. Avoid: coupon, promo" "$T" && ! grep -q "Refund" "$T" && grep -q "^- docs/adr/0001-money-in-paise.md: Money is whole paise" "$T" && grep -q "^Coding rules: docs/coding-standards.md" "$T"'
+check "task.json names the same rules" 'python3 -c "import json,sys; r=json.load(open(sys.argv[1]))[\"project_rules\"]; assert r[\"glossary\"]==[\"Discount\"] and r[\"decisions\"]==[\"docs/adr/0001-money-in-paise.md\"] and r[\"coding_rules\"]==\"docs/coding-standards.md\", r" "$(dirname "$T")/task.json"'
+R=.orchestrate/review/M23/review-task-1.md
+check "the reviewer answers two questions: spec and rules, with the repo's rules and the check named" 'grep -q "^Answer two questions, separately" $R && grep -q "^1. .spec.: did it build what the task asks, no more and no less" $R && grep -q "^2. .rules.: does it follow the project.s own written rules: docs/coding-standards.md, the decisions listed above, the words listed above" $R && grep -q "^## Project rules" $R && grep -q "runs on this work by itself: don.t report what lint" $R && grep -q "Report PROBLEMS, not solutions" $R'
+check "the review format asks for axis and rule" 'grep -q "\"axis\": \"spec | rules\"" $R && grep -q "\"rule\":" $R'
+S=.orchestrate/summary.md
+check "the summary lists the findings by question, and the rules broken" 'grep -q "^## Review findings: spec and rules" $S && grep -q "^Spec (1):" $S && grep -q "^- M23 round 1, suggestion: dd.txt:1 — no test for a zero discount" $S && grep -q "^Rules (1):" $S && grep -q "^- M23 round 1, suggestion: \[ADR 0001: money is whole paise\] dd.txt:1 — discount kept as a decimal" $S && grep -q "^Rules broken most often: ADR 0001: money is whole paise (1x)" $S'
+check "suggestions not applied carry their question" 'grep -q "^- M23: SUGGESTION: \[rules: ADR 0001: money is whole paise\] dd.txt:1" $S && grep -q "^- M23: SUGGESTION: \[spec\] dd.txt:1" $S'
+out=$("$ORCH" report 2>&1)
+check "orch report counts findings by question and each broken rule" 'grep -q "^review findings: 1 spec (built what was asked?), 1 rules" <<<"$out" && grep -q "^  rule broken 1x: ADR 0001: money is whole paise" <<<"$out" && "$ORCH" report --json | python3 -c "import json,sys; r=json.load(sys.stdin)[\"review_axes\"]; assert r[\"spec\"]==1 and r[\"rules\"]==1, r"'
+newrepo norules; printf '# Plan: t\nBranch: feature/nd\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: reviewer (agy)\n\n## [x] M5: e\nDepends on: none\nReview: yes\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 120 "$ORCH" autopilot > "$WORK/norules.log" 2>&1; code=$?
+check "a repo without these files: no Project rules block, no review section (same as before)" '[ $code -eq 0 ] && f=$(ls "$APP"/../app-wt/claude-1/.orch-task/M5/task.md) && ! grep -q "Project rules" "$f" && ! grep -q "Project rules" .orchestrate/review/M5/review-task-1.md && grep -q "rules.: does it follow the project.s own written rules: AGENTS.md / CLAUDE.md when the repo has them?" .orchestrate/review/M5/review-task-1.md && ! grep -q "Review findings: spec and rules\|Undo and blast" .orchestrate/summary.md' 
+APP="$WORK/hrules/app"; cd "$APP" || exit 1
+check "an old review file without axis is read as before (no tag)" 'python3 - "$ORCH" <<PY
+import importlib.machinery, importlib.util, sys, json, tempfile, pathlib
+loader = importlib.machinery.SourceFileLoader("orch", sys.argv[1]); spec = importlib.util.spec_from_loader("orch", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+d = pathlib.Path(tempfile.mkdtemp()); (d / "review" / "M2").mkdir(parents=True)
+(d / "review" / "M2" / "review-1.json").write_text(json.dumps({"findings": [{"severity": "blocker", "file": "b.txt", "line": 1, "problem": "p", "why": "w"}]}))
+m.ORCH = d; m.load = lambda: {"tasks": {}}
+b, s, k = m.review_findings("M2", 1)
+assert b == ["BLOCKER: b.txt:1 — p — w"], b
+PY'
+mkdir -p docs2; printf '## Voucher\nA code a customer types to get a discount.\n' > docs2/glossary.md
+check "a glossary with headings instead of bold words, in another Docs: folder, works too" 'python3 - "$ORCH" "$APP" <<PY
+import importlib.machinery, importlib.util, sys, pathlib
+loader = importlib.machinery.SourceFileLoader("orch", sys.argv[1]); spec = importlib.util.spec_from_loader("orch", loader)
+m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+m.ROOT = pathlib.Path(sys.argv[2])
+g = m.glossary({"docs": "docs2"})
+assert g == [{"term": "Voucher", "text": "A code a customer types to get a discount.", "avoid": []}], g
+assert m.glossary()[0]["avoid"] == ["coupon", "promo"], m.glossary()
+PY'
+
+echo "51. ask first: questions before the plan, new words and decisions get written down"
+out=$("$ORCH" lead plan 2>&1)
+check "the plan playbook asks before planning, in one message, and grill: asks one at a time" 'grep -q "^## 2a. Ask before you plan" <<<"$out" && grep -q "all in one message" <<<"$out" && grep -q "started the request with .grill:.: ask \*\*one question at a time\*\*" <<<"$out" && grep -q "docs/glossary.md defines Discount" <<<"$out"'
+newrepo askfirst; mkdir -p docs/adr; printf -- '- **Discount**: money off. Avoid: coupon\n' > docs/glossary.md; git add docs && git commit -qm docs
+AFPLAN='# Plan: t\nBranch: feature/af\nCheck command: true\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## Glossary additions\n- **Voucher**: a code a customer types\n\n## [x] M5: e\nDepends on: none\nLikely files: e.txt FILES\nAcceptance criteria:\n- docs/adr/0002-vouchers.md records why vouchers expire\nOpen questions:\n- none\n'
+printf "$AFPLAN" | sed 's/ FILES//' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "orch sync warns when a new word or decision record has no milestone that writes it" 'grep -q "^WARN: .## Glossary additions. lists 1 new word(s), but no milestone has docs/glossary.md in its Likely files" <<<"$out" && grep -q "^WARN: M5.s acceptance criteria name docs/adr/0002-vouchers.md, which is not in its Likely files" <<<"$out"'
+printf "$AFPLAN" | sed 's| FILES|, docs/glossary.md, docs/adr/|' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1)
+check "…and is quiet once a milestone lists those files" '! grep -q "Glossary additions\|acceptance criteria name" <<<"$out"'
+out=$("$ORCH" plan show 2>&1)
+check "orch plan show lists the new words" 'grep -q "^New words this feature adds to docs/glossary.md:" <<<"$out" && grep -q "^  - \*\*Voucher\*\*: a code a customer types" <<<"$out"'
+printf 'Before I plan, 1 question\n' > .orchestrate/questions.md; touch -d "-1 minute" .orchestrate/plan.md
+out=$("$ORCH" lead run 2>&1)
+check "the answer to a question asked before the plan never starts a run from an old plan" 'grep -q "^PLANNING, NOT A RUN" <<<"$out" && ! grep -q "How a run works" <<<"$out"'
+touch .orchestrate/plan.md
+out=$("$ORCH" lead run 2>&1)
+check "…once the plan is written after the questions, orch lead run is the run playbook again" '! grep -q "PLANNING, NOT A RUN" <<<"$out" && grep -q "How a run works" <<<"$out"'
+rm -f .orchestrate/questions.md
+
+echo "52. risky-change label: hard to undo waits for your OK with proof; how much it could break; the PR table"
+newrepo door1; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
+DRPLAN='# Plan: Discounts\nBranch: feature/dr\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M24: Discount column\nDepends on: none\nDOOR\nLikely files: col.txt\nOpen questions:\n- none\n\n## [x] M25: Badge\nDepends on: M24 (shows the column)\nLikely files: badge.txt\nOpen questions:\n- none\n'
+printf "$DRPLAN" | sed 's/DOOR/Door: maybe/' > .orchestrate/plan.md; out=$("$ORCH" sync 2>&1)
+check "a Door line that is not one-way or two-way is named" 'grep -q "^WARN: M24: .Door: maybe. — write .Door: one-way" <<<"$out"'
+printf "$DRPLAN" | sed 's/DOOR/Door: one-way/' > .orchestrate/plan.md; out=$("$ORCH" sync 2>&1)
+check "one-way without a reason is named" 'grep -q "^WARN: M24 is .Door: one-way. without a reason" <<<"$out"'
+printf "$DRPLAN" | sed 's/DOOR/Door: one-way (adds a column to orders, 2M rows)/; s/^Reviewer: none/Reviewer: none\nRisk hold: off/' > .orchestrate/plan.md; out=$("$ORCH" sync 2>&1)
+check "Risk hold: off with a one-way milestone is named" 'grep -q "^WARN: M24 is .Door: one-way., but .Risk hold: off. lets it land" <<<"$out"'
+printf '# Plan: t\nMode: quick\nQuick because: one file\nBranch: feature/dq\nCheck command: true\nSetup command: none\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M24: x\nDepends on: none\nDoor: one-way (drops a table)\nLikely files: col.txt\nOpen questions:\n- none\n' > .orchestrate/plan.md; out=$("$ORCH" sync 2>&1); code=$?
+check "a quick run is never hard to undo" '[ $code -ne 0 ] && grep -q "^ERROR: M24 is .Door: one-way. (hard to undo) — a quick run never is" <<<"$out"'
+printf "$DRPLAN" | sed 's/DOOR/Door: one-way (adds a column to orders, 2M rows)/' > .orchestrate/plan.md; out=$("$ORCH" sync 2>&1)
+check "the plan syncs; the card says it is hard to undo and waits for your OK" '! grep -q "^ERROR\|Door" <<<"$out" && "$ORCH" plan show | grep -q "^   Hard to undo: adds a column to orders, 2M rows. It waits for your OK (.orch approve M24.) before it lands"'
+timeout 120 "$ORCH" autopilot > "$WORK/door1.log" 2>&1; code=$?
+T=$(ls "$APP"/../app-wt/claude-1/.orch-task/M24/task.md 2>/dev/null)
+check "the coder is asked for proof, and does not see the Door line" '[ -n "$T" ] && grep -q "^## Hard to undo: show proof" "$T" && grep -q "hard to undo once it runs (adds a column to orders, 2M rows)" "$T" && ! grep -q "^Door:" "$T" && python3 -c "import json,sys; assert json.load(open(sys.argv[1]))[\"door\"][\"kind\"]==\"one-way\"" "$(dirname "$T")/task.json"'
+check "a hard-to-undo milestone is held although no file looks risky, with how much it could break and the proof" '[ $code -eq 3 ] && [ "$(status_of M24)" = held ] && grep -q "M24 is HELD for your approval: hard to undo: adds a column to orders, 2M rows\. Could break: medium (M25 builds on it)\. Proof from the coder: migration ran on a copy: 2M rows in 14s, no lock\." "$WORK/door1.log"'
+check "orch status shows the proof with the hold" '"$ORCH" status | grep -q "M24.*held.*could break: medium · proof: migration ran on a copy"'
+"$ORCH" approve M24 >/dev/null 2>&1; timeout 120 "$ORCH" autopilot > "$WORK/door1b.log" 2>&1; code=$?
+S=.orchestrate/summary.md
+check "after orch approve, both land" '[ $code -eq 0 ] && [ "$(status_of M24)$(status_of M25)" = mergedmerged ]'
+check "the summary (and so the PR) has the undo and blast radius table" 'grep -q "^## Undo and blast radius" $S && grep -q "^| M24 Discount column | \*\*hard\*\*: adds a column to orders, 2M rows | medium: M25 builds on it | migration ran on a copy: 2M rows in 14s, no lock |$" $S && grep -q "^| M25 Badge | easy | small: 1 file(s), 1 lines, nothing else builds on it | - |$" $S'
+out=$("$ORCH" report 2>&1)
+check "orch report lists it too" 'grep -q "^undo and blast radius" <<<"$out" && grep -q "^  M24 Discount column — undo: hard: adds a column to orders, 2M rows — could break: medium: M25 builds on it — proof: migration ran" <<<"$out"'
+newrepo door2; echo "$APP" > "$FH/claude-1.dir"
+printf '# Plan: t\nBranch: feature/d2\nCheck command: true\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M24: Discount column\nDepends on: none\nDoor: one-way (adds a column)\nLikely files: col.txt\nOpen questions:\n- none\n' > .orchestrate/plan.md
+timeout 60 "$ORCH" autopilot > "$WORK/door2.log" 2>&1; code=$?
+"$ORCH" approve M24 >/dev/null 2>&1; timeout 60 "$ORCH" autopilot > "$WORK/door2b.log" 2>&1; code2=$?
+check "shared mode: held with its proof, lands after approve" '[ $code -eq 3 ] && grep -q "M24 is HELD for your approval: hard to undo: adds a column\. Could break: small" "$WORK/door2.log" && [ $code2 -eq 0 ] && [ "$(status_of M24)" = merged ]'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]
