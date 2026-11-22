@@ -1631,6 +1631,28 @@ assert all(os.path.exists(os.path.join(r,x,\"SKILL.md\")) for x in p[\"skills\"]
 assert all(os.path.exists(os.path.join(r,x)) for x in p[\"extensions\"])
 assert {\"extensions\",\"pi\"} <= set(d[\"files\"])
 " "$ROOT"'
+echo "48b. Pi: /orch-mode subagent sets subagent mode up inside Pi (no terminal step)"
+if node -e 'process.exit(process.features && process.features.typescript ? 0 : 1)' 2>/dev/null; then
+  PX(){ (cd "$WORK" && NODE_NO_WARNINGS=1 PATH="$WORK/orchbin:$PATH" node "$ROOT/tests/pi-extension.mjs" "$@" 2>&1); }
+  mkdir -p "$WORK/orchbin"; ln -sf "$ORCH" "$WORK/orchbin/orch"
+  export PI_CODING_AGENT_DIR="$WORK/pi-agent2"; rm -f "$WORK/pibin/pi.list" "$WORK/pibin/pi.log"
+  printf '{"mode": "panes"}\n' > "$ORCH_CONFIG_FILE"
+  out=$(PX orch-mode subagent)
+  check "/orch-mode subagent saves the mode, writes both agents and installs pi-subagents" 'grep -q "\"mode\": \"subagent\"" "$ORCH_CONFIG_FILE" && [ -f "$PI_CODING_AGENT_DIR/agents/coder.md" ] && [ -f "$PI_CODING_AGENT_DIR/agents/reviewer.md" ] && grep -qx "install npm:@tintinweb/pi-subagents" "$WORK/pibin/pi.log"'
+  check "…says it is done, shows what it wrote, never says to use a terminal, and reloads Pi" 'grep -q "Done: subagent mode is ready" <<<"$out" && grep -q "WROTE .*coder.md" <<<"$out" && ! grep -q "NEXT" <<<"$out" && [ "$(tail -1 <<<"$out")" = RELOAD ] && grep -q "^STATUS orch orch: subagent" <<<"$out"'
+  out=$(PX orch-mode subagent)
+  check "…run again: everything is already there, no second install, no reload" 'grep -q "Done: subagent mode is ready" <<<"$out" && grep -q "ok      npm:@tintinweb/pi-subagents is installed" <<<"$out" && ! grep -q RELOAD <<<"$out" && [ "$(grep -c "^install" "$WORK/pibin/pi.log")" -eq 1 ]'
+  rm -rf "$PI_CODING_AGENT_DIR"
+  out=$(ORCH_PI="$WORK/no-such-pi" PX orch-mode subagent)
+  check "…without pi on PATH it says what failed and to try again, with no reload" 'grep -q "^NOTIFY error" <<<"$out" && grep -q "NO PI" <<<"$out" && grep -q "type /orch-mode subagent again" <<<"$out" && ! grep -q "Done:" <<<"$out" && ! grep -q RELOAD <<<"$out"'
+  out=$(PX orch-mode panes)
+  check "/orch-mode panes is unchanged: it only switches the mode" 'grep -q "^NOTIFY info mode: panes" <<<"$out" && ! grep -q "WROTE\|RELOAD" <<<"$out" && grep -q "\"mode\": \"panes\"" "$ORCH_CONFIG_FILE"'
+  out=$(PX orch-setup --mode tabs)
+  check "/orch-setup refuses an unknown mode" 'grep -q "^NOTIFY error Usage: /orch-setup \[--mode panes|subagent\]" <<<"$out"'
+  check "the terminal NEXT hint names the Pi slash command too" '(cd "$WORK" && rm -rf "$PI_CODING_AGENT_DIR" && "$ORCH" mode subagent | grep -q "^NEXT .*orch setup --mode subagent. (in Pi, ./orch-mode subagent. does it for you)")'
+else
+  echo "  skip: this node cannot run TypeScript (needs 22.6+)"
+fi
 unset ORCH_CONFIG_FILE PI_CODING_AGENT_DIR ORCH_PI
 echo "49. a coder moved off its milestone is really stopped (bug: STOP note queued, coder shown free while it still worked)"
 HPLAN='# Plan: t\nBranch: feature/halt\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M20: long job\nDepends on: none\nAcceptance criteria:\n- it works\nOpen questions:\n- none\n\n## [x] M8: next job\nDepends on: none\nOpen questions:\n- none\n'
