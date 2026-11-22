@@ -2,6 +2,27 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.6.0] - 2026-11-22
+
+Three upgrades that make plans and reviews follow your project, and show you where the risk is. Each one stays out of the way when you don't use it: a repo without the new files, and a plan without the new lines, run exactly as before.
+
+Example: you ask for "add discounts to orders". The lead reads the code and your `docs/glossary.md` and `docs/adr/`, then asks you 3 questions in one message before it writes any plan. You answer `1 whole order, 2 both, 3 no`, and the plan is written once. M2 (a new column on a 2-million-row table) is marked hard to undo. The reviewer of M3 reports `[spec] AC2 not met: a negative discount is accepted` and `[rules: ADR 0001: money is whole paise] discount kept as a decimal` separately. M2 waits for your `orch approve` with its coder's proof (`migration ran on a copy: 2M rows in 14s, no lock`), and the PR shows a table of what is hard to undo and how much each milestone could break.
+
+### Added
+- **House rules.** Optional files in your repo: `docs/glossary.md` (your words, and words to avoid: `- **Discount**: money off an order total. Avoid: coupon, promo`), `docs/adr/*.md` (decisions already made) and `docs/coding-standards.md`. Each coder's task file gets a short "Project rules" block: only the glossary words its milestone uses (orch matches the words, so a long glossary costs nothing extra), one line per decision, and where the coding rules are. task.json lists them under `project_rules`. The plan header `Docs: <folder>` names another folder.
+- **Two-question review.** The reviewer answers separately: `spec` (did it build what was asked, no more and no less? orch tells it which files changed outside Likely files) and `rules` (does it follow the repo's written rules? it names the rule). It is told not to report what the check command already catches. `review-N.json` findings get `axis` and `rule` (both optional: older reviews read as before). Blocker and suggestion lines carry `[spec]` or `[rules: <rule>]`. The summary has "Review findings: spec and rules" with the rules broken most often, and `orch report` (and `--json`) counts them. Pi subagent mode's reviewer gets the same two questions (run `orch setup --mode subagent` to refresh its agent file).
+- **Lead asks first.** Plan playbook step 2a: after research and before any plan, the lead asks what only you can decide, all in one message, each question with 2 or 3 choices and its own suggestion, then waits. No questions when the code settles everything. Start a request with `grill:` for one question at a time. Your answers go into the plan where they apply. The questions are kept in `.orchestrate/questions.md`, and `orch lead run` refuses to start a run from an older plan while they are unanswered (your answer is planning, not "go").
+- **New words and decisions get written down.** A plan can list `## Glossary additions`; the milestone that brings the word (or a hard-to-change decision, as `docs/adr/NNNN-*.md`) writes it, through an acceptance criterion. `orch sync` warns when the plan uses a word the glossary says to avoid, when a new word has no milestone with `docs/glossary.md` in its Likely files, and when an acceptance criterion names a glossary or decision file that is not in the milestone's Likely files. `orch plan show` lists the new words.
+- **Risky-change label.** `Door: one-way (why)` on a milestone that is hard to undo once it runs (a migration on real data, a public API others call, deleting data, sending emails). It always waits for your `orch approve`, even when no file looks risky, and its coder is asked for proof (`proof` in the result file, or a `PROOF:` report line). `Risk hold: off` still turns every hold off (`orch sync` warns). A quick run is never one-way (`orch sync` refuses it).
+- **Blast radius.** orch measures how much each milestone could break, with no AI: risky files, how many milestones build on it, shared hotspot files, deleted files, its size. Small, medium or large, with the reasons. The hold message and `orch status` show it with the proof; the summary (and so the PR) gets an "Undo and blast radius" table when something in it is hard to undo or more than small; `orch report` lists it too.
+
+### Fixed
+- When a held milestone was the last thing in progress, the event manager could stop before it said "is HELD for your approval" (and before the desktop notification): it now handles a background merge that just ended before it stops.
+
+### Changed
+- The `orch-run` skill no longer claims the developer's answers to the lead's questions before the plan exists.
+- Docs: new Q&As (why the lead asks first, how to give the agents your rules, what "hard to undo" means), the plan file fields `Docs:`, `Door:` and `## Glossary additions`, the two-question review, and the contracts.
+
 ## [6.5.0] - 2026-11-22
 
 Subagent mode is now set up from inside Pi with one slash command. Before, `/orch-mode subagent` only saved the mode and printed `NEXT run orch setup --mode subagent`, which you had to run in a separate, normal terminal. Now the slash command does that work itself.

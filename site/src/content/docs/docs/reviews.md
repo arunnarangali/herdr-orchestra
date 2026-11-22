@@ -15,12 +15,20 @@ Checks run in the background: while one runs, the event manager keeps sending re
 
 ## Reviews
 
-A milestone with `Review: yes` goes to the reviewer once its checks pass. The reviewer gets the diff from the merge-base and reports only problems:
+A milestone with `Review: yes` goes to the reviewer once its checks pass. The reviewer gets the diff from the merge-base and reports only problems. It answers two questions, separately:
+
+1. **Spec:** did it build what the milestone asks, no more and no less? Every acceptance criterion, nothing missing, nothing extra. orch tells it which files changed outside the milestone's Likely files.
+2. **Rules:** does it follow your repo's written rules: `docs/coding-standards.md` (or `AGENTS.md` / `CLAUDE.md`), the decisions in `docs/adr/` and the words in `docs/glossary.md`? Each rules finding names the rule it breaks.
+
+It is told not to report what the check command (lint, types, tests) already catches.
 
 ```text
-BLOCKER: server/imports/parse.ts:41 — missing amount column returns 500 — the plan says 400
-SUGGESTION: web/src/pages/Import.tsx:88 — the preview re-renders on every keystroke
+BLOCKER: [spec] server/imports/parse.ts:41 — missing amount column returns 500 — the plan says 400
+BLOCKER: [rules: ADR 0001: money is whole paise] server/orders/discount.ts:12 — discount kept as a decimal
+SUGGESTION: [spec] web/src/pages/Import.tsx:88 — the preview re-renders on every keystroke
 ```
+
+The summary lists every finding under Spec or Rules, and which rules were broken most often; `orch report` counts them too.
 
 - **No blockers:** the review passes. Suggestions are kept for the summary.
 - **Blockers:** they become a problem-only **fix job** for the next free coder, preferring the one who built it. Up to 2 rounds, then one more on a stronger model.

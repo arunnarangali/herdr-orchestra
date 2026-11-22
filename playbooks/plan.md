@@ -27,13 +27,31 @@ Feature request = the user's message that asked you to run this playbook.
 - Map the parts of the codebase the feature touches: entry points, the modules and files involved, existing patterns to follow (how similar features are built), data models and tables, tests and how they run.
 - **Monorepo?** (workspaces in `package.json`/`pnpm-workspace.yaml`/`turbo.json`/`nx.json`, or folders like `apps/*`, `packages/*`, `backend/` + `frontend/`, `server/` + `client/`): list each app/package the feature touches, what it owns (API, web UI, mobile, shared types), and how each one is checked. For a feature that spans backend and frontend, understand BOTH sides well enough to write the contract between them: endpoints, request/response fields, where the shared types live.
 - Find the **shared hotspot files** this feature will need to change: `package.json`/lockfiles, `pubspec.yaml`, `go.mod`, routes/router, `App.tsx`, nav/menu, global store, `docker-compose.yml`, `Makefile`, shared types.
+- **The repo's own rules**, when it has them (in `docs/`, or the folder a `Docs:` plan header names): `glossary.md` (the words the project uses for things, and words to avoid), `adr/*.md` (decisions already made, and why), `coding-standards.md`. Use the glossary's words in the plan. Don't plan against a decision record; if the feature needs to change one, that is a question for the developer (step 2a).
 - Use web docs only for facts the repo can't answer (a library's API, a protocol).
-- Keep notes short: you'll put the relevant facts into each milestone's **Context**. List anything you could not determine as an open question; never assume.
+- If your tool has a read-only research helper (for example Claude Code's Explore agent), use it for wide searches across many files and keep only the facts it reports: your own context stays small for planning.
+- Keep notes short: you'll put the relevant facts into each milestone's **Context**. List anything you could not determine as a question; never assume.
+
+## 2a. Ask before you plan
+A wrong guess in the plan is the most expensive mistake in a run: every coder builds on it. So before you write any plan, settle what only the developer can decide.
+- From your research, list what the code, the docs and the request do NOT settle: business rules ("can a discount bring the total to zero?"), data shapes nobody has defined, auth or security trade-offs, which of two existing patterns to follow, a change to a decision record. Not questions the code answers: look those up yourself.
+- **Nothing to ask?** Go straight on to step 2b. Don't invent questions.
+- **Something to ask?** Write the questions to `.orchestrate/questions.md` and show the developer the same text, **all in one message**: one line each, numbered, with 2 or 3 concrete choices and your own suggestion and why (from what you found). End with: "Answer by number (for example `1 a, 2 both, 3 no`). I write the plan after your answers; nothing runs until you say go." Then **STOP** and wait.
+  Example:
+  ```
+  Before I plan, 3 questions:
+  1. Discount on the whole order or on each item? (a) whole order (b) each item. I suggest (a): the cart has no per-item price changes today.
+  2. Percent, fixed amount, or both? I suggest both: the admin screen already has a type dropdown.
+  3. Can a discount bring the total to zero? I suggest no: the payment step refuses a zero total.
+  ```
+- The developer started the request with `grill:`: ask **one question at a time** instead, each with your suggestion, until nothing is left that only they can decide. Then go on.
+- **When the answers come**, add them under `## Answers` in `.orchestrate/questions.md`, then carry on from step 2b. Write each answer into the plan where it applies: the `Constraints` of the milestones it affects, or `## Global instructions` when it affects all of them (e.g. `Decided by the developer: a discount applies to the whole order, never to one item`). The open questions inside milestones (step 9) are only for what still comes up later.
+- **New words and decisions get written down.** When the feature brings a new name for something (Discount, not coupon or promo), list it under `## Glossary additions` in the plan (`- **Discount**: money taken off an order total, in paise`), and give the milestone that introduces it an acceptance criterion `docs/glossary.md defines Discount`, with `docs/glossary.md` in its Likely files. A decision that will be hard to change later (money in paise, one discount per order) gets a decision record the same way: `docs/adr/<next number>-<short-name>.md records the decision and why`. The coder writes these files; you never do. Skip both in a repo that keeps no glossary or decision records, unless the developer asks.
 
 ## 2b. Quick or full: decide from what you found, not from how the request sounds
 A request that sounds small can be big ("add `discount` to the orders API" when there is no discount column yet), and one that sounds big can be small. Decide from your research. It is a **quick run** only when all four are true:
 1. **One coder can do it in one go.** Nothing in it earns its own milestone (step 4b): no parallel part, no foundation, not too big for one sitting.
-2. **It is clear.** You have no open questions for the developer about what they want.
+2. **It is clear.** You have no open questions for the developer about what they want (after step 2a, if you asked).
 3. **It stays out of risky areas:** no database schema or migration, no auth, login, permissions or sessions, no payments or billing, no new or upgraded packages, no CI, no secrets or `.env` files.
 4. **It follows what is already there.** It copies a pattern the code already has, and it does not change how two parts talk to each other (an API shape another app or team depends on, shared types).
 
@@ -204,6 +222,9 @@ Reviewer: reviewer (claude: opus) | none
 - <one line per real piece of work: what changes and where>
 - <how the pieces connect, and why this number of milestones>
 
+## Glossary additions
+- <**New word**: what it means here — or "none"; step 2a>
+
 ## [x] M1: <title>
 Depends on: none
 Why separate: <why this is its own milestone; leave the line out when the plan has one milestone>
@@ -215,6 +236,7 @@ Model why: <one line: what in this milestone makes it that tier>
 Estimate: <e.g. 40m: dispatch to landed if nothing goes wrong>
 Role: <the specialist the coder works as, and what they care about in this milestone>
 Review: yes | no
+Door: <leave this line out (easy to undo) | one-way (why it is hard to undo)>
 Likely files: src/a.ts, src/b.ts, src/feature/
 Parallel: <leave this line out | allow>
 Goal: <the outcome, one or two sentences>
@@ -236,7 +258,7 @@ Notes from user:
 
 Git: the run makes ONE branch, `Branch:` (use `feature/<slug>`, or `fix/<slug>` for a bug fix). It is created by `orch start`, not now: planning never creates a branch or a commit. orch keeps each milestone's work in progress in hidden refs (not branches), lands each milestone as one commit whose message describes the change (the coder writes it), and `orch finish` pushes the branch and opens a PR. Optional header lines: `Base: <branch>` (defaults to the branch you start from) and `Commits: single` (squash the whole run into one commit at finish; default `per-milestone`).
 
-Optional header lines: `Scope: strict` sends a milestone back when its coder changes files outside `Likely files` (default `warn`: listed in the summary); `Budget: 3h` stops autopilot when its running time is used up; `Risk hold: off` lets risky changes (deleted files, migrations, CI config, secrets files, unlisted dependency changes, very large diffs) land without `orch approve`; `Setup inputs: <globs>` names the files that mean "run the setup command again" (default: lockfiles and manifests); `Lead mode: off` makes the event manager dispatch by itself and stop for the developer instead of waking you (default with a `Lead:` line: `events`). Speed lines (leave them out unless the developer asks; the defaults are the fast ones): `Parallel checks: 2` runs two check commands at once (default 1; only when the machine has room for two); `Early review: off` sends a review only after the check passed (default `on`: the reviewer reads while the check runs); `Branch check: always` runs the check again on the feature branch even when the files are exactly the ones already checked in the coder's folder (default `auto`: skipped then); `Auto dispatch: off` makes a milestone that a landing unlocked wait for your `orch dispatch` (default `on`: it starts at once and you get `AUTO-DISPATCHED`).
+Optional header line `Docs: <folder>` names the folder with the repo's glossary.md, adr/ and coding-standards.md (default `docs`). Optional header lines: `Scope: strict` sends a milestone back when its coder changes files outside `Likely files` (default `warn`: listed in the summary); `Budget: 3h` stops autopilot when its running time is used up; `Risk hold: off` lets risky changes (deleted files, migrations, CI config, secrets files, unlisted dependency changes, very large diffs) land without `orch approve`; `Setup inputs: <globs>` names the files that mean "run the setup command again" (default: lockfiles and manifests); `Lead mode: off` makes the event manager dispatch by itself and stop for the developer instead of waking you (default with a `Lead:` line: `events`). Speed lines (leave them out unless the developer asks; the defaults are the fast ones): `Parallel checks: 2` runs two check commands at once (default 1; only when the machine has room for two); `Early review: off` sends a review only after the check passed (default `on`: the reviewer reads while the check runs); `Branch check: always` runs the check again on the feature branch even when the files are exactly the ones already checked in the coder's folder (default `auto`: skipped then); `Auto dispatch: off` makes a milestone that a landing unlocked wait for your `orch dispatch` (default `on`: it starts at once and you get `AUTO-DISPATCHED`).
 
 Rules for every milestone:
 - **Role**: from step 6, on every milestone. The standard to work to, never a how-to.
@@ -253,14 +275,16 @@ Rules for every milestone:
 <!-- /quick -->
 - **Prefer**: a worker kind or name from `Workers:` when a tool (not a model) suits the work better, otherwise `any`. A preference, not a lock; the tier comes first.
 - **Review**: `yes` for UI, API contracts, auth, payments and schema; `no` for mechanical milestones.
+- **Door**: most changes are easy to undo: if they are wrong, a revert fixes it and nobody is hurt. Write `Door: one-way (why)` only on a milestone that git can't take back once it runs: a migration that changes real data, a public API or event other apps or teams depend on, deleting data, sending emails or messages, charging money, publishing a package. Example: `Door: one-way (adds a column to orders, 2M rows in production)`. Such a milestone always waits for the developer's `orch approve` before it lands, even when no file looks risky, and its coder is asked for proof that it is safe (a dry run on a copy, a rollback test). Never mark everything one-way: the label tells the developer where to look hardest. orch measures how much each milestone could break by itself (risky files, how many milestones build on it, its size); you don't write that.
 - **ZERO GUESSWORK**: missing business rules, undefined data shapes, and auth or security trade-offs go under **Open questions** with 2–3 concrete options. `orch sync` marks such milestones `needs-answer`, and their dependents wait.
-- Each section must stand alone: autopilot hands it to the coder (without the lines only orch uses: `Depends on`, `Why separate`, `Prefer`, `Tier`, `Needs`, `Model why`, `Estimate`, `Review`, `Parallel`; `Role` goes at the top as the coder's role), together with the global instructions and the reports of merged dependencies.
+- Each section must stand alone: autopilot hands it to the coder (without the lines only orch uses: `Depends on`, `Why separate`, `Prefer`, `Tier`, `Needs`, `Model why`, `Estimate`, `Review`, `Parallel`, `Door`; `Role` goes at the top as the coder's role), together with the global instructions and the reports of merged dependencies.
 
 ## 10. Validate and show the plan
-- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, a milestone without `Why separate` or `Estimate`, independent milestones in shared mode, coders left idle by a fully sequential plan, a tier no coder reaches, a model outside the catalog.
+- Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: a word the glossary says to avoid, a new word or decision record no milestone writes down, missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, a milestone without `Why separate` or `Estimate`, independent milestones in shared mode, coders left idle by a fully sequential plan, a tier no coder reaches, a model outside the catalog.
 - Run `orch plan show` and give the developer its cards as they are: each milestone in plain words, what it waits for and why, who builds it on which model, how long, and the order. Fix every `WARN no Plain: line` first. Then add, in plain words too:
   - **the team and model table**: each milestone, its tier, which coder and model it will go to, the `Model why`, and its estimate, plus the estimate for the whole feature;
-  - the research facts that shaped the plan, and all open questions.
+  - the research facts that shaped the plan, the answers from step 2a and where they went, and all open questions;
+  - which milestones are hard to undo and why (the cards say so), and the new glossary words.
   Keep code words (file names, functions, endpoints) out of what you write here: they are in plan.md for whoever wants them.
 - Then say: "Plan written to .orchestrate/plan.md. Edit it if you like: untick `[x]` to skip a milestone, change `Tier` / `Depends on` / `Prefer`, answer open questions under 'Notes from user' and set 'Open questions: - none'. Say **go** (or `/orch-run`, "use the orch-run skill", "Run `orch lead run` and follow it") and I will start the run: I dispatch the milestones, the event manager runs them, and I come back when one finishes, asks a question or needs a decision."
 - STOP and wait for the developer. Do not dispatch before they say so.

@@ -50,6 +50,46 @@ It sizes the milestones to the feature, with no fixed count. Each milestone says
 
 The plan has an estimate for each milestone and for the whole feature. Milestones that run side by side count once. For example M1 30m, then M2 40m and M3 30m side by side, makes `Estimate: 1h10m`. At the end, the summary and `orch report` show the estimate next to the real time, and when it took longer, why and who it waited on. See [Estimate vs actual time](/docs/planning/#estimate-vs-actual-time).
 
+### Why does the lead ask me questions before it shows a plan?
+
+So the plan is written once, with your answers in it, instead of being rewritten after you answer. After reading the code, the lead asks only what the code can't settle, all in one message, each with its own suggestion:
+
+```text
+Before I plan, 3 questions:
+1. Discount on the whole order or on each item? I suggest the whole order: the cart has no per-item prices today.
+2. Percent, fixed amount, or both? I suggest both: the admin screen already has a type dropdown.
+3. Can a discount bring the total to zero? I suggest no: the payment step refuses a zero total.
+```
+
+You answer `1 whole order, 2 both, 3 no`, and it writes the plan. Nothing runs until you say go. When the code settles everything, there are no questions. Want one question at a time? Start your request with `grill:`. See [The orchestration plan](/docs/planning/#questions-come-first).
+
+### How do I give the coders and the reviewer my project's rules?
+
+Add any of these files to your repo (in `docs/`, or the folder a `Docs:` line in the plan names):
+
+| File | What goes in it | Example |
+|---|---|---|
+| `docs/glossary.md` | The words your project uses, and words to avoid | `- **Discount**: money taken off an order total, in paise. Avoid: coupon, promo` |
+| `docs/adr/0001-money-in-paise.md` | One past decision and why (a decision record) | `# Money is whole paise` and two lines on why |
+| `docs/coding-standards.md` | Your coding rules, short | `No floats for money. Every API input is checked at the route.` |
+
+Each coder's task file then gets a short **Project rules** block: only the glossary words its milestone uses, the title of each decision, and where the coding rules are. The reviewer checks the work against them, separately from "did it build what was asked". The lead uses the glossary's words, and `orch sync` warns when the plan uses a word to avoid. Without these files nothing changes. See [Checks, reviews and merges](/docs/reviews/#reviews).
+
+### What does "hard to undo" mean on a milestone?
+
+Most changes are easy to undo: if they are wrong, you revert them. Some are not: a migration that changes real data, a public API other apps call, deleting data, sending emails. The lead marks those `Door: one-way (why)` in the plan. Such a milestone:
+
+1. always waits for your `orch approve`, even when no file looks risky;
+2. comes with proof from its coder, for example `migration ran on a copy: 2M rows in 14s, no lock`;
+3. shows how much it could break, measured by orch: risky files, how many milestones build on it, its size.
+
+The summary and the pull request get a small table, so you know where to look hardest:
+
+| Milestone | Undo | Could break | Proof |
+|---|---|---|---|
+| M2 Discount column | **hard**: adds a column to orders | medium: M3 builds on it | migration ran on a copy |
+| M3 Discount badge | easy | small | - |
+
 ## During a run
 
 ### A coder has a question. How do I answer it?
@@ -76,7 +116,7 @@ Only you can agree to leave something out. Writing it in the plan as a note is n
 
 ### A milestone says `held`. What do I do?
 
-orch holds a milestone when its change looks risky: it deletes files, touches a migration, CI or secrets, changes packages, or is very large. You get a desktop notification. Look at the reasons in `orch status`, then:
+orch holds a milestone when the plan says it is hard to undo (`Door: one-way`), or when its change looks risky: it deletes files, touches a migration, CI or secrets, changes packages, or is very large. You get a desktop notification. Look at the reasons in `orch status`: they include how much it could break and, for a hard-to-undo milestone, the coder's proof. Then:
 
 ```bash
 orch approve M3          # let it land

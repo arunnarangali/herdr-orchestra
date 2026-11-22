@@ -52,7 +52,9 @@ if [[ $file == .orchestrate/review/* ]]; then           # reviewer
   [ -f "$FH/slow-review" ] && sleep 4
   k=$(grep -oE 'review-task-[0-9]+' <<<"$base" | grep -oE '[0-9]+')
   out=.orchestrate/review/$tid/review-$k
-  if [ "$tid" = M21 ]; then     # the deferred criterion is not met, as agreed: not a blocker
+  if [ "$tid" = M23 ]; then     # two questions: one spec and one rules finding, both suggestions (nothing blocks)
+    echo '{"verdict":"approve","criteria":[],"findings":[{"severity":"suggestion","axis":"spec","file":"dd.txt","line":1,"problem":"no test for a zero discount","why":"edge case"},{"severity":"suggestion","axis":"rules","rule":"ADR 0001: money is whole paise","file":"dd.txt","line":1,"problem":"discount kept as a decimal","why":"rounding"}]}' > $out.json
+  elif [ "$tid" = M21 ]; then     # the deferred criterion is not met, as agreed: not a blocker
     echo '{"verdict":"approve","criteria":[{"id":"AC1","met":true,"note":"w.txt"},{"id":"AC2","met":false,"note":"deferred: no API"}],"findings":[]}' > $out.json
   elif [ "$tid" = M2 ] && [ "$k" = 1 ]; then
     if [ -f "$FH/review-md" ]; then echo "BLOCKER: b.txt must say validated" > $out.md; echo "SUGGESTION: add docs" >> $out.md
@@ -116,5 +118,12 @@ COMMIT: build: add a dependency";;
   M21:criteria-fix-*) finish "still no API" '{"status":"done","commit":"feat: watch","criteria":[{"id":"AC1","met":true},{"id":"AC2","met":false}]}';;
   # without a deferral the same honest result goes back for fix rounds
   M22:task.md|M22:criteria-fix-*) echo v > v.txt; finish "no API" '{"status":"done","commit":"feat: v","criteria":[{"id":"AC1","met":false,"evidence":"no API"}]}';;
+  # house rules and two-question review; a hard-to-undo milestone with its proof, and one that builds on it
+  M23:task.md) echo dd > dd.txt; finish "built the discount
+COMMIT: feat: discount";;
+  M24:task.md) echo col > col.txt; finish "added the discount column
+PROOF: migration ran on a copy: 2M rows in 14s, no lock
+COMMIT: feat(db): add the discount column";;
+  M25:task.md) echo badge > badge.txt; finish "built the badge";;
   *) finish "nothing to do for $tid:$base";;
 esac

@@ -37,6 +37,8 @@ Written by `orch write-task Mn` next to `task.md`.
 - `files_allowed` is the plan's `Likely files:`. A path, a folder (`src/auth/`) or a glob (`src/auth/**`).
 - `tier` and `needs` are the plan's `Tier:` and `Needs:` (null and empty when the plan has none).
 - `previous_work` is `{"by": "<coder>"}` when an earlier attempt left work in the folder.
+- `project_rules` (only when the repo has them): `glossary` (the words from `docs/glossary.md` that this milestone's text uses), `decisions` (every `docs/adr/*.md`) and `coding_rules` (`docs/coding-standards.md` or null). The same rules are in task.md under "Project rules". A `Docs:` plan header names another folder.
+- `door` (only for a milestone the plan marks `Door: one-way`): `{"kind": "one-way", "why": "…"}`. The coder is asked for `proof` in its result.
 - A fix, review-fix, conflict or integration-fix job also gets a small `job-N.json` (`kind`, `file`).
 
 ## result-N.json (coder → orch)
@@ -51,7 +53,8 @@ The prompt names the exact file. `N` is the attempt number.
   "check": {"ran": true, "passed": true, "summary": "lint ok, 42 tests pass"},
   "criteria": [{"id": "AC1", "met": true, "evidence": "test 'rejects a missing amount column' passes"}],
   "questions": [],
-  "usage": {"input_tokens": 182000, "output_tokens": 9400, "cost_usd": 1.12}
+  "usage": {"input_tokens": 182000, "output_tokens": 9400, "cost_usd": 1.12},
+  "proof": "only for a hard-to-undo milestone: what you ran to show it is safe, and what it showed"
 }
 ```
 
@@ -63,6 +66,7 @@ What orch does with it:
 | `commit` | Becomes the commit subject (falls back to the report's `COMMIT:` line, then the milestone title). |
 | `criteria` | Each entry needs `id` and `met` (true/false). Any `met: false` sends the milestone back for a fix round. |
 | `usage` | Optional. Only what the agent's own tool reports; `orch report` sums it and says "unknown" otherwise. |
+| `proof` | Optional; asked for only on a `Door: one-way` milestone (falls back to the report's `PROOF:` line). Shown when the milestone is held for `orch approve`, and in the summary's "Undo and blast radius" table. |
 | invalid JSON or shape | One request to rewrite it; a second invalid file pauses the milestone. |
 | no file at all | The short `report-N.md` is parsed as before (`QUESTION:`, `COMMIT:`). |
 
@@ -76,12 +80,18 @@ check command itself, in the coder's folder and again on the merged result befor
   "verdict": "changes",
   "criteria": [{"id": "AC1", "met": false, "note": "no test covers the missing column"}],
   "findings": [
-    {"severity": "blocker", "file": "server/routes/upload.ts", "line": 42,
+    {"severity": "blocker", "axis": "spec", "file": "server/routes/upload.ts", "line": 42,
      "problem": "the amount column is read before it is validated", "why": "throws a 500", "criterion": "AC1"},
-    {"severity": "suggestion", "file": "server/routes/upload.ts", "line": 10, "problem": "…", "why": "…"}
+    {"severity": "suggestion", "axis": "rules", "rule": "ADR 0001: money is whole paise",
+     "file": "server/routes/upload.ts", "line": 10, "problem": "…", "why": "…"}
   ]
 }
 ```
+
+`axis` says which of the reviewer's two questions a finding answers: `spec` (did it build what was asked, no more
+and no less?) or `rules` (does it follow the repo's written rules?); a `rules` finding names the `rule`. Both are
+optional: a review without them is read as before. The summary groups findings by axis, and `orch report` counts
+how often each rule was broken.
 
 A `blocker` finding or an unmet criterion becomes a problem-only fix job for a coder. Suggestions go into the
 summary. Without the JSON file, `review-N.md` lines starting `BLOCKER:`, `SUGGESTION:` or `NO FINDINGS` are read.

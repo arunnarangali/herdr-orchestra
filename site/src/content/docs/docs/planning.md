@@ -97,11 +97,17 @@ Every reason comes from something orch measured: a coder's fix rounds (failed ch
 
 ## What `orch sync` checks
 
-It warns about a milestone without `Why separate` (in a plan with more than one) or without `Estimate`, dependencies without a reason, hotspot files in parallel milestones, "how" written into a milestone, independent milestones left in shared mode, plans that would leave coders idle, a tier no coder reaches, a reviewer weaker than the work, and a model that is not in the catalog. It rejects a lead that is also a worker or the reviewer, and any model the policy does not allow.
+It warns about a milestone without `Why separate` (in a plan with more than one) or without `Estimate`, dependencies without a reason, hotspot files in parallel milestones, "how" written into a milestone, independent milestones left in shared mode, plans that would leave coders idle, a tier no coder reaches, a reviewer weaker than the work, a model that is not in the catalog, a word your glossary says to avoid, a new glossary word or decision record that no milestone writes down, and a `Door: one-way` milestone without a reason. It rejects a lead that is also a worker or the reviewer, and any model the policy does not allow.
+
+## Questions come first
+
+After reading the code, and before writing any plan, the lead asks you what only you can decide (business rules, data shapes nobody has defined, security trade-offs), **all in one message**, each with 2 or 3 choices and its own suggestion. You answer by number, and the plan is written once, with your answers in it. When the code already settles everything, it skips the questions. Start your request with `grill:` if you want one question at a time instead.
+
+New words the feature brings go under `## Glossary additions`, and hard-to-change decisions become a decision record in `docs/adr/`. A coder writes them, as part of the milestone that introduces them.
 
 ## Open questions
 
-Missing business rules, undefined data shapes and security trade-offs go under **Open questions** with 2 to 3 options. `orch sync` marks such milestones `needs-answer`, and their dependents wait.
+Anything that still comes up later goes under **Open questions** in the milestone, with 2 to 3 options. `orch sync` marks such milestones `needs-answer`, and their dependents wait.
 
 ## After the plan
 
