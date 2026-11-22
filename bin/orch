@@ -6908,6 +6908,7 @@ def cmd_lead(args):
         label = f"{sub} ({part})" if part else sub
         subagent = current_mode()[0] == "subagent"
         if subagent and sub == "run":
+            pi_agents_refresh()
             pb = asset("playbooks/subagent.md") or die("playbooks/subagent.md not found next to orch or in the install")
             label = "run (subagent mode)"
         print(f"herdr-orchestra {installed_version()} — lead playbook: {label}\n")
@@ -7821,6 +7822,30 @@ def pi_agent_text(role, conf):
     return "---\n" + "\n".join(fm) + "\n---\n\n" + PI_AGENT_MARK + "\n\n" + body
 
 
+def pi_agents_refresh():
+    """Subagent mode: rewrite the coder.md / reviewer.md that orch wrote (they carry PI_AGENT_MARK) when this orch
+    would write them differently, e.g. after an update changed the instructions. A file you edited is left alone,
+    a missing one is left for `orch setup --mode subagent`, and a model the policy denies is never written."""
+    conf = config_load().get("subagent") or {}
+    conf = conf if isinstance(conf, dict) else {}
+    cat = models_catalog()
+    for role in ("coder", "reviewer"):
+        rc = conf.get(role) if isinstance(conf.get(role), dict) else {}
+        p = pi_agents_dir() / f"{role}.md"
+        try:
+            old = p.read_text() if p.exists() else None
+        except OSError:
+            continue
+        if old is None or PI_AGENT_MARK not in old or model_denied(cat, str(rc.get("model") or "").lower() or None):
+            continue
+        text = pi_agent_text(role, rc)
+        if old != text:
+            with contextlib.suppress(OSError):
+                p.write_text(text)
+                print(f"UPDATED {short(p)}: the {role} subagent now has this orch's instructions "
+                      f"({installed_version()}); restart Pi if a subagent it already started should use them")
+
+
 def pi_setup():
     """Subagent mode: write ~/.pi/agent/agents/coder.md and reviewer.md from the config, and install pi-subagents.
     Returns the number of problems (0 = ready)."""
@@ -7995,6 +8020,7 @@ def cmd_sub(args):
     subagent_ready_or_die(st)
     coder = next(iter(st["workers"]), None) or die("the plan has no Workers line")
     if sub == "next":
+        pi_agents_refresh()          # an update may have changed what the coder and reviewer are told
         cur = [k for k in st["order"] if st["tasks"][k]["status"] in ("coding", "verifying")]
         if cur:
             tid = cur[0]

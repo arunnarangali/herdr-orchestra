@@ -1848,5 +1848,30 @@ timeout 60 "$ORCH" autopilot > "$WORK/door2.log" 2>&1; code=$?
 "$ORCH" approve M24 >/dev/null 2>&1; timeout 60 "$ORCH" autopilot > "$WORK/door2b.log" 2>&1; code2=$?
 check "shared mode: held with its proof, lands after approve" '[ $code -eq 3 ] && grep -q "M24 is HELD for your approval: hard to undo: adds a column\. Could break: small" "$WORK/door2.log" && [ $code2 -eq 0 ] && [ "$(status_of M24)" = merged ]'
 
+echo "53. Pi gets the 6.6.0 changes too: same plan playbook, project rules and proof in task files, refreshed subagents"
+check "Pi's orch-plan skill runs the same command as the main skill (Pi only quotes its description)" '[ "$(sed "1,/^---$/d" "$ROOT/skills/orch-plan/SKILL.md" | sed "1,/^---$/d")" = "$(sed "1,/^---$/d" "$ROOT/pi/skills/orch-plan/SKILL.md" | sed "1,/^---$/d")" ] && [ "$(grep "^description:" "$ROOT/skills/orch-plan/SKILL.md" | cut -d" " -f2-)" = "$(grep "^description:" "$ROOT/pi/skills/orch-plan/SKILL.md" | cut -d" " -f2- | sed "s/^\"//; s/\"$//; s/\\\\\"/\"/g")" ]'
+newrepo pi66; mkdir -p docs/adr
+printf -- '- **Discount**: money off an order total, in paise. Avoid: coupon\n' > docs/glossary.md
+printf '# Money is whole paise\n' > docs/adr/0001-money.md; git add docs && git commit -qm docs
+export ORCH_CONFIG_FILE="$WORK/config66/config.json" PI_CODING_AGENT_DIR="$WORK/pi-agent66"; mkdir -p "$WORK/config66"
+printf '{"mode": "subagent"}\n' > "$ORCH_CONFIG_FILE"
+printf '# Plan: t\nBranch: feature/pi66\nCheck command: true\nSetup command: none\nIsolation: shared\nLead: lead (pi)\nLead mode: off\nWorkers: coder (pi)\nReviewer: reviewer (pi)\n\n## [x] M1: Discount column\nDepends on: none\nDoor: one-way (adds a column to orders)\nReview: yes\nLikely files: one.txt\nGoal: orders get a discount\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null 2>&1
+out=$("$ORCH" lead plan 2>&1)
+check "subagent: orch lead plan has the subagent note and the ask-first step" 'grep -q "^SUBAGENT MODE" <<<"$out" && grep -q "^## 2a. Ask before you plan" <<<"$out"'
+mkdir -p "$PI_CODING_AGENT_DIR/agents"
+printf -- '---\nname: reviewer\n---\n\n%s\n\nold reviewer text\n' "<!-- written by \`orch setup\` (herdr-orchestra). orch rewrites this file; delete this line to keep your own edits. -->" > "$PI_CODING_AGENT_DIR/agents/reviewer.md"
+printf -- '---\nname: coder\n---\nmy own coder\n' > "$PI_CODING_AGENT_DIR/agents/coder.md"
+out=$("$ORCH" lead run 2>&1)
+check "an orch-written reviewer subagent from an older orch is refreshed with the two questions" 'grep -q "^UPDATED .*reviewer.md: the reviewer subagent now has this orch.s instructions" <<<"$out" && grep -q "BLOCKER: \[rules: <the rule>\]" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && ! grep -q "old reviewer text" "$PI_CODING_AGENT_DIR/agents/reviewer.md"'
+check "…a subagent file the developer wrote is left alone" 'grep -qx "my own coder" "$PI_CODING_AGENT_DIR/agents/coder.md" && ! grep -q "coder.md" <<<"$out"'
+out=$("$ORCH" lead run 2>&1)
+check "…and nothing is rewritten when it is current" '! grep -q "^UPDATED" <<<"$out"'
+"$ORCH" start >/dev/null 2>&1; out=$("$ORCH" sub next 2>&1); T=$(sed -n "s/^TASK //p" <<<"$out")
+check "subagent: the task file has the project rules and asks for proof on a hard-to-undo milestone" '[ -f "$T" ] && grep -q "^## Project rules" "$T" && grep -q "^- \*\*Discount\*\*" "$T" && grep -q "^- docs/adr/0001-money.md: Money is whole paise" "$T" && grep -q "^## Hard to undo: show proof" "$T"'
+echo 1 > one.txt; "$ORCH" check M1 >/dev/null 2>&1; out=$("$ORCH" sub "done" M1 2>&1); code=$?
+check "subagent: a hard-to-undo milestone is held, and the proof is the coder's PROOF line" '[ $code -eq 7 ] && grep -q "^HELD M1 for approval — hard to undo: adds a column to orders" <<<"$out" && grep -q "^Proof from the coder: the coder.s PROOF: line, in the lead.s chat" <<<"$out"'
+unset ORCH_CONFIG_FILE PI_CODING_AGENT_DIR
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]
