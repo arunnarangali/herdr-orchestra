@@ -7450,7 +7450,8 @@ def pi_setup():
     except (OSError, subprocess.TimeoutExpired) as e:
         ok, out = False, str(e)
     if ok:
-        print(f"INSTALLED {PI_SUBAGENTS}: restart Pi (or /reload) so it loads the Agent tool")
+        print(f"INSTALLED {PI_SUBAGENTS}: restart Pi (or /reload) so it loads the Agent tool "
+              f"(/orch-mode subagent in Pi reloads it for you)")
         return problems
     print(f"FAILED  pi install {PI_SUBAGENTS}:\n" + "\n".join(out.splitlines()[-10:])
           + f"\n        run it yourself: pi install {PI_SUBAGENTS}")
@@ -7511,8 +7512,8 @@ def set_mode(mode, hint=True):
     if mode == "subagent" and hint:
         missing = [r for r in ("coder", "reviewer") if not (pi_agents_dir() / f"{r}.md").exists()]
         if missing:
-            print(f"NEXT    run `orch setup --mode subagent`: it writes the {' and '.join(missing)} agent file(s) "
-                  f"and installs pi-subagents")
+            print(f"NEXT    run `orch setup --mode subagent` (in Pi, `/orch-mode subagent` does it for you): it writes "
+                  f"the {' and '.join(missing)} agent file(s) and installs pi-subagents")
 
 
 SUBAGENT_PLAN_NOTE = """SUBAGENT MODE (Pi, one window). This replaces every herdr step below:

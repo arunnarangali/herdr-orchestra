@@ -9,9 +9,14 @@
 // Where the mode comes from: this repo's run (.orchestrate/state.json, `orch_mode`; a run from before 6.2.0 is
 // panes), else ~/.config/herdr-orchestra/config.json (`mode`), else panes.
 //
-// Commands:  /orch-mode [panes|subagent]   show or switch the mode
-//            /orch-setup                   install the `orch` command from this package (needed once)
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+// Commands:  /orch-mode [panes|subagent]       show or switch the mode; `subagent` also sets it up (below)
+//            /orch-setup [--mode panes|subagent] install the `orch` command from this package (needed once)
+//
+// Subagent mode is set up from inside Pi, with no terminal step: `/orch-mode subagent` runs
+// `orch setup --mode subagent` (or this package's installer when orch is missing or old), which writes
+// ~/.pi/agent/agents/coder.md and reviewer.md and runs `pi install npm:@tintinweb/pi-subagents`. When that install
+// is new, the command reloads Pi (ctx.reload) so the Agent tool is there at once.
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -20,6 +25,8 @@ import { fileURLToPath } from "node:url";
 type Mode = "panes" | "subagent";
 const MODES: Mode[] = ["panes", "subagent"];
 const STATUS_KEY = "orch";
+/** `orch setup` result lines (bin/orch pi_setup and set_mode). */
+const SETUP_LINE = /^(WROTE|ok |KEPT|REFUSED|NO PI|INSTALL|INSTALLED|FAILED|mode:|mode panes:|this repo|NOT CHANGED|run it yourself)/;
 
 function packageRoot(): string {
   const here = typeof __dirname !== "undefined" ? __dirname : dirname(fileURLToPath(import.meta.url));
@@ -149,8 +156,65 @@ export default function orchMode(pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${line}` };
   });
 
+  /** Lines worth showing from installer / `orch setup` output (both can be long). */
+  function keyLines(out: string, extra: RegExp): string {
+    return out
+      .replace(/\x1b\[[0-9;]*m/g, "")
+      .split("\n")
+      .map((l) => l.trimEnd())
+      .filter((l) => extra.test(l.trim()) || SETUP_LINE.test(l.trim()))
+      .slice(-16)
+      .join("\n");
+  }
+
+  /** Run the installer (always with install=true; also when orch is missing or older than this package), else
+   *  `orch setup --mode subagent`; then reload Pi when pi-subagents was just installed. Returns true when Pi is reloading (the caller must return at once). */
+  async function setUp(ctx: ExtensionCommandContext, want: Mode | undefined, install: boolean): Promise<boolean> {
+    const o = await orchState(pi);
+    let r: { stdout: string; stderr: string; code: number };
+    let shown: string;
+    if (!install && o.state === "ok" && want === "subagent") {
+      ctx.ui.notify("Setting up subagent mode: the coder and reviewer agents, and pi-subagents (can take a minute)...", "info");
+      r = await pi.exec(o.path!, ["setup", "--mode", "subagent"], { cwd: ctx.cwd, timeout: 600000 });
+      shown = keyLines(r.stdout + r.stderr, /^$/);
+    } else {
+      const installer = join(packageRoot(), "install.sh");
+      if (!existsSync(installer)) {
+        ctx.ui.notify(`install.sh not found next to this extension (${installer}). Run: npx herdr-orchestra@latest`, "error");
+        return false;
+      }
+      ctx.ui.notify(
+        "Installing herdr-orchestra (orch)" + (want === "subagent" ? " and setting up subagent mode" : "") + "...",
+        "info",
+      );
+      // ORCH_TTY=/dev/null: the installer must not read Pi's terminal. An unanswered auto-update question gets the
+      // installer's default (on); the output says how to turn it off (`orch config auto-update off`).
+      const args = ["ORCH_PACKAGE=1", "ORCH_TTY=/dev/null", "bash", installer, ...(want ? ["--mode", want] : [])];
+      r = await pi.exec("env", args, { cwd: ctx.cwd, timeout: 600000 });
+      shown = keyLines(r.stdout + r.stderr, /^(==>|warn:|error:)|auto-update|is active/);
+    }
+    const out = (r.stdout + r.stderr).replace(/\x1b\[[0-9;]*m/g, "");
+    // the installer only warns when its `orch setup` step fails, so look at orch's own lines too
+    const ok = r.code === 0 && !/^(FAILED|REFUSED|NO PI)\b|orch setup --mode \S+ did not finish/m.test(out);
+    mode = (await readMode(pi, ctx.cwd)).mode;
+    showStatus(ctx, mode);
+    if (want === "subagent" && ok) {
+      shown += "\nDone: subagent mode is ready. Plan with /orch-plan as usual.";
+    } else if (want === "subagent") {
+      shown += "\nSubagent setup is not finished: fix what it says above, then type /orch-mode subagent again.";
+    }
+    ctx.ui.notify(shown.trim() || (ok ? "Installed." : "The installer failed."), ok ? "info" : "error");
+    if (ok && /^INSTALLED\s+npm:@tintinweb\/pi-subagents/m.test(out)) {
+      // pi-subagents is new: reload so its Agent tool is loaded now, not after a restart.
+      ctx.ui.notify("Reloading Pi so the new Agent tool loads...", "info");
+      await ctx.reload();
+      return true;
+    }
+    return false;
+  }
+
   pi.registerCommand("orch-mode", {
-    description: "Show or switch the herdr-orchestra mode: panes (herdr panes) or subagent (one Pi window)",
+    description: "Show or switch the herdr-orchestra mode: panes (herdr panes) or subagent (one Pi window, set up for you)",
     getArgumentCompletions: (prefix: string) =>
       MODES.filter((m) => m.startsWith(prefix.trim().toLowerCase())).map((m) => ({ value: m, label: m })),
     handler: async (args, ctx) => {
@@ -165,6 +229,15 @@ export default function orchMode(pi: ExtensionAPI) {
       const next = asMode(want);
       if (!next) {
         ctx.ui.notify(`Unknown mode "${want}". Use /orch-mode panes or /orch-mode subagent.`, "error");
+        return;
+      }
+      if (next === "subagent") {
+        // `orch setup --mode subagent` saves the mode (and this repo's run, when nothing is in progress) and sets it up
+        if (await setUp(ctx, "subagent", false)) return;
+        const now = await readMode(pi, ctx.cwd);
+        if (now.mode !== next) {
+          ctx.ui.notify(`This repo's run stays ${now.mode} (something is in progress). New runs use ${next}.`, "warning");
+        }
         return;
       }
       const o = await orchState(pi);
@@ -197,28 +270,20 @@ export default function orchMode(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("orch-setup", {
-    description: "Install the herdr-orchestra `orch` command from this package (and, in subagent mode, its Pi subagents)",
-    handler: async (_args, ctx) => {
-      const installer = join(packageRoot(), "install.sh");
-      if (!existsSync(installer)) {
-        ctx.ui.notify(`install.sh not found next to this extension (${installer}). Run: npx herdr-orchestra@latest`, "error");
+    description: "Install the herdr-orchestra `orch` command from this package; --mode subagent also sets up its Pi subagents",
+    getArgumentCompletions: (prefix: string) =>
+      ["--mode panes", "--mode subagent"].filter((m) => m.startsWith(prefix.trim().toLowerCase())).map((m) => ({ value: m, label: m })),
+    handler: async (args, ctx) => {
+      const words = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      if (words[0] === "--mode") words.shift();
+      const named = words.length ? asMode(words[0]) : undefined;
+      if (words.length > 1 || (words.length && !named)) {
+        ctx.ui.notify("Usage: /orch-setup [--mode panes|subagent]", "error");
         return;
       }
-      const cur = await readMode(pi, ctx.cwd);
-      ctx.ui.notify("Installing herdr-orchestra (orch)...", "info");
-      // ORCH_TTY=/dev/null: the installer must not read Pi's terminal. An unanswered auto-update question gets the
-      // installer's default (on); the output says how to turn it off (`orch config auto-update off`).
-      const args = ["ORCH_PACKAGE=1", "ORCH_TTY=/dev/null", "bash", installer, ...(cur.mode === "subagent" ? ["--mode", "subagent"] : [])];
-      const r = await pi.exec("env", args, { cwd: ctx.cwd, timeout: 600000 });
-      const tail = (r.stdout + r.stderr)
-        .replace(/\x1b\[[0-9;]*m/g, "")
-        .split("\n")
-        .filter((l) => /^(==>|warn:|error:)|auto-update|is active/.test(l.trim()))
-        .slice(-12)
-        .join("\n");
-      ctx.ui.notify(tail || (r.code === 0 ? "Installed." : "The installer failed."), r.code === 0 ? "info" : "error");
-      mode = (await readMode(pi, ctx.cwd)).mode;
-      showStatus(ctx, mode);
+      // No mode named: the saved one (in subagent mode the installer sets the agents up again, which is harmless)
+      const want = named ?? ((await readMode(pi, ctx.cwd)).mode === "subagent" ? "subagent" : undefined);
+      await setUp(ctx, want, true);
     },
   });
 }

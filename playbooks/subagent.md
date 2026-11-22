@@ -16,7 +16,7 @@ There is no event manager and there are no herdr panes. You drive one milestone 
 ## 1. Start the run (the developer said go)
 1. Run `orch sync`. Stop on ERROR; report every WARN except the ones about Workers naming no model (the subagents run on the models in `~/.config/herdr-orchestra/config.json`).
 2. Run `orch start` (it makes or switches to the feature branch).
-3. Check that the `Agent` tool is available to you. If it is not, tell the developer to run `orch setup --mode subagent` and restart Pi, and **STOP**.
+3. Check that the `Agent` tool is available to you. If it is not, tell the developer to type `/orch-mode subagent` in Pi (it sets up the subagents and reloads Pi; outside Pi: `orch setup --mode subagent`, then restart Pi), and **STOP**.
 
 ## 2. One milestone
 1. Run `orch sub next`. It prints `NEXT Mn: <title>`, `TASK <path to task.md>` and `REVIEW yes|no`. (`CURRENT Mn` means a milestone was started and not saved: carry on with it from step 2. `HELD`, `WAITING` or `ALL_DONE`: see below.)

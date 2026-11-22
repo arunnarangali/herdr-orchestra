@@ -2,6 +2,27 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.5.0] - 2026-11-22
+
+Subagent mode is now set up from inside Pi with one slash command. Before, `/orch-mode subagent` only saved the mode and printed `NEXT run orch setup --mode subagent`, which you had to run in a separate, normal terminal. Now the slash command does that work itself.
+
+Example: in Pi you type `/orch-mode subagent`. Pi shows
+
+```
+mode: subagent (saved in ~/.config/herdr-orchestra/config.json)
+WROTE   ~/.pi/agent/agents/coder.md (model: the same as the lead)
+WROTE   ~/.pi/agent/agents/reviewer.md (model: the same as the lead)
+INSTALLED npm:@tintinweb/pi-subagents: ...
+Done: subagent mode is ready. Plan with /orch-plan as usual.
+```
+
+then reloads itself so the `Agent` tool is there. Type `/orch-plan` next. No terminal needed.
+
+### Changed
+- **`/orch-mode subagent` sets subagent mode up.** It runs `orch setup --mode subagent` (saves the mode, writes the coder and reviewer agent files, runs `pi install npm:@tintinweb/pi-subagents`). When the `orch` command is missing or older than the Pi package, it runs this package's installer with `--mode subagent` instead, which does the same after installing `orch`. When pi-subagents was just installed, Pi reloads by itself (`ctx.reload()`), so there is no restart either. If a step fails (no `pi` on PATH, a model the policy denies), it says what failed and to type `/orch-mode subagent` again after fixing it. `/orch-mode panes` is unchanged.
+- **`/orch-setup --mode subagent`** (or `/orch-setup subagent`) installs `orch` and sets subagent mode up in one go. `/orch-setup` alone still installs `orch` and, when the saved mode is subagent, sets it up too.
+- The terminal stays supported: `orch setup --mode subagent` works as before; its `NEXT` and `INSTALLED` lines now mention the Pi slash command. The subagent playbook tells the lead to point the developer at `/orch-mode subagent` when the `Agent` tool is missing.
+
 ## [6.4.0] - 2026-11-21
 
 At the end of a run, the things you should try by hand now come to you as a plain numbered list: `orch finish` prints them, and the lead posts them in its chat. Nothing else changes: the lead writes the same "Manual verification checklist" in the summary as before, and orch reads it from there.

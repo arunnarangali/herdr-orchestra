@@ -265,13 +265,15 @@ Runs have two modes. Nothing changes for anyone who never picks the second one.
 | `panes` (default) | herdr panes, as described above | the event manager; the lead dispatches and pauses |
 | `subagent` | inside one Pi window, as Pi subagents ([pi-subagents](https://www.npmjs.com/package/@tintinweb/pi-subagents)) | the lead, one milestone at a time |
 
-Switch with `/orch-mode subagent` in Pi, or `orch mode subagent` in a terminal; `/orch-mode` alone shows the mode, and Pi's footer shows it too (`orch: subagent`). The choice is saved in `~/.config/herdr-orchestra/config.json`, and a run keeps the mode it was planned in. Set up subagent mode once:
+Switch with `/orch-mode subagent` in Pi; `/orch-mode` alone shows the mode, and Pi's footer shows it too (`orch: subagent`). The choice is saved in `~/.config/herdr-orchestra/config.json`, and a run keeps the mode it was planned in.
+
+`/orch-mode subagent` also sets subagent mode up, right there in Pi, with no terminal step: it installs the `orch` command if it is missing or old, writes the coder and reviewer agents, installs pi-subagents, and reloads Pi so the `Agent` tool is ready. It ends with `Done: subagent mode is ready.` `/orch-setup --mode subagent` does the same. From a normal terminal (no Pi open), the same setup is:
 
 ```bash
 orch setup --mode subagent          # or: npx herdr-orchestra@latest --mode subagent, or orch team up --mode subagent
 ```
 
-It writes `~/.pi/agent/agents/coder.md` and `reviewer.md` (the reviewer cannot edit files) and installs `npm:@tintinweb/pi-subagents`. Pick their models in the config file; with none, they use the lead's model. A model the policy denies is refused, and a file you edited yourself (without orch's line in it) is left alone.
+Setup writes `~/.pi/agent/agents/coder.md` and `reviewer.md` (the reviewer cannot edit files) and installs `npm:@tintinweb/pi-subagents`. Pick their models in the config file; with none, they use the lead's model. A model the policy denies is refused, and a file you edited yourself (without orch's line in it) is left alone.
 
 ```json
 {
