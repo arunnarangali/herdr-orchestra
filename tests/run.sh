@@ -255,8 +255,11 @@ sed -i 's/^Lead: .*/Lead: reviewer (agy)/' .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1); code=$?
 check "lead that is also the reviewer is an ERROR" '[ $code -eq 2 ] && grep -q "also the Reviewer" <<<"$out"'
 check "registry defaults load" 'grep -q "^hermes" <<<"$("$ORCH" agents)" && [ "$("$ORCH" agents launch claude)" = "claude --permission-mode acceptEdits" ]'
+check "the Claude reviewer starts with its edit tools off" '[ "$("$ORCH" agents launch claude --role reviewer)" = "claude --permission-mode acceptEdits --disallowedTools Edit,NotebookEdit" ] && [ "$("$ORCH" agents launch claude --role reviewer --model opus)" = "claude --permission-mode acceptEdits --disallowedTools Edit,NotebookEdit --model opus" ]'
+check "a kind with no review_launch starts its reviewer like a coder" '[ "$("$ORCH" agents launch codex --role reviewer)" = "$("$ORCH" agents launch codex)" ] && [ "$("$ORCH" agents launch claude --role coder)" = "claude --permission-mode acceptEdits" ] && ! "$ORCH" agents launch claude --role boss >/dev/null 2>&1'
 printf '[claude]\nlaunch = "claude --model opus"\n\n[mystery]\nbinary = "mystery"\nlaunch = "mystery --yolo"\n' > "$ORCH_AGENTS_FILE"
 check "user agents.toml overrides and adds kinds" '[ "$("$ORCH" agents launch claude)" = "claude --model opus" ] && [ "$("$ORCH" agents launch mystery)" = "mystery --yolo" ]'
+check "your own launch command is used for the reviewer too when you set no review_launch" '[ "$("$ORCH" agents launch claude --role reviewer)" = "claude --model opus" ]'
 rm -f "$ORCH_AGENTS_FILE"
 
 echo "9. agents herdr can't watch rely on their done file"
@@ -538,6 +541,9 @@ out=$(PATH="$DOC:$PATH" "$ORCH" doctor goodagent 2>&1); code=$?
 check "doctor passes an agent whose launch flag is in --help" '[ $code -eq 0 ] && grep -q "^ok .*goodagent" <<<"$out" && grep -q "version: goodagent 1.2.3" <<<"$out"'
 out=$(PATH="$DOC:$PATH" "$ORCH" doctor oldagent 2>&1); code=$?
 check "doctor reports a launch flag the tool no longer has" '[ $code -eq 1 ] && grep -q "^BROKEN .*oldagent" <<<"$out" && grep -q "launch flag --yolo is NOT in" <<<"$out"'
+printf '[revagent]\nbinary = "goodagent"\nlaunch = "goodagent --yolo"\nreview_launch = "goodagent --yolo --no-edits"\nherdr_detect = false\nroles = ["reviewer"]\n' >> "$ORCH_AGENTS_FILE"
+out=$(PATH="$DOC:$PATH" "$ORCH" doctor revagent 2>&1); code=$?
+check "doctor checks the reviewer launch flags too" '[ $code -eq 1 ] && grep -q "launch flag --no-edits is NOT in" <<<"$out" && grep -q "launch flag --yolo is listed" <<<"$out"'
 out=$("$ORCH" doctor mystery-nope 2>&1); code=$?
 check "doctor: unknown kind is reported, not a traceback" '[ $code -eq 1 ] && ! grep -q Traceback <<<"$out"'
 rm -f "$ORCH_AGENTS_FILE"
@@ -833,6 +839,8 @@ touch "$FH/codex-2.missing" "$FH/reviewer.missing"
 "$ORCH" start >/dev/null 2>&1
 out=$("$ORCH" start 2>&1)
 check "orch start shows the missing codex panes" 'grep -q "WORKER codex-2 .*herdr=NOT FOUND" <<<"$out" && grep -q "REVIEWER reviewer .*herdr=NOT FOUND" <<<"$out"'
+out=$(printf '[codex]\nreview_launch = "codex --sandbox read-only"\n' > "$WORK/rev-agents.toml"; ORCH_AGENTS_FILE="$WORK/rev-agents.toml" "$ORCH" team up --dry-run 2>&1)
+check "team up starts the reviewer with the kind's review_launch, the coders with launch" 'grep -q "^WOULD   reviewer: .*codex --sandbox read-only --model gpt-6-sol" <<<"$out" && grep -q "^WOULD   codex-2: .*codex --approve-for-me --model gpt-6-sol" <<<"$out"'
 out=$("$ORCH" team up --dry-run 2>&1)
 check "team up --dry-run only prints the commands" 'grep -q "^WOULD   codex-2: .*pane split --direction right --cwd .*app-wt/codex-2 --no-focus" <<<"$out" && [ ! -f "$FH/team.log" ]'
 out=$(ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1); code=$?
@@ -1573,10 +1581,11 @@ out=$("$ORCH" setup 2>&1)
 check "orch setup in panes mode changes nothing" 'grep -q "^mode panes: nothing to set up here" <<<"$out" && [ ! -e "$ORCH_CONFIG_FILE" ] && [ ! -e "$PI_CODING_AGENT_DIR" ]'
 check "orch setup refuses an unknown mode" '! "$ORCH" setup --mode tabs >/dev/null 2>&1 && ! "$ORCH" mode tabs >/dev/null 2>&1'
 mkdir -p "$WORK/pibin"; printf '#!/usr/bin/env bash\necho "$*" >> "%s/pi.log"\n[ "$1" = list ] && cat "%s/pi.list" 2>/dev/null\n[ "$1" = install ] && echo "$2" >> "%s/pi.list"\nexit 0\n' "$WORK/pibin" "$WORK/pibin" "$WORK/pibin" > "$WORK/pibin/pi"; chmod +x "$WORK/pibin/pi"
-mkdir -p "$WORK/config"; printf '{"subagent": {"coder": {"model": "anthropic/claude-sonnet-4-5", "thinking": "medium"}}}\n' > "$ORCH_CONFIG_FILE"
+mkdir -p "$WORK/config"; printf '{"subagent": {"coder": {"model": "anthropic/claude-sonnet-4-5", "thinking": "medium", "max_turns": 80}}}\n' > "$ORCH_CONFIG_FILE"
 out=$(cd "$WORK" && "$ORCH" setup --mode subagent 2>&1); code=$?
 check "setup --mode subagent saves the mode and keeps the rest of the config" '[ $code -eq 0 ] && python3 -c "import json,sys;d=json.load(open(sys.argv[1]));assert d[\"mode\"]==\"subagent\" and d[\"subagent\"][\"coder\"][\"thinking\"]==\"medium\"" "$ORCH_CONFIG_FILE"'
 check "it writes coder.md with the config model, and reviewer.md that cannot edit" 'grep -qx "model: anthropic/claude-sonnet-4-5" "$PI_CODING_AGENT_DIR/agents/coder.md" && grep -qx "thinking: medium" "$PI_CODING_AGENT_DIR/agents/coder.md" && grep -qx "name: reviewer" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && grep -qx "tools: read, bash, grep, find, ls" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && ! grep -q "^model:" "$PI_CODING_AGENT_DIR/agents/reviewer.md"'
+check "both agents say they are only for orch runs; the reviewer denies edit and write; max_turns only where set" 'grep -q "^description: Only for a herdr-orchestra run" "$PI_CODING_AGENT_DIR/agents/coder.md" && grep -q "^description: Only for a herdr-orchestra run" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && grep -qx "disallowed_tools: edit, write" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && grep -qx "max_turns: 80" "$PI_CODING_AGENT_DIR/agents/coder.md" && ! grep -q "^max_turns" "$PI_CODING_AGENT_DIR/agents/reviewer.md"'
 check "it installs pi-subagents with pi, once" 'grep -qx "install npm:@tintinweb/pi-subagents" "$WORK/pibin/pi.log" && (cd "$WORK" && "$ORCH" setup --mode subagent | grep -q "^ok      npm:@tintinweb/pi-subagents is installed") && [ "$(grep -c "^install" "$WORK/pibin/pi.log")" -eq 1 ]'
 printf -- '---\nname: coder\n---\nmy own coder\n' > "$PI_CODING_AGENT_DIR/agents/coder.md"
 check "a coder.md the developer wrote is never overwritten" '(cd "$WORK" && "$ORCH" setup | grep -q "^KEPT .*coder.md: you edited it") && grep -qx "my own coder" "$PI_CODING_AGENT_DIR/agents/coder.md"'

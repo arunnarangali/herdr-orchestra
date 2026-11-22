@@ -128,9 +128,9 @@ Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `.
    | Lead | any agent, e.g. `claude` or `opencode` | `lead` (the playbook does it) |
    | Coder (medium work) | `claude --permission-mode acceptEdits --model sonnet` | `claude-1` |
    | Coder (small work) | `claude --permission-mode acceptEdits --model haiku` | `claude-2` |
-   | Reviewer (optional) | `claude --model opus`, `agy --mode accept-edits` or a spare agent | `reviewer` |
+   | Reviewer (optional) | `claude --permission-mode acceptEdits --disallowedTools Edit,NotebookEdit --model opus`, `agy --mode accept-edits` or a spare agent | `reviewer` |
 
-   `orch agents launch <kind> --model <id>` prints the command with the model; `orch models` lists the models and their tiers. Use whatever your installed agents already reach.
+   `orch agents launch <kind> --model <id>` prints the command with the model (`--role reviewer` gives the reviewer's command: for Claude Code its edit tools are off, it only reads the change and writes its review file); `orch models` lists the models and their tiers. Use whatever your installed agents already reach.
 
    **Only one tool installed, or just one window open?** Open only the lead and start the plan playbook. The lead sees it is alone and builds the team from its own tool: `orch team codex` picks coders and a reviewer of that tool on the models the catalog allows, spread over its tiers, and the lead writes them into the plan. When you say go, `orch team up` opens their panes next to the lead, each in its own folder and on its model, and names them. You never type either command yourself (you can: `orch team codex --coders 1`, `orch team up --dry-run`). Each pane is a separate session of the same tool, on your existing login.
 
@@ -208,6 +208,7 @@ The skills and slash commands are thin wrappers: the playbooks themselves live i
 ```toml
 [claude]
 launch = "claude --permission-mode acceptEdits"
+review_launch = "claude --permission-mode acceptEdits --disallowedTools Edit,NotebookEdit"   # the reviewer pane
 model_flag = "--model"        # what `orch agents launch claude --model <id>` appends
 
 [myagent]                     # a new kind
@@ -218,7 +219,7 @@ roles = ["coder"]
 skills_dirs = ["~/.myagent/skills"]
 ```
 
-`orch doctor [kind]` checks an installed agent against the real tool (version, whether the launch flags still exist in its `--help`, skills, herdr detection). `orch agents launch <kind>` prints the command · `orch team <kind>` / `orch team up` build and open a whole team from one tool · `orch agents sync` installs the skills for every installed agent (run it after adding a new one) · `orch agents check` confirms every installed agent sees each skill exactly once (not missing, not twice). Many tools read more than one folder (Codex reads `~/.agents/skills` and `~/.codex/skills` and lists a skill found in both twice), so the installer writes the fewest folders that give each installed agent one copy, e.g. with Claude, Codex and OpenCode: `~/.claude/skills` (Claude) and `~/.agents/skills` (Codex; OpenCode reads both, and its docs say one copy wins). Claude Code gets the skill only (a skill is already the `/orch-plan` command); OpenCode gets slash commands in `~/.config/opencode/commands`.
+`orch doctor [kind]` checks an installed agent against the real tool (version, whether the launch flags still exist in its `--help`, skills, herdr detection; the `review_launch` flags too). `orch agents launch <kind>` prints the command · If you set your own `launch` for a kind and no `review_launch`, your `launch` is used for the reviewer too · `orch team <kind>` / `orch team up` build and open a whole team from one tool · `orch agents sync` installs the skills for every installed agent (run it after adding a new one) · `orch agents check` confirms every installed agent sees each skill exactly once (not missing, not twice). Many tools read more than one folder (Codex reads `~/.agents/skills` and `~/.codex/skills` and lists a skill found in both twice), so the installer writes the fewest folders that give each installed agent one copy, e.g. with Claude, Codex and OpenCode: `~/.claude/skills` (Claude) and `~/.agents/skills` (Codex; OpenCode reads both, and its docs say one copy wins). Claude Code gets the skill only (a skill is already the `/orch-plan` command); OpenCode gets slash commands in `~/.config/opencode/commands`.
 
 ### Agents herdr can't watch
 For a kind with `herdr_detect = false` (or one missing from the registry, which `orch sync` warns about), `orch` relies only on the **done file and the time budget**: it never reports GONE, BLOCKED or IDLE for it, treats it as free whenever it has no task, and `orch status` marks it `detect:off`. If herdr doesn't recognise the pane as an agent at all, address it by pane id: `Workers: hermes-1 (hermes @pane:w1:p3)`. `orch` then types prompts into that pane, and `orch start` reports a `STALE pane` when the id has changed (`herdr pane list` shows the current ids).
@@ -273,13 +274,13 @@ Switch with `/orch-mode subagent` in Pi; `/orch-mode` alone shows the mode, and 
 orch setup --mode subagent          # or: npx herdr-orchestra@latest --mode subagent, or orch team up --mode subagent
 ```
 
-Setup writes `~/.pi/agent/agents/coder.md` and `reviewer.md` (the reviewer cannot edit files) and installs `npm:@tintinweb/pi-subagents`. Pick their models in the config file; with none, they use the lead's model. A model the policy denies is refused, and a file you edited yourself (without orch's line in it) is left alone.
+Setup writes `~/.pi/agent/agents/coder.md` and `reviewer.md` (the reviewer cannot edit files) and installs `npm:@tintinweb/pi-subagents`. Pick their models in the config file; with none, they use the lead's model. `max_turns` (optional) stops a subagent that loops after that many turns; the lead then resumes it once or asks you. A model the policy denies is refused, and a file you edited yourself (without orch's line in it) is left alone. Both agents' descriptions say they are only for orch runs, so a normal Pi chat does not hand its own work to them.
 
 ```json
 {
   "mode": "subagent",
   "subagent": {
-    "coder":    { "model": "anthropic/claude-sonnet-4-5", "thinking": "medium" },
+    "coder":    { "model": "anthropic/claude-sonnet-4-5", "thinking": "medium", "max_turns": 80 },
     "reviewer": { "model": "openai/gpt-5", "thinking": "high" }
   }
 }

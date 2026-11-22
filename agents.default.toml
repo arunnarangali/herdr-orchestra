@@ -3,6 +3,9 @@
 #
 #   binary        executable that must be on PATH for the kind to count as installed
 #   launch        command to start it in a herdr pane, with its auto-approve-edits option
+#   review_launch optional: the command for the REVIEWER pane, with the tool's code-editing tools turned off (the
+#                 reviewer only reads the change and writes its review file). `orch team up` uses it for the reviewer;
+#                 `orch agents launch <kind> --role reviewer` prints it. Left out: the reviewer starts like a coder
 #   model_flag    the launch option that picks the model (`orch agents launch <kind> --model <id>`); leave it
 #                 out when the tool has none or it is unverified, and choose the model inside the tool
 #   herdr_detect  herdr can tell idle / working / blocked for it (false: orch relies on the done file only)
@@ -32,6 +35,7 @@
 [claude]
 binary = "claude"
 launch = "claude --permission-mode acceptEdits"
+review_launch = "claude --permission-mode acceptEdits --disallowedTools Edit,NotebookEdit"
 model_flag = "--model"
 herdr_detect = true
 interrupt_keys = ["esc"]
@@ -41,7 +45,7 @@ skills_one_wins = true
 old_dirs = ["~/.claude/commands"]
 invoke = "/orch-plan <feature>"
 verified = true
-notes = "Claude Code 2.1: --permission-mode acceptEdits in --help; ~/.claude/skills present; herdr kind 'claude'. A skill is also a slash command (/orch-plan) and its docs say a skill beats a ~/.claude/commands file of the same name, so no commands copy is installed."
+notes = "Claude Code 2.1: --permission-mode acceptEdits in --help; ~/.claude/skills present; herdr kind 'claude'. A skill is also a slash command (/orch-plan) and its docs say a skill beats a ~/.claude/commands file of the same name, so no commands copy is installed. review_launch: --disallowedTools is in --help (2.1); the reviewer keeps Write for its review file."
 
 [codex]
 binary = "codex"

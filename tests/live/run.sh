@@ -58,7 +58,7 @@ PLAN
 echo
 echo "Start the agent(s) in Herdr panes whose folder is: $APP"
 echo "  coder:    $("$ORCH" agents launch "$coder")      then name it:  herdr agent rename <its pane> live-coder"
-[ -n "$reviewer" ] && echo "  reviewer: $("$ORCH" agents launch "$reviewer")      then name it:  herdr agent rename <its pane> live-reviewer"
+[ -n "$reviewer" ] && echo "  reviewer: $("$ORCH" agents launch "$reviewer" --role reviewer)      then name it:  herdr agent rename <its pane> live-reviewer"
 echo "Waiting up to 10 minutes for herdr to see them…"
 for _ in $(seq 120); do
   "$HERDR_BIN" agent get live-coder >/dev/null 2>&1 && { [ -z "$reviewer" ] || "$HERDR_BIN" agent get live-reviewer >/dev/null 2>&1; } && break

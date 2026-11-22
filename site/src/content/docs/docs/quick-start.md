@@ -14,7 +14,7 @@ In Herdr, open one pane per agent in your repo. `orch agents launch <kind> --mod
 | Lead | a high-tier model, e.g. `claude --model opus` | `lead` (the lead names itself) |
 | Coder | `claude --permission-mode acceptEdits --model sonnet` | `claude-1` |
 | Coder | `claude --permission-mode acceptEdits --model haiku` | `claude-2` |
-| Reviewer (optional) | `agy --mode accept-edits` or any spare agent | `reviewer` |
+| Reviewer (optional) | `orch agents launch claude --role reviewer --model opus` (Claude Code with its edit tools off), `agy --mode accept-edits` or any spare agent | `reviewer` |
 
 One coder is fine too. The lead then plans milestones one after another. Mixing kinds works the same way: a Codex coder next to a Claude one.
 
