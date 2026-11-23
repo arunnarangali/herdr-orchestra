@@ -26,6 +26,10 @@ git clone https://github.com/arunnarangali/herdr-orchestra.git
 cd herdr-orchestra && git checkout v4.11.1 && bash install.sh
 ```
 
+### In Pi
+
+Using [Pi](https://pi.dev)? Add the package with `pi install git:github.com/arunnarangali/herdr-orchestra`, then type `/orch-setup` once inside Pi. The [Pi page](/docs/pi/) has every step, including subagent mode (one Pi window, no Herdr).
+
 ### Requirements
 
 - [Herdr](https://herdr.dev), where the agents run

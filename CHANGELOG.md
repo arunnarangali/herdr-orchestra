@@ -2,6 +2,16 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.7.2] - 2026-11-23
+
+The website docs now have a Pi page: [Pi: setup and use](https://herdr-orchestra.vercel.app/docs/pi/). It walks through every step in order: install Pi, add the package (`pi install git:github.com/arunnarangali/herdr-orchestra`), type `/orch-setup` once, check with `orch version`, pick `panes` or `subagent` with `/orch-mode`, then `/skill:orch-plan <feature>` and say go. It also shows the config file for the subagents' models and `max_turns`, a table of the Pi commands, and what to do when something is off. No change to how orch works.
+
+### Added
+- **Docs: Pi page** (`site/src/content/docs/docs/pi.md`), in the sidebar under Agents. Installation, Agents and roles, Modes, Configuration and Commands now point to it, and Commands lists `orch mode`, `orch setup`, `orch sub next` and `orch sub done`.
+
+### Changed
+- README: the GitHub install line for Pi no longer pins the old v6.2.1 tag, and links to the new docs page.
+
 ## [6.7.1] - 2026-11-23
 
 Pi now gets everything from 6.6.0 without a manual step. Pi's `/orch-plan` already ran the same `orch lead plan`, so the lead there asks first, writes `Door:` lines and new glossary words like everywhere else; its task files already had the project rules and the proof request; and a hard-to-undo milestone was already held. What was missing: the reviewer and coder subagent files written by an older orch kept their old text until you re-ran `orch setup --mode subagent`. This also brings in the 6.7.0 agent text (descriptions that say "only for orch runs", the reviewer's `disallowed_tools`) with no step from you.

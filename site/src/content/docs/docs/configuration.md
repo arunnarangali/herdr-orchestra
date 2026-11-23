@@ -7,6 +7,10 @@ description: Environment variables, the agent registry, the model catalog, and v
 
 Most settings for a run live in the plan header: branch, base, commit style, check and setup commands, mode, the team and its models, and whether the lead takes part in the run (`Lead mode:`). See [The plan file](/docs/plan-file/).
 
+## Pi mode file
+
+`~/.config/herdr-orchestra/config.json` holds the Pi mode (`panes` or `subagent`) and the subagents' `model`, `thinking` and `max_turns`. See [Pi: setup and use](/docs/pi/#step-6-optional-pick-the-subagents-models).
+
 ## Environment variables
 
 | Variable | Default | Meaning |
