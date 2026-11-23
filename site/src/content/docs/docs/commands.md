@@ -68,6 +68,17 @@ Run `orch` with no arguments for the full help.
 | `orch agents check` | Check the skills are installed |
 | `orch doctor [kind]` | Check the installed agents against the real tools |
 
+## Pi
+
+These are for [Pi](/docs/pi/). In Pi you can type `/orch-mode` and `/orch-setup` instead of the first two.
+
+| Command | What it does |
+|---|---|
+| `orch mode [panes\|subagent]` | Show or switch where the coder and reviewer run: Herdr panes, or Pi subagents in one window |
+| `orch setup [--mode panes\|subagent]` | Set a mode up; `subagent` writes Pi's `coder` and `reviewer` agents and installs pi-subagents |
+| `orch sub next` | Subagent mode: the next milestone and its task file (`NEXT`, `TASK`, `REVIEW`) |
+| `orch sub done <Mn>` | Subagent mode: save the milestone on the feature branch (`MERGED`, or `HELD` for risky changes) |
+
 ## Run steps
 
 The event manager uses these to run the work. You rarely need them by hand, and while it runs the ones that change the run are refused from any other terminal.

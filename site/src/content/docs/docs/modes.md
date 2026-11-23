@@ -5,6 +5,8 @@ description: Worktree mode runs milestones in parallel; shared mode runs them on
 
 Set the mode with `Isolation:` in the plan header.
 
+In Pi there is a second, separate choice: where the coder and reviewer run, in Herdr panes (`panes`) or inside one Pi window (`subagent`). See [Pi: setup and use](/docs/pi/#step-4-pick-a-mode).
+
 ## Worktree
 
 Each coder works in its own git worktree next to your repo, `../<repo>-wt/<name>`. Independent milestones run at the same time, and each one lands when it passes checks and review.

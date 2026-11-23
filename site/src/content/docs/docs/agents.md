@@ -3,7 +3,7 @@ title: "Agents and roles: Claude Code, Codex, OpenCode and more"
 description: "Which AI coding agents herdr-orchestra can orchestrate, choosing a lead and its model, and adding your own agent."
 ---
 
-Any installed agent can play any role: Claude Code, Codex, Amp, OpenCode, Hermes, Antigravity (`agy`), or anything else that can run shell commands. See the [Agents page](/agents) for every kind's launch command.
+Any installed agent can play any role: Claude Code, Codex, Amp, OpenCode, Hermes, Antigravity (`agy`), [Pi](/docs/pi/), or anything else that can run shell commands. See the [Agents page](/agents) for every kind's launch command.
 
 ## Choose your lead
 
@@ -15,6 +15,7 @@ The agent whose pane you start the plan playbook in becomes the lead. orch names
 | OpenCode | `/orch-plan <feature>` |
 | Codex | `$orch-plan <feature>` or "use the orch-plan skill: &lt;feature&gt;" |
 | Amp, Hermes, Antigravity | "use the orch-plan skill: &lt;feature&gt;" |
+| Pi | `/skill:orch-plan <feature>` (setup: [Pi page](/docs/pi/)) |
 | any agent | "Run `orch lead plan` and follow it. Feature: &lt;feature&gt;" |
 
 ## Pick roles for your team

@@ -49,7 +49,13 @@ export default defineConfig({
             { label: 'When a run needs you', slug: 'docs/when-it-stops' },
           ],
         },
-        { label: 'Agents', items: [{ label: 'Agents and roles', slug: 'docs/agents' }] },
+        {
+          label: 'Agents',
+          items: [
+            { label: 'Agents and roles', slug: 'docs/agents' },
+            { label: 'Pi: setup and use', slug: 'docs/pi' },
+          ],
+        },
         {
           label: 'Reference',
           items: [
