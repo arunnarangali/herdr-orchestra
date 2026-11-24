@@ -9,11 +9,23 @@ Not every milestone needs the strongest model. A rename does not need deep reaso
 
 | Tier | Use it for | Examples from the default catalog |
 |---|---|---|
-| **small** | Classification, renames, docs, config, mechanical edits that copy an existing pattern | `haiku`, `gpt-6-luna`, `qwen3.6-35b-a3b` |
-| **medium** | Normal implementation, tests, debugging inside one module | `sonnet`, `gpt-6-sol`, `qwen3.8-27b` |
-| **high** | The lead itself, contracts and architecture, refactors across modules, auth, payments and schema, bugs nobody has diagnosed | `opus`, `deepseek-v4-pro`, `glm-5.3` |
+| **small** | Classification, renames, docs, config, mechanical edits that copy an existing pattern | `haiku`, `gpt-6-luna@high`, `qwen3.6-35b-a3b` |
+| **medium** | Normal implementation, tests, debugging inside one module | `sonnet`, `gpt-6.2-sol@low`, `qwen3.8-27b` |
+| **high** | The lead itself, contracts and architecture, refactors across modules, auth, payments and schema, bugs nobody has diagnosed | `opus`, `gpt-6.2-sol@medium`, `deepseek-v4-pro`, `glm-5.3` |
 
 You use the models your installed agents already reach. Nothing new has to be set up. Open-weight models are in the catalog too, for teams that run them locally or through a provider.
+
+## Codex: one model family, thinking levels, found by asking Codex
+
+A Codex model id can end in a thinking level: `gpt-6.2-sol@low` starts `codex --model gpt-6.2-sol -c model_reasoning_effort=low`. The same model thinking harder is a separate entry with its own tier:
+
+| Tier | Codex choice |
+|---|---|
+| small | `gpt-6-luna@high`: Luna, high thinking |
+| medium | `gpt-6.2-sol@low`: Sol, low thinking |
+| high | `gpt-6.2-sol@medium`: Sol, medium thinking (the lead and the reviewer) |
+
+Astra stays blocked. You don't keep this list up to date: when `codex` is installed, `orch models` asks it (`codex debug models`, at most every 6 hours) and puts the newest Luna and Sol into these levels, skipping models Codex hides or calls legacy. Example: Codex adds `gpt-6.3-sol` → `orch models` shows `gpt-6.3-sol@low` and `gpt-6.3-sol@medium`, and the next plan uses them. Which family and thinking level fills each tier is set in `[discover.codex]` in `models.default.toml`; change it in your own `models.toml`. If Codex can't be asked, the three entries above are used.
 
 ## Chosen by capability, not by name
 

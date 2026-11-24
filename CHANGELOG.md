@@ -2,6 +2,26 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.8.0] - 2026-11-24
+
+An all-Codex team (Codex as the lead, the coders and the reviewer) now runs without getting stuck and without an approval check on every orch command.
+
+Example: before, a Codex lead typing `orch start` got "cannot create branch" (Codex's sandbox makes `.git` read-only), and `orch team up` or waking the lead failed (the sandbox blocks herdr's socket). Codex then asked its auto-review before running each one again. Now every Codex pane orch opens starts with two settings that open just those two things, so the commands work the first time.
+
+### Fixed
+- **Codex panes can reach herdr and the repo's `.git`.** The Codex launch command is now `codex --approve-for-me -c sandbox_workspace_write.network_access=true -c 'sandbox_workspace_write.writable_roots=["<repo>/.git"]'`. The first setting lets herdr's socket through (it also allows the internet); the second lets git make branches, worktrees and commits. Checked with the real codex-cli 0.172 (`codex sandbox`): without them git and the socket are refused, with them both work. `orch team up`, the "start it yourself" hints after a restart and `orch agents launch codex` all use it; a launch command may say `{git_dir}` and orch fills in the repo's `.git` folder.
+- **A blocked lead is told how to fix it.** `orch lead plan`, `orch lead run` and `orch lead check` warn when the pane they run in can't reach herdr (Codex's sandbox with the network off) or can't write `.git`, and print the Codex command to restart with.
+- **The Codex models were out of date.** orch knew only `gpt-6-luna` and `gpt-6-sol`, which Codex now calls legacy, and had no high Codex model, so every Codex plan warned.
+
+### Added
+- **Thinking levels in a model id.** `gpt-6.2-sol@low` means gpt-6.2-sol on low thinking (`-c model_reasoning_effort=low`). New registry key `effort_flag`. The Codex levels: small = `gpt-6-luna@high`, medium = `gpt-6.2-sol@low`, high = `gpt-6.2-sol@medium` (the lead and the reviewer). Astra stays blocked.
+- **orch asks Codex for its models.** When `codex` is installed, `orch models` runs `codex debug models` (at most every 6 hours, cached; `ORCH_MODELS_TTL_S`, `ORCH_MODELS_DISCOVER=0` turns it off) and puts the newest Luna and Sol into the levels above, skipping models Codex hides or calls legacy. When Codex adds a new Sol, the next plan uses it without anyone editing a file. The family and thinking level of each tier are in `[discover.codex]` in `models.default.toml`, and your own `models.toml` can change them. If Codex can't be asked, the shipped entries are used.
+- `orch team <kind>` prints the command to start your own lead pane on the strongest level.
+- `orch doctor` says when your own launch command drops a part orch needs (new registry key `launch_needs`).
+
+### Not yet tried
+- A full run with real Codex windows. The sandbox settings and model names were checked against the real Codex 0.172; the run itself was tested with simulated agents.
+
 ## [6.7.2] - 2026-11-23
 
 The website docs now have a Pi page: [Pi: setup and use](https://herdr-orchestra.vercel.app/docs/pi/). It walks through every step in order: install Pi, add the package (`pi install git:github.com/arunnarangali/herdr-orchestra`), type `/orch-setup` once, check with `orch version`, pick `panes` or `subagent` with `/orch-mode`, then `/skill:orch-plan <feature>` and say go. It also shows the config file for the subagents' models and `max_turns`, a table of the Pi commands, and what to do when something is off. No change to how orch works.

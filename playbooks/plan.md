@@ -113,7 +113,7 @@ Then the run is the same as any run (`orch lead run`): the coder builds it, the 
 - You are never a coder or the reviewer in your own run. Another pane of the same kind as you is fine.
 - A pane herdr doesn't recognise as an agent (it isn't in `herdr agent list`) can still work: write it as `name (kind @pane:<pane id>)` in `Workers:`. `orch` then types prompts into that pane and relies only on its done file.
 - If it's unclear which pane should play which role, ask.
-- **Models.** Run `orch models`: the catalog of models with a tier (small / medium / high) and ratings for reasoning, coding, architecture, instruction following, tool use, planning, speed and context size, and the models policy keeps out of runs. Find out which model each pane runs (ask the developer if herdr or the pane doesn't show it) and write it in the plan as `name (kind: model)`. Use the models the installed agents already reach; nobody has to set up anything new. A pane on a model the policy denies cannot be used: ask the developer to restart it on another model (`orch agents launch <kind> --model <id>` prints the command). A model that is not in the catalog is allowed but has no tier; say so, and suggest adding it to `~/.config/herdr-orchestra/models.toml`.
+- **Models.** Run `orch models`: the catalog of models with a tier (small / medium / high) and ratings for reasoning, coding, architecture, instruction following, tool use, planning, speed and context size, and the models policy keeps out of runs. Find out which model each pane runs (ask the developer if herdr or the pane doesn't show it) and write it in the plan as `name (kind: model)`. Write ids exactly as `orch models` lists them: a Codex id can end in a thinking level (`gpt-6.2-sol@low` is Sol on low thinking; Codex's high tier is `gpt-6.2-sol@medium`). Use the models the installed agents already reach; nobody has to set up anything new. A pane on a model the policy denies cannot be used: ask the developer to restart it on another model (`orch agents launch <kind> --model <id>` prints the command). A model that is not in the catalog is allowed but has no tier; say so, and suggest adding it to `~/.config/herdr-orchestra/models.toml`.
 - **The team should cover the work.** If the plan will have high-tier milestones and no coder runs a high-tier model, say so and propose the pane to start (kind, model, launch command). Don't ask for more panes than the milestones need. You, the lead, should run a high-tier model; the reviewer should be at least as strong as the work it reviews.
 
 ## 4. Milestones: as many as the feature needs, and no more
@@ -212,7 +212,7 @@ Scope: warn | strict
 Budget: <e.g. 3h — optional>
 Estimate: <how long the whole feature should take, e.g. 1h30m>
 Lead: lead (<your kind>: <your model>)
-Workers: claude-1 (claude: sonnet), claude-2 (claude: haiku), codex-1 (codex: gpt-6-sol)
+Workers: claude-1 (claude: sonnet), claude-2 (claude: haiku), codex-1 (codex: gpt-6.2-sol@low)
 Reviewer: reviewer (claude: opus) | none
 
 ## Global instructions

@@ -75,7 +75,11 @@ open_weights = false
 evidence = "Claude Code alias for the current Opus (code.claude.com/docs/en/model-config, 2026-11). Ratings: maintainer estimate; not benchmarked here."
 
 # ---------------------------------------------------------------- Codex CLI (`codex --model <id>`)
-[models.gpt-6-luna]
+# A Codex id may end in @<thinking level>: `gpt-6.2-sol@low` starts gpt-6.2-sol with
+# `-c model_reasoning_effort=low`. The same model thinking harder is another entry with its own tier.
+# These three are the fallback: when the codex command is installed, orch asks it for its current models
+# ([discover.codex] below) and puts the newest of each family in these levels instead.
+[models."gpt-6-luna@high"]
 kinds = ["codex"]
 tier = "small"
 reasoning = 2
@@ -85,23 +89,46 @@ instructions = 4
 tools = 4
 planning = 2
 speed = 5
-context_k = 0
+context_k = 272
 open_weights = false
-evidence = "Lowest-cost tier in the Codex model picker per a third-party guide (codex.danielvaughan.com, 2026-09-25). Id and ratings unverified here: check `codex` on your machine."
+evidence = "`codex debug models` (codex-cli 0.172, 2026-11): \"Fast and affordable model for easier tasks\", thinking levels low..max. Small level chosen by the maintainer (2026-11-24): Luna on high thinking. Ratings: maintainer estimate; not benchmarked here."
 
-[models.gpt-6-sol]
+[models."gpt-6.2-sol@low"]
 kinds = ["codex"]
 tier = "medium"
-reasoning = 4
+reasoning = 3
 coding = 4
 architecture = 3
 instructions = 4
 tools = 4
+planning = 3
+speed = 4
+context_k = 500
+open_weights = false
+evidence = "`codex debug models` (codex-cli 0.172, 2026-11): \"Fast, go-to model for coding and everyday work\" (Codex's first model). Medium level chosen by the maintainer (2026-11-24): Sol on low thinking. Ratings: maintainer estimate; not benchmarked here."
+
+[models."gpt-6.2-sol@medium"]
+kinds = ["codex"]
+tier = "high"
+reasoning = 4
+coding = 4
+architecture = 4
+instructions = 4
+tools = 4
 planning = 4
 speed = 3
-context_k = 0
+context_k = 500
 open_weights = false
-evidence = "Baseline tier for standard agentic work per a third-party guide (codex.danielvaughan.com, 2026-09-25). Id and ratings unverified here: check `codex` on your machine."
+evidence = "`codex debug models` (codex-cli 0.172, 2026-11): \"Fast, go-to model for coding and everyday work\". High level chosen by the maintainer (2026-11-24): Sol on medium thinking, so a Codex team has a high level without Astra. Ratings: maintainer estimate; not benchmarked here."
+
+[discover.codex]
+# How orch finds Codex's current models: it runs `cmd` (at most every few hours, the answer is cached), skips
+# models Codex hides or calls legacy / previous generation, and takes the newest model of each family (a word in
+# its id). Each level is that model on a thinking level. If the command fails, the entries above are used.
+cmd = "codex debug models"
+small = { family = "luna", effort = "high" }
+medium = { family = "sol", effort = "low" }
+high = { family = "sol", effort = "medium" }
 
 # ---------------------------------------------------------------- open-weight models (optional)
 # These need somewhere to run: a local server (Ollama, LM Studio, vLLM) or a hosted provider. The id is what
