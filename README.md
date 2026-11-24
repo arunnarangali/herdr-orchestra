@@ -137,11 +137,13 @@ Version choice, first match wins: `--version` flag › `ORCH_VERSION` env › `.
    ```
    you (1 Codex pane) ──► $orch-plan add a login page
                              lead: only me here → orch team codex
-                             Workers: codex-1 (codex: gpt-6-luna), codex-2 (codex: gpt-6-sol)
-                             Reviewer: reviewer (codex: gpt-6-sol)
+                             Workers: codex-1 (codex: gpt-6-luna@high), codex-2 (codex: gpt-6.2-sol@medium)
+                             Reviewer: reviewer (codex: gpt-6.2-sol@medium)
                   you ──► go
                              orch start → orch team up → 3 more Codex panes open → the run as usual
    ```
+
+   **An all-Codex team.** Codex runs every command in its sandbox, which blocks two things orch needs: talking to herdr, and writing the repo's `.git` (branches, worktrees). So orch starts every Codex pane with two settings that open just those (`-c sandbox_workspace_write.network_access=true`, which also allows the internet, and the repo's `.git` as a writable folder). Start your own Codex lead the same way: `orch agents launch codex --role lead --model gpt-6.2-sol@medium` prints the command; `orch lead plan` warns when the pane you run it in is still blocked. A Codex model id can end in a thinking level: `gpt-6.2-sol@low` is Sol on low thinking. The Codex levels are small = `gpt-6-luna@high`, medium = `gpt-6.2-sol@low`, high = `gpt-6.2-sol@medium` (Astra stays blocked), and `orch models` asks Codex itself (`codex debug models`) for its current models, so a newer Sol or Luna is used without anyone editing a file.
 
 2. **Orchestration plan:** start the plan playbook in the lead's pane (see [Choose your lead](#choose-your-lead)). The lead researches, writes `.orchestrate/plan.md` and shows you the milestones, which coder and model each one goes to, and why. Edit the plan if you like: dependencies, tier, review yes/no, your answers to open questions.
 3. **Orchestration run:** tell the lead **go** (`/orch-run`). It dispatches the milestones (`orch dispatch M1 M2`), which starts the event manager, and pauses. From here the run looks after itself:
@@ -164,9 +166,9 @@ The lead does not pick a model by its name. It reads the catalog (`orch models`)
 
 | Tier | For | Examples from the default catalog |
 |---|---|---|
-| **small** | classification, renames, docs, config, mechanical edits | `haiku`, `gpt-6-luna`, `qwen3.6-35b-a3b` |
-| **medium** | normal implementation, tests, debugging inside one module | `sonnet`, `gpt-6-sol`, `qwen3.8-27b` |
-| **high** | the lead itself, contracts and architecture, cross-module refactors, auth / payments / schema, escalations | `opus`, `deepseek-v4-pro`, `glm-5.3` |
+| **small** | classification, renames, docs, config, mechanical edits | `haiku`, `gpt-6-luna@high`, `qwen3.6-35b-a3b` |
+| **medium** | normal implementation, tests, debugging inside one module | `sonnet`, `gpt-6.2-sol@low`, `qwen3.8-27b` |
+| **high** | the lead itself, contracts and architecture, cross-module refactors, auth / payments / schema, escalations | `opus`, `gpt-6.2-sol@medium`, `deepseek-v4-pro`, `glm-5.3` |
 
 In the plan, each coder carries the model its pane runs, and each milestone says what it needs:
 

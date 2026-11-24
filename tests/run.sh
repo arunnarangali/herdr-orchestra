@@ -13,6 +13,8 @@ export ORCH_MODELS_FILE="$WORK/user-models.toml" ORCH_NO_AUTOSTART=1   # ...and 
 export ORCH_JOURNALCTL=false ORCH_COREDUMPCTL=false ORCH_NO_SCOPE=1 ORCH_TEAM_CONFIRM_S=0.3
 # no test asks the network for a new version, waits for a keyboard, or writes into the developer's own install
 export ORCH_NO_UPDATE_CHECK=1 ORCH_TTY=/dev/null ORCH_SHARE="$WORK/share"
+# ...nor asks an installed codex for its models: the shipped catalog is used (section 54 tests the asking)
+export ORCH_MODELS_DISCOVER=0
 # ...nor into their orch config (mode) or their Pi agents folder
 export ORCH_CONFIG_FILE="$WORK/config/config.json" PI_CODING_AGENT_DIR="$WORK/pi-agent" ORCH_PI="$WORK/pibin/pi"
 # a coder told to stop: short waits (section 49 tests the real behaviour with its own values)
@@ -575,11 +577,11 @@ check "user models.toml adds a model; a high tier needs the reasoning for it" '"
 check "user models.toml can change the policy" 'grep -q DENIED <<<"$("$ORCH" models check sonnet 2>&1)" && "$ORCH" models check gpt-6-astra-light | grep -q UNRATED'
 rm -f "$ORCH_MODELS_FILE"
 newrepo md
-MPLAN='# Plan: t\nBranch: feature/md\nCheck command: test ! -f broken.txt\nIsolation: worktree\nMax parallel: 2\nLEADLINE\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M1: Model\nDepends on: none\nTier: medium\nNeeds: coding\nModel why: one module, a pattern to copy.\nOpen questions:\n- none\n\n## [x] M4: Totals\nDepends on: none\nTier: small\nModel why: one small function.\nOpen questions:\n- none\n'
+MPLAN='# Plan: t\nBranch: feature/md\nCheck command: test ! -f broken.txt\nIsolation: worktree\nMax parallel: 2\nLEADLINE\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna@high)\nReviewer: none\n\n## [x] M1: Model\nDepends on: none\nTier: medium\nNeeds: coding\nModel why: one module, a pattern to copy.\nOpen questions:\n- none\n\n## [x] M4: Totals\nDepends on: none\nTier: small\nModel why: one small function.\nOpen questions:\n- none\n'
 printf "${MPLAN/LEADLINE/Lead mode: off}" > .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1); code=$?
 check "a plan with models and tiers syncs clean" '[ $code -eq 0 ] && ! grep -qiE "WARN.*(tier|model)" <<<"$out"'
-check "state knows each coder model and tier" 'python3 -c "import json,sys;s=json.load(open(\".orchestrate/state.json\"));w=s[\"workers\"];sys.exit(not (w[\"claude-1\"][\"tier\"]==\"medium\" and w[\"codex-1\"][\"model\"]==\"gpt-6-luna\" and s[\"tasks\"][\"M1\"][\"tier\"]==\"medium\"))"'
+check "state knows each coder model and tier" 'python3 -c "import json,sys;s=json.load(open(\".orchestrate/state.json\"));w=s[\"workers\"];sys.exit(not (w[\"claude-1\"][\"tier\"]==\"medium\" and w[\"codex-1\"][\"model\"]==\"gpt-6-luna@high\" and s[\"tasks\"][\"M1\"][\"tier\"]==\"medium\"))"'
 check "pick sends medium work to the medium model, small work to the small one" '[ "$("$ORCH" pick M1)" = claude-1 ] && [ "$("$ORCH" pick M4)" = codex-1 ]'
 sed -i 's/claude: sonnet/claude: fable/' .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1); code=$?
@@ -596,13 +598,13 @@ check "an unknown tier is an ERROR" '[ $code -eq 2 ]'
 
 echo "22. escalation: out of fix rounds on a small model, one fresh round on a stronger one"
 newrepo es
-printf '# Plan: t\nBranch: feature/es\nCheck command: test ! -f broken.txt\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M18: Report\nDepends on: none\nTier: small\nModel why: looks mechanical.\nOpen questions:\n- none\n' > .orchestrate/plan.md
+printf '# Plan: t\nBranch: feature/es\nCheck command: test ! -f broken.txt\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna@high)\nReviewer: none\n\n## [x] M18: Report\nDepends on: none\nTier: small\nModel why: looks mechanical.\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 180 "$ORCH" autopilot > "$WORK/es.log" 2>&1; code=$?
 check "finished (exit 0)" '[ $code -eq 0 ]'
 check "the small model ran out of rounds and the milestone moved up" 'grep -q "medium-tier model gets one fresh round" "$WORK/es.log"'
 check "the stronger coder finished it" '"$ORCH" status | grep -q "M18 .*merged .*claude-1" && [ -f r.txt ]'
-check "report shows each model and the escalation" '"$ORCH" report --json | python3 -c "import json,sys; m={x[\"model\"]:x for x in json.load(sys.stdin)[\"models\"]}; sys.exit(not (m[\"gpt-6-luna\"][\"escalated_away\"]==1 and m[\"sonnet\"][\"merged\"]==1))" && "$ORCH" report | grep -q "moved up"'
-check "summary has the planned-vs-actual model table" 'grep -q "Models: planned and actual" .orchestrate/summary.md && grep -q "| M18 | small | gpt-6-luna (small), sonnet (medium) | yes |" .orchestrate/summary.md'
+check "report shows each model and the escalation" '"$ORCH" report --json | python3 -c "import json,sys; m={x[\"model\"]:x for x in json.load(sys.stdin)[\"models\"]}; sys.exit(not (m[\"gpt-6-luna@high\"][\"escalated_away\"]==1 and m[\"sonnet\"][\"merged\"]==1))" && "$ORCH" report | grep -q "moved up"'
+check "summary has the planned-vs-actual model table" 'grep -q "Models: planned and actual" .orchestrate/summary.md && grep -q "| M18 | small | gpt-6-luna@high (small), sonnet (medium) | yes |" .orchestrate/summary.md'
 
 echo "23. the lead's event queue (no event manager running)"
 newrepo ev; echo "$APP" > "$FH/lead.dir"
@@ -658,7 +660,7 @@ check "--to sends a fix to another coder" 'grep -q "^FIX M6 .*-> claude-1" <<<"$
 
 echo "25. the lead dispatches what becomes ready; a silent lead never stalls the run"
 newrepo lw; echo "$APP" > "$FH/lead.dir"
-printf '# Plan: t\nBranch: feature/lw\nAuto dispatch: off\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: M5 (needs e)\nOpen questions:\n- none\n' > .orchestrate/plan.md
+printf '# Plan: t\nBranch: feature/lw\nAuto dispatch: off\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna@high)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: M5 (needs e)\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 180 "$ORCH" autopilot > "$WORK/lw.log" 2>&1; code=$?
 check "woken with READY, the lead dispatches each milestone as it unlocks" '[ $code -eq 0 ] && [ "$(status_of M5)$(status_of M6)" = mergedmerged ] && grep -q "orch dispatch M6" "$FH/lead-events.log"'
 check "the event manager waited for the lead instead of stopping" 'grep -q "waiting for the lead: dispatch M5" "$WORK/lw.log" && ! grep -q "started without it" "$WORK/lw.log"'
@@ -808,8 +810,9 @@ printf '#!/bin/sh\n' > "$FAKEBIN/codex"; chmod +x "$FAKEBIN/codex"
 
 echo "12. one installed tool builds the whole team: orch team <kind>, orch team up"
 out=$("$ORCH" team codex 2>&1)
-check "team codex: 2 coders across the codex tiers + reviewer on the strongest" 'grep -q "^Workers: codex-1 (codex: gpt-6-luna), codex-2 (codex: gpt-6-sol)$" <<<"$out" && grep -q "^Reviewer: reviewer (codex: gpt-6-sol)$" <<<"$out"'
-check "team codex says no high-tier codex model is allowed" 'grep -q "strongest allowed codex model is gpt-6-sol (medium tier)" <<<"$out"'
+check "team codex: 2 coders across the codex tiers + reviewer on the strongest" 'grep -q "^Workers: codex-1 (codex: gpt-6-luna@high), codex-2 (codex: gpt-6.2-sol@medium)$" <<<"$out" && grep -q "^Reviewer: reviewer (codex: gpt-6.2-sol@medium)$" <<<"$out"'
+check "team codex has a high Codex level now (Sol on medium thinking), so no high-tier note" '! grep -q "strongest allowed codex model is" <<<"$out" && grep -q "gpt-6.2-sol@medium  (high tier)" <<<"$out"'
+check "team codex prints the lead's own start command on the strongest level" 'grep -q "^  codex --approve-for-me .* --model gpt-6.2-sol -c model_reasoning_effort=medium$" <<<"$out"'
 out=$("$ORCH" team claude --coders 1 --no-reviewer 2>&1)
 check "team claude --coders 1: one coder on the strongest model, no reviewer" 'grep -q "^Workers: claude-1 (claude: opus)$" <<<"$out" && grep -q "^Reviewer: none$" <<<"$out"'
 out=$("$ORCH" team codex --models gpt-6-astra 2>&1); code=$?
@@ -822,9 +825,9 @@ Branch: feature/solo
 Check command: true
 Isolation: worktree
 Max parallel: 2
-Lead: lead (codex: gpt-6-sol)
-Workers: codex-1 (codex: gpt-6-luna), codex-2 (codex: gpt-6-sol)
-Reviewer: reviewer (codex: gpt-6-sol)
+Lead: lead (codex: gpt-6.2-sol@medium)
+Workers: codex-1 (codex: gpt-6-luna@high), codex-2 (codex: gpt-6.2-sol@low)
+Reviewer: reviewer (codex: gpt-6.2-sol@medium)
 
 ## [x] M1: a
 Depends on: none
@@ -840,12 +843,13 @@ touch "$FH/codex-2.missing" "$FH/reviewer.missing"
 out=$("$ORCH" start 2>&1)
 check "orch start shows the missing codex panes" 'grep -q "WORKER codex-2 .*herdr=NOT FOUND" <<<"$out" && grep -q "REVIEWER reviewer .*herdr=NOT FOUND" <<<"$out"'
 out=$(printf '[codex]\nreview_launch = "codex --sandbox read-only"\n' > "$WORK/rev-agents.toml"; ORCH_AGENTS_FILE="$WORK/rev-agents.toml" "$ORCH" team up --dry-run 2>&1)
-check "team up starts the reviewer with the kind's review_launch, the coders with launch" 'grep -q "^WOULD   reviewer: .*codex --sandbox read-only --model gpt-6-sol" <<<"$out" && grep -q "^WOULD   codex-2: .*codex --approve-for-me --model gpt-6-sol" <<<"$out"'
+check "team up starts the reviewer with the kind's review_launch, the coders with launch" 'grep -q "^WOULD   reviewer: .*codex --sandbox read-only --model gpt-6.2-sol -c model_reasoning_effort=medium" <<<"$out" && grep -q "^WOULD   codex-2: .*codex --approve-for-me .* --model gpt-6.2-sol -c model_reasoning_effort=low" <<<"$out"'
 out=$("$ORCH" team up --dry-run 2>&1)
 check "team up --dry-run only prints the commands" 'grep -q "^WOULD   codex-2: .*pane split --direction right --cwd .*app-wt/codex-2 --no-focus" <<<"$out" && [ ! -f "$FH/team.log" ]'
 out=$(ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1); code=$?
 check "team up skips the agent that already runs" 'grep -q "^ok      codex-1: already running" <<<"$out"'
-check "team up opens the coder in its own worktree, on its plan model" '[ $code -eq 0 ] && grep -q "^OPENED  codex-2: pane w1:p2 in .*app-wt/codex-2 running \`codex --approve-for-me --model gpt-6-sol\`" <<<"$out"'
+check "team up opens the coder in its own worktree, on its plan model and thinking level" '[ $code -eq 0 ] && grep -q "^OPENED  codex-2: pane w1:p2 in .*app-wt/codex-2 running \`codex --approve-for-me .* --model gpt-6.2-sol -c model_reasoning_effort=low\`" <<<"$out"'
+check "…and the Codex pane can reach herdr and write the repo .git (its sandbox blocks both otherwise)" 'grep -q "^OPENED  codex-2: .*sandbox_workspace_write.network_access=true -c .sandbox_workspace_write.writable_roots=\[\"$APP/.git\"\]. --model" <<<"$out"'
 check "the reviewer opens in the repo, below the coder, and is named" 'grep -q "split w1:p2 --direction down --cwd $APP --no-focus" "$FH/team.log" && grep -q "rename w1:p3 reviewer" "$FH/team.log"'
 out=$("$ORCH" start 2>&1)
 check "after team up every agent is found" '! grep -q "NOT FOUND" <<<"$out"'
@@ -1169,7 +1173,7 @@ check "the reviewer is not benched this way" '[ $code -ne 0 ] && grep -q "change
 
 echo "35. orch team up checks the agent is still running a moment later"
 newrepo tq
-printf '# Plan: t\nBranch: feature/tq\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: codex-1 (codex: gpt-6-luna), codex-2 (codex: gpt-6-sol)\nReviewer: none\n\n## [x] M1: a\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+printf '# Plan: t\nBranch: feature/tq\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: codex-1 (codex: gpt-6-luna@high), codex-2 (codex: gpt-6.2-sol@low)\nReviewer: none\n\n## [x] M1: a\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 "$ORCH" sync >/dev/null && "$ORCH" start >/dev/null
 touch "$FH/codex-2.missing" "$FH/codex-2.quits"; printf 'error: unknown option --approve-for-me\n$ ' > "$FH/codex-2.pane"
 out=$(ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1); code=$?
@@ -1404,7 +1408,7 @@ check "README, usage and the plan playbook explain updating" 'grep -q "orch upda
 echo "43. a criterion the developer approved deferring costs no fix rounds and no escalation"
 newrepo df; echo "$APP" > "$FH/lead.dir"
 echo "Build the rest; defer the watch sync until the API exists" > "$FH/lead-answer"; echo AC2 > "$FH/lead-defer"
-DPLAN='# Plan: t\nBranch: feature/df\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: reviewer (agy)\n\n## [x] M21: Watch\nDepends on: none\nTier: small\nModel why: small.\nReview: yes\nAcceptance criteria:\n- the watch shows the steps\n- the watch syncs with the phone API\nOpen questions:\n- none\n'
+DPLAN='# Plan: t\nBranch: feature/df\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna@high)\nReviewer: reviewer (agy)\n\n## [x] M21: Watch\nDepends on: none\nTier: small\nModel why: small.\nReview: yes\nAcceptance criteria:\n- the watch shows the steps\n- the watch syncs with the phone API\nOpen questions:\n- none\n'
 printf "$DPLAN" > .orchestrate/plan.md
 "$ORCH" sync >/dev/null && "$ORCH" dispatch M21 >/dev/null
 timeout 180 "$ORCH" autopilot > "$WORK/df.log" 2>&1; code=$?
@@ -1511,7 +1515,7 @@ check "a failed check and a review blocker on the same version make ONE fix roun
 check "that fix job names both the check and the blocker" 'grep -q "^# Checks failing for M2" "$F/fix-1.md" && grep -q "BLOCKER: b.txt:1 — b.txt must say validated" "$F/fix-1.md"'
 check "the review of the failing version does not count against the review cap" 'task_is M2 "t.get(\"review_base\", 0) == 1"'
 newrepo adp; echo "$APP" > "$FH/lead.dir"
-printf '# Plan: t\nBranch: feature/ad\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: M5 (needs e)\nOpen questions:\n- none\n' > .orchestrate/plan.md
+printf '# Plan: t\nBranch: feature/ad\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna@high)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: g\nDepends on: M5 (needs e)\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 180 "$ORCH" autopilot > "$WORK/adp.log" 2>&1; code=$?; L=.orchestrate/autopilot.log
 check "auto dispatch: M6 starts as soon as M5 lands, without waiting for the lead" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ] && grep -q "M6: M5 landed, so it starts now (auto dispatch); the lead is told" $L && ! grep -q "orch dispatch M6" "$FH/lead-events.log"'
 check "the lead is told with AUTO-DISPATCHED and the reason" 'grep -q "AUTO-DISPATCHED M6 \"g\": started by the event manager as soon as M5 landed (.Auto dispatch: on. in plan.md)" "$FH/lead-events.log"'
@@ -1519,10 +1523,10 @@ check "the first milestone still waits for the lead's go" 'grep -q "waiting for 
 
 echo "46. plain words: the plan as cards, a SAY line per event, the run diary"
 newrepo pw; echo "$APP" > "$FH/lead.dir"; echo "INR only" > "$FH/lead-answer"
-printf '# Plan: Totals\nBranch: feature/pw\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nEstimate: 1h10m\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna)\nReviewer: reviewer (agy)\n\n## [x] M5: e\nDepends on: none\nWhy separate: the totals build on it\nPlain: the page that lists every expense\nReview: yes\nEstimate: 30m\nOpen questions:\n- none\n\n## [x] M4: Totals\nDepends on: M5 (needs the expense list)\nWhy separate: needs the list first\nEstimate: 40m\nOpen questions:\n- none\n' > .orchestrate/plan.md
+printf '# Plan: Totals\nBranch: feature/pw\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nEstimate: 1h10m\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna@high)\nReviewer: reviewer (agy)\n\n## [x] M5: e\nDepends on: none\nWhy separate: the totals build on it\nPlain: the page that lists every expense\nReview: yes\nEstimate: 30m\nOpen questions:\n- none\n\n## [x] M4: Totals\nDepends on: M5 (needs the expense list)\nWhy separate: needs the list first\nEstimate: 40m\nOpen questions:\n- none\n' > .orchestrate/plan.md
 "$ORCH" sync >/dev/null 2>&1; out=$("$ORCH" plan show 2>&1)
 check "orch plan show: one card per milestone, in the plan's plain words" 'grep -q "^PLAN in plain words: Totals — 2 milestone(s) on feature/pw, about 1h10m in all" <<<"$out" && grep -q "^M5 e — the page that lists every expense$" <<<"$out" && grep -q "^   Why its own step: the totals build on it" <<<"$out"'
-check "each card says what it waits for and why, who builds it on which model, how long, and the review" 'grep -q "^   Waits for: nothing, it can start first" <<<"$out" && grep -q "^   Waits for: M5 (needs the expense list)" <<<"$out" && grep -q "^   Built by: claude-1 (sonnet) or codex-1 (gpt-6-luna) · about 30m · reviewed by reviewer" <<<"$out"'
+check "each card says what it waits for and why, who builds it on which model, how long, and the review" 'grep -q "^   Waits for: nothing, it can start first" <<<"$out" && grep -q "^   Waits for: M5 (needs the expense list)" <<<"$out" && grep -q "^   Built by: claude-1 (sonnet) or codex-1 (gpt-6-luna@high) · about 30m · reviewed by reviewer" <<<"$out"'
 check "the order is spelled out" 'grep -q "^  1. M5$" <<<"$out" && grep -q "^  2. M4 (after M5)$" <<<"$out"'
 check "a milestone with no Plain: line is named, with the fix" 'grep -q "^WARN no .Plain:. line for M4" <<<"$out"'
 timeout 180 "$ORCH" autopilot > "$WORK/pw.log" 2>&1 & ap=$!
@@ -1872,6 +1876,76 @@ check "subagent: the task file has the project rules and asks for proof on a har
 echo 1 > one.txt; "$ORCH" check M1 >/dev/null 2>&1; out=$("$ORCH" sub "done" M1 2>&1); code=$?
 check "subagent: a hard-to-undo milestone is held, and the proof is the coder's PROOF line" '[ $code -eq 7 ] && grep -q "^HELD M1 for approval — hard to undo: adds a column to orders" <<<"$out" && grep -q "^Proof from the coder: the coder.s PROOF: line, in the lead.s chat" <<<"$out"'
 unset ORCH_CONFIG_FILE PI_CODING_AGENT_DIR
+
+echo "54. an all-Codex team: sandbox doors, thinking levels, models found by asking Codex"
+CX="$WORK/cxbin"; mkdir -p "$CX"
+cat > "$CX/codex" <<'FAKE'
+#!/bin/sh
+case "$*" in
+  "debug models")
+    [ -f "$CODEX_FAKE_FAIL" ] && { echo "boom" >&2; exit 1; }
+    echo "WARNING: some noise first" >&2
+    cat <<'JSON'
+{"models": [
+ {"slug": "gpt-6.3-sol", "description": "Fast, go-to model for coding and everyday work.", "visibility": "list", "upgrade": null, "priority": 1},
+ {"slug": "gpt-7-astra", "description": "Our most capable model.", "visibility": "list", "upgrade": null, "priority": 2},
+ {"slug": "gpt-6.2-sol", "description": "Previous generation model for coding.", "visibility": "list", "upgrade": null, "priority": 3},
+ {"slug": "gpt-6-luna", "description": "Fast and affordable model for easier tasks.", "visibility": "list", "upgrade": null, "priority": 7},
+ {"slug": "gpt-5.6-luna", "description": "Legacy fast model.", "visibility": "list", "upgrade": {"model": "gpt-6-luna"}, "priority": 10},
+ {"slug": "gpt-x-luna", "description": "Secret.", "visibility": "hide", "upgrade": null, "priority": 0}
+]}
+JSON
+    ;;
+  --help|-h) echo "Usage: codex [OPTIONS]"; echo "  -c, --config <key=value>"; echo "  -m, --model <MODEL>"; echo "      --approve-for-me";;
+  --version) echo "codex-cli 0.172.0";;
+esac
+FAKE
+chmod +x "$CX/codex"
+export CODEX_FAKE_FAIL="$WORK/cx-fail"
+DSH="$WORK/share-dx"
+out=$(ORCH_MODELS_DISCOVER=1 ORCH_SHARE="$DSH" PATH="$CX:$PATH" "$ORCH" models 2>&1)
+check "orch models asks codex: the newest Sol fills medium (low thinking) and high (medium thinking), Luna small (high thinking)" 'grep -qE "^gpt-6.3-sol@medium +high +codex" <<<"$out" && grep -qE "^gpt-6.3-sol@low +medium +codex" <<<"$out" && grep -qE "^gpt-6-luna@high +small +codex" <<<"$out"'
+check "…the shipped Codex entries make way, hidden, legacy and Astra models are not used" '! grep -qE "^(gpt-6.2-sol|gpt-x-luna|gpt-5.6|gpt-7-astra)" <<<"$out" && grep -q "codex models found by \`codex debug models\`: gpt-6-luna, gpt-6.3-sol (not used, the tool calls them legacy: gpt-5.6-luna, gpt-6.2-sol)" <<<"$out"'
+check "…the answer is cached in the share folder" 'grep -q "gpt-6.3-sol" "$DSH/models-codex.json"'
+touch "$CODEX_FAKE_FAIL"
+out=$(ORCH_MODELS_DISCOVER=1 ORCH_SHARE="$DSH" PATH="$CX:$PATH" "$ORCH" models 2>&1)
+check "a fresh cached answer is used without asking again" 'grep -qE "^gpt-6.3-sol@medium +high" <<<"$out"'
+out=$(ORCH_MODELS_DISCOVER=1 ORCH_MODELS_TTL_S=0 ORCH_SHARE="$DSH" PATH="$CX:$PATH" "$ORCH" models 2>&1)
+check "when codex fails, the older cached answer still counts" 'grep -qE "^gpt-6.3-sol@medium +high" <<<"$out"'
+out=$(ORCH_MODELS_DISCOVER=1 ORCH_SHARE="$WORK/share-dx2" PATH="$CX:$PATH" "$ORCH" models 2>&1)
+check "when codex fails and nothing is cached, the shipped Codex entries are used" 'grep -qE "^gpt-6.2-sol@medium +high" <<<"$out" && grep -qE "^gpt-6.2-sol@low +medium" <<<"$out" && grep -qE "^gpt-6-luna@high +small" <<<"$out" && ! grep -q "found by" <<<"$out"'
+rm -f "$CODEX_FAKE_FAIL"
+out=$(ORCH_MODELS_DISCOVER=0 ORCH_SHARE="$WORK/share-dx3" PATH="$CX:$PATH" "$ORCH" models 2>&1)
+check "ORCH_MODELS_DISCOVER=0 keeps the shipped list" 'grep -qE "^gpt-6.2-sol@medium +high" <<<"$out" && [ ! -f "$WORK/share-dx3/models-codex.json" ]'
+printf '[discover.codex]\nsmall = { family = "sol", effort = "low" }\n' > "$ORCH_MODELS_FILE"
+out=$(ORCH_MODELS_DISCOVER=1 ORCH_SHARE="$DSH" PATH="$CX:$PATH" "$ORCH" models 2>&1)
+check "your models.toml can change which family and thinking level fills a tier" 'grep -qE "^gpt-6.3-sol@low +(small|medium)" <<<"$out" && ! grep -q "^gpt-6-luna" <<<"$out"'
+rm -f "$ORCH_MODELS_FILE"
+out=$(ORCH_MODELS_DISCOVER=1 ORCH_SHARE="$DSH" PATH="$CX:$PATH" "$ORCH" team codex 2>&1)
+check "orch team codex uses the models codex reported" 'grep -q "^Workers: codex-1 (codex: gpt-6-luna@high), codex-2 (codex: gpt-6.3-sol@medium)$" <<<"$out" && grep -q "^Reviewer: reviewer (codex: gpt-6.3-sol@medium)$" <<<"$out"'
+newrepo cx
+out=$("$ORCH" agents launch codex --model gpt-6.2-sol@low)
+check "a Codex pane starts with herdr's socket and this repo's .git opened, on Sol with low thinking" '[ "$out" = "codex --approve-for-me -c sandbox_workspace_write.network_access=true -c '"'"'sandbox_workspace_write.writable_roots=[\"$APP/.git\"]'"'"' --model gpt-6.2-sol -c model_reasoning_effort=low" ]'
+out=$(cd "$WORK" && "$ORCH" agents launch codex)
+check "outside a repo the .git setting is left out and the command still starts" '[ "$out" = "codex --approve-for-me -c sandbox_workspace_write.network_access=true" ]'
+check "a kind with no thinking option keeps the whole id as its model (no change for others)" '[ "$("$ORCH" agents launch claude --model sonnet@x)" = "claude --permission-mode acceptEdits --model sonnet@x" ]'
+check "a denied model is refused with a thinking level too" '! "$ORCH" agents launch codex --model gpt-6.2-astra@low >/dev/null 2>&1'
+printf '# Plan: t\nBranch: feature/cx\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (codex: gpt-6.2-sol@medium)\nWorkers: codex-1 (codex: gpt-6-luna@high @pane:w1:p7), codex-2 (codex: gpt-6.2-sol@medium)\nReviewer: reviewer (codex: gpt-6.2-sol@medium)\n\n## [x] M1: a\nDepends on: none\nTier: high\nModel why: a contract.\nOpen questions:\n- none\n' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "an all-Codex plan with thinking levels syncs clean: every model rated, high tier reachable" '[ $code -eq 0 ] && ! grep -qiE "WARN.*(high-tier|not in the model catalog|policy)" <<<"$out"'
+check "…the model keeps its level and the pane id is still read after it" 'python3 -c "import json,sys;s=json.load(open(\".orchestrate/state.json\"));w=s[\"workers\"];sys.exit(not (w[\"codex-1\"][\"model\"]==\"gpt-6-luna@high\" and \"w1:p7\" in str(w[\"codex-1\"].get(\"pane\")) and w[\"codex-2\"][\"tier\"]==\"high\" and s[\"reviewer_info\"][\"model\"]==\"gpt-6.2-sol@medium\"))"'
+check "the high milestone goes to the Sol coder, not the Luna one" '[ "$("$ORCH" pick M1)" = codex-2 ]'
+out=$(CODEX_SANDBOX_NETWORK_DISABLED=1 "$ORCH" lead check 2>&1)
+check "a lead in Codex's sandbox with the network off is warned, with the command to restart it" 'grep -q "^WARN this pane runs in Codex.s sandbox with the network off" <<<"$out" && grep -q "^    codex --approve-for-me -c sandbox_workspace_write.network_access=true" <<<"$out"'
+out=$(CODEX_SANDBOX_NETWORK_DISABLED=1 "$ORCH" lead plan 2>&1 | head -5)
+check "…orch lead plan says it at the top too" 'grep -q "^WARN this pane runs in Codex.s sandbox" <<<"$out"'
+check "a normal pane gets no sandbox warning" '! "$ORCH" lead check 2>&1 | grep -q "Codex.s sandbox"'
+out=$(PATH="$CX:$PATH" "$ORCH" doctor codex 2>&1)
+check "doctor: the shipped Codex launch keeps both settings and its flags are in --help" '! grep -q "BAD launch" <<<"$out" && [ "$(grep -c "launch flag -c is listed" <<<"$out")" -eq 1 ] && grep -q "launch flag -c is listed" <<<"$out"'
+printf '[codex]\nlaunch = "codex --approve-for-me"\n' > "$WORK/cx-agents.toml"
+out=$(ORCH_AGENTS_FILE="$WORK/cx-agents.toml" PATH="$CX:$PATH" "$ORCH" doctor codex 2>&1); code=$?
+check "doctor: your own Codex launch without the two settings is BROKEN, and says why" '[ $code -ne 0 ] && grep -q "BAD launch has no \`sandbox_workspace_write.network_access=true\`" <<<"$out" && grep -q "BAD launch has no \`sandbox_workspace_write.writable_roots\`" <<<"$out"'
+unset CODEX_FAKE_FAIL
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

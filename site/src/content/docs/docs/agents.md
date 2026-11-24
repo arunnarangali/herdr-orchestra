@@ -34,8 +34,8 @@ You don't need several tools, or to open every pane yourself. With only Codex (o
 
 lead: only one agent window is open, so the team is 2 more Codex coders and a Codex reviewer;
       orch opens their windows when you say go.
-      Workers: codex-1 (codex: gpt-6-luna), codex-2 (codex: gpt-6-sol)
-      Reviewer: reviewer (codex: gpt-6-sol)
+      Workers: codex-1 (codex: gpt-6-luna@high), codex-2 (codex: gpt-6.2-sol@medium)
+      Reviewer: reviewer (codex: gpt-6.2-sol@medium)
 > go
 orch start        → codex-1, codex-2, reviewer: herdr=NOT FOUND
 orch team up      → OPENED codex-1 in ../my-app-wt/codex-1, codex-2 in ../my-app-wt/codex-2, reviewer in my-app
@@ -52,7 +52,8 @@ Two commands do this, and the lead runs both:
 Good to know:
 
 - Every pane is its own session of the same tool, on your existing login. More panes use more of that tool's limits, so the lead opens only what the plan needs (`--coders 1` for a one-milestone feature).
-- Codex has no high-tier model in runs (Astra is denied), so a Codex-only team does high-tier milestones on its strongest allowed model. `orch team codex` and `orch sync` say so.
+- Codex's high tier is Sol on medium thinking (`gpt-6.2-sol@medium`); Astra stays denied. See [Models](../models/).
+- Codex runs every command in a sandbox that blocks herdr's socket and the repo's `.git`. orch starts each Codex pane with two settings that open just those (`-c sandbox_workspace_write.network_access=true`, which also allows the internet, and the repo's `.git` in `writable_roots`), so `orch start`, `orch team up` and every herdr call work the first time instead of each waiting for an approval. Start your own Codex lead with the command `orch agents launch codex --role lead --model gpt-6.2-sol@medium` prints (`orch team codex` prints it too). `orch lead plan` and `orch lead check` warn when the pane they run in is still blocked, and `orch doctor codex` says when your own launch command drops one of the two settings.
 - If a new pane stops at a first-run question (trust this folder, sign in), `orch team up` reports `WAITING` with the rename command; answer the question in that pane and run `orch team up` again.
 - For a kind herdr can't watch, `orch team up` opens and labels the pane and tells you the `name (kind @pane:<id>)` line to put in the plan.
 

@@ -756,29 +756,138 @@ def user_models_file():
     return Path(os.environ.get("ORCH_MODELS_FILE") or Path.home() / ".config/herdr-orchestra/models.toml")
 
 
+_CATALOG = {}
+
+
 def models_catalog(required=False):
-    """models.default.toml merged with the user's models.toml (key by key per model; policy and tiers per key).
-    None when tomllib is missing and the catalog isn't required: plans then run without tiers, as before 4.7."""
+    """models.default.toml, then the models each installed tool reports itself ([discover.<kind>]), then the user's
+    models.toml, merged key by key per model (policy, tiers and discover per key). None when tomllib is missing and
+    the catalog isn't required: plans then run without tiers, as before 4.7."""
     try:
         import tomllib
     except ImportError:
         if required:
             die(f"the model catalog needs Python >= 3.11 (tomllib); this is Python {sys.version.split()[0]}")
         return None
-    cat = {"policy": {}, "tiers": {}, "models": {}}
+    if "cat" in _CATALOG:
+        return _CATALOG["cat"]
+    cat = {"policy": {}, "tiers": {}, "models": {}, "discover": {}, "found": {}}
     try:
-        for src in (asset("models.default.toml"), user_models_file()):
-            if not src or not src.exists():
-                continue
-            data = tomllib.loads(src.read_text())
-            for sec in ("policy", "tiers"):
-                cat[sec].update(data.get(sec) or {})
-            for mid, vals in (data.get("models") or {}).items():
-                if isinstance(vals, dict):
-                    cat["models"].setdefault(mid.lower(), {}).update(vals)
+        datas = [(tomllib.loads(src.read_text()), user) for src, user in
+                 ((asset("models.default.toml"), False), (user_models_file(), True)) if src and src.exists()]
     except tomllib.TOMLDecodeError as e:
         die(f"model catalog: {e}")
+    for data, _ in datas:
+        for sec in ("policy", "tiers"):
+            cat[sec].update(data.get(sec) or {})
+        for kind, d in (data.get("discover") or {}).items():
+            if isinstance(d, dict):
+                cat["discover"].setdefault(kind, {}).update(d)
+    for phase in (False, True):          # the shipped models, then what the tools report, then the user's own
+        if phase:
+            discover_models(cat)
+        for data, user in datas:
+            if user == phase:
+                for mid, vals in (data.get("models") or {}).items():
+                    if isinstance(vals, dict):
+                        cat["models"].setdefault(mid.lower(), {}).update(vals)
+    _CATALOG["cat"] = cat
     return cat
+
+
+# ---------------------------------------------------------------- model discovery: ask the tool for its models
+DISCOVER_TTL_S = float(os.environ.get("ORCH_MODELS_TTL_S", str(6 * 3600)))
+LEGACY_RE = re.compile(r"(?i)\blegacy\b|previous generation|deprecated")
+
+
+def split_effort(mid):
+    """`gpt-6.2-sol@low` -> ("gpt-6.2-sol", "low"); an id without a thinking level -> (id, None)."""
+    if mid and "@" in mid:
+        base, eff = mid.rsplit("@", 1)
+        if base and re.fullmatch(r"[A-Za-z]+", eff):
+            return base, eff.lower()
+    return mid, None
+
+
+def _tool_models(kind, cmd):
+    """The models `cmd` lists ([{slug, description, visibility, upgrade, priority}]), or None. The answer is kept
+    for DISCOVER_TTL_S in the share folder; an older answer is used when the command fails now."""
+    cache = share_dir() / f"models-{kind}.json"
+    try:
+        old = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        old = None
+    if isinstance(old, dict) and old.get("cmd") == cmd and time.time() - old.get("ts", 0) < DISCOVER_TTL_S:
+        return old.get("models")
+    models = None
+    try:
+        r = subprocess.run(shlex.split(cmd), text=True, capture_output=True, timeout=20, stdin=subprocess.DEVNULL)
+        out = r.stdout
+        data = json.loads(out[out.index("{"):]) if r.returncode == 0 and "{" in out else None
+        rows = data.get("models") if isinstance(data, dict) else data
+        if isinstance(rows, list):
+            models = [{k: m.get(k) for k in ("slug", "description", "visibility", "upgrade", "priority")}
+                      for m in rows if isinstance(m, dict) and isinstance(m.get("slug"), str)]
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        models = None
+    if not models:
+        return old.get("models") if isinstance(old, dict) and old.get("cmd") == cmd else None
+    with contextlib.suppress(OSError):
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({"ts": time.time(), "cmd": cmd, "models": models}))
+    return models
+
+
+def newest_of(models, family):
+    """The tool's preferred current model of a family (a word in its id): not hidden, not legacy, lowest priority."""
+    cands = [m for m in models if family.lower() in re.split(r"[-_.@/]", m["slug"].lower())
+             and m.get("visibility") != "hide" and not m.get("upgrade")
+             and not LEGACY_RE.search(m.get("description") or "")]
+    prio = lambda m: m["priority"] if isinstance(m.get("priority"), (int, float)) else 1e9
+    return min(cands, key=lambda m: (prio(m), m["slug"]), default=None)
+
+
+def discover_models(cat):
+    """For each [discover.<kind>] whose tool is installed: ask it for its models and put the newest model of each
+    family into the levels it names (small / medium / high, each a family and a thinking level). The shipped
+    entries of that kind are the fallback: they are replaced only when the tool answered."""
+    if os.environ.get("ORCH_MODELS_DISCOVER", "1").lower() in ("0", "off", "false", "no"):
+        return
+    for kind, cfg in cat["discover"].items():
+        cmd = cfg.get("cmd")
+        try:
+            exe = shlex.split(cmd)[0] if cmd else None
+        except ValueError:
+            exe = None
+        if not exe or not shutil.which(exe):
+            continue
+        models = _tool_models(kind, cmd)
+        if not models:
+            continue
+        shipped = {mid: m for mid, m in cat["models"].items() if m.get("kinds") == [kind]}
+        made, used = {}, set()
+        for level in TIERS:
+            want = cfg.get(level)
+            if not isinstance(want, dict) or not want.get("family"):
+                continue
+            m = newest_of(models, want["family"])
+            if not m:
+                continue
+            mid = m["slug"].lower() + (f"@{want['effort']}" if want.get("effort") else "")
+            like = next((x for x in shipped.values() if str(x.get("tier", "")).lower() == level), None) or {}
+            made[mid] = dict(like, kinds=[kind], tier=level, found=True, evidence=(
+                f"found by `{cmd}`: \"{(m.get('description') or '').strip()}\". {level} level = the newest "
+                f"{want['family']} model" + (f" on {want['effort']} thinking" if want.get("effort") else "")
+                + f" ([discover.{kind}]). Ratings copied from the shipped {level} entry; not benchmarked here."))
+            used.add(m["slug"])
+        if not made:
+            continue
+        for mid in shipped:
+            cat["models"].pop(mid, None)
+        cat["models"].update(made)
+        cat["found"][kind] = {"cmd": cmd, "used": sorted(used),
+                              "skipped": sorted(x["slug"] for x in models if x["slug"] not in used
+                                                and (x.get("upgrade") or LEGACY_RE.search(x.get("description") or "")))}
 
 
 def model_denied(cat, mid):
@@ -851,15 +960,19 @@ def cmd_models(args):
         return
     if sub:
         die("usage: orch models [check <id> | show <id>]")
-    print(f"{'model':<18} {'tier':<7} {'kinds':<17} {'reas':>4} {'code':>4} {'arch':>4} {'inst':>4} {'tool':>4} "
+    print(f"{'model':<20} {'tier':<7} {'kinds':<17} {'reas':>4} {'code':>4} {'arch':>4} {'inst':>4} {'tool':>4} "
           f"{'plan':>4} {'speed':>5} {'ctx k':>6}  open")
     for tier in reversed(TIERS):
         for mid, m in cat["models"].items():
             if model_tier(cat, mid) != tier or model_denied(cat, mid):
                 continue
-            print(f"{mid:<18} {tier:<7} {','.join(m.get('kinds', [])):<17} "
+            print(f"{mid:<20} {tier:<7} {','.join(m.get('kinds', [])):<17} "
                   + " ".join(f"{m.get(k, '-'):>4}" for k in RATINGS[:-1])
                   + f" {m.get('speed', '-'):>5} {m.get('context_k') or '-':>6}  {'yes' if m.get('open_weights') else 'no'}")
+    for kind, f in cat.get("found", {}).items():
+        print(f"\n{kind} models found by `{f['cmd']}`: {', '.join(f['used'])}"
+              + (f" (not used, the tool calls them legacy: {', '.join(f['skipped'])})" if f["skipped"] else ""))
+        print(f"  an id ending in @<level> (e.g. @low) is that model on that thinking level")
     print("\nTiers (a model needs this reasoning rating to serve the tier):")
     for tier in TIERS:
         tv = cat["tiers"].get(tier) or {}
@@ -951,7 +1064,8 @@ def has_open_questions(t):
     return bool(vals) and vals != ["none"]
 
 
-AGENT_RE = re.compile(r"([\w.-]+)\s*\(\s*([\w.-]+)(?:\s*:\s*([^\s@)]+))?(?:\s+@pane:([^\s)]+))?\s*\)")
+# a model may carry a thinking level after @ (`codex: gpt-6.2-sol@low`); a pane id follows a space (` @pane:w1:p3`)
+AGENT_RE = re.compile(r"([\w.-]+)\s*\(\s*([\w.-]+)(?:\s*:\s*([^\s)]+?))?(?:\s+@pane:([^\s)]+))?\s*\)")
 
 
 def parse_agents(s):
@@ -6134,11 +6248,42 @@ def cmd_report(args):
             print(f"  rule broken {n}x: {r}")
 
 
-def launch_cmd(kind, v, model=None, strict=True, role=None):
+def git_common_dir(cwd=None):
+    """The absolute .git folder of the repo `cwd` is in (a worktree's main repo .git), or None outside a repo."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True,
+                           capture_output=True, timeout=10, cwd=str(cwd or ROOT or Path.cwd()))
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def fill_launch(cmd, cwd=None):
+    """Put the repo's .git folder where a launch command says {git_dir}. Outside a repo the option that needs it is
+    left out (with the `-c` before it), so the command still starts."""
+    if "{git_dir}" not in cmd:
+        return cmd
+    gd = git_common_dir(cwd)
+    out = []
+    for tok in shlex.split(cmd):
+        if "{git_dir}" in tok:
+            if gd:
+                out.append(tok.replace("{git_dir}", gd))
+            elif out and out[-1] in ("-c", "--config"):
+                out.pop()
+            continue
+        out.append(tok)
+    return shlex.join(out)
+
+
+def launch_cmd(kind, v, model=None, strict=True, role=None, cwd=None):
     """The shell command that starts agent `kind` in a pane, on `model` when given. With strict=False a kind
     without a model_flag starts on its default model instead of failing (the caller says so). role="reviewer"
-    uses the kind's `review_launch` when it has one: the same tool with its code-editing tools turned off."""
-    cmd = (v.get("review_launch") if role == "reviewer" else None) or v.get("launch") or v.get("binary", kind)
+    uses the kind's `review_launch` when it has one: the same tool with its code-editing tools turned off.
+    A model `<id>@<level>` on a kind with an `effort_flag` starts <id> with that thinking level. `cwd` is the
+    folder the agent will run in ({git_dir} is filled in from it)."""
+    cmd = fill_launch((v.get("review_launch") if role == "reviewer" else None) or v.get("launch")
+                      or v.get("binary", kind), cwd)
     if model:
         cat = models_catalog()
         why = model_denied(cat, model)
@@ -6152,7 +6297,10 @@ def launch_cmd(kind, v, model=None, strict=True, role=None):
         kinds = ((cat or {}).get("models", {}).get(model.lower()) or {}).get("kinds")
         if kinds and kind not in kinds:
             print(f"WARN: the catalog lists {model} for {', '.join(kinds)}, not {kind}", file=sys.stderr)
-        cmd += f" {v['model_flag']} {shlex.quote(model)}"
+        base, effort = split_effort(model) if v.get("effort_flag") else (model, None)
+        cmd += f" {v['model_flag']} {shlex.quote(base)}"
+        if effort:
+            cmd += " " + v["effort_flag"].replace("{effort}", shlex.quote(effort))
     return cmd
 
 
@@ -6238,6 +6386,9 @@ def cmd_team(args):
     if top and tier.get(top) != "high":
         print(f"\nNOTE: the strongest allowed {kind} model is {top} ({tier.get(top)} tier): high-tier milestones go to "
               f"it, and `orch sync` will say so")
+    if top and v.get("model_flag") and "lead" in roles:
+        print(f"\nYour own lead pane on the strongest level (start it like this, then write `Lead: lead ({kind}: {top})`):"
+              f"\n  {launch_cmd(kind, v, top, strict=False)}")
     print(f"\nCheck these are models your {kind} really reaches (`--models a,b` to choose others).")
     print("\nThese panes don't exist yet. After `orch sync` and `orch start`, `orch team up` opens each one in its "
           "own folder, on its model, and names it.")
@@ -6305,7 +6456,7 @@ def team_up(args):
             print(f"SKIP    {name}: kind {kind!r} is not in the agent registry — start it yourself in {d}")
             failed += 1
             continue
-        cmd = launch_cmd(kind, v, model, strict=False, role="reviewer" if name == st.get("reviewer") else None)
+        cmd = launch_cmd(kind, v, model, strict=False, role="reviewer" if name == st.get("reviewer") else None, cwd=d)
         split = [HERDR, "pane", "split"] + ([last] if last else []) + \
                 ["--direction", "down" if last else "right", "--cwd", d, "--no-focus"]
         if dry:
@@ -6478,7 +6629,7 @@ def rename_lost(st, hints=True, keep_out=()):
             still[n] = pick if own else None
             v = reg.get(w.get("kind"))
             cmd = (launch_cmd(w.get("kind"), v, w.get("model"), strict=False,
-                              role="reviewer" if n == st.get("reviewer") else None)
+                              role="reviewer" if n == st.get("reviewer") else None, cwd=d)
                    if v else (w.get("kind") or "<its agent>"))
             say(f"LOST    {n}: pane {pick} is in its folder ({short(d)}), but herdr sees no agent running in it. "
                 + (f"`orch team up` starts it there; or start it yourself (`{cmd}`)" if own else
@@ -6693,8 +6844,34 @@ While `orch autopilot` runs it holds the driver lease: other commands that chang
 HERDR_PANE_ENV = ("HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH")
 
 
+def sandbox_warnings():
+    """Lines warning that this agent's own sandbox blocks what the lead needs: herdr's socket (Codex sets
+    CODEX_SANDBOX_NETWORK_DISABLED=1 when its sandbox has no network) or writing the repo's .git. [] when fine."""
+    out, codex = [], any(k.startswith("CODEX_") for k in os.environ)
+    if os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED") == "1":
+        out.append("WARN this pane runs in Codex's sandbox with the network off, so orch's herdr calls from here "
+                   "(team up, sending work, waking you) are refused or wait for an approval each time.")
+    gd = git_common_dir(Path.cwd())
+    if gd:
+        try:
+            fd, probe = tempfile.mkstemp(dir=gd, prefix=".orch-probe-")
+            os.close(fd)
+            os.unlink(probe)
+        except OSError:
+            out.append(f"WARN the repo's .git folder ({short(gd)}) can't be written from this pane, so `orch start` "
+                       f"(the branch and the coders' folders) fails here.")
+    if out and codex:
+        v = (registry(required=False) or {}).get("codex") or {}
+        out.append("  Fix: quit this Codex and start it again with orch's command (it opens just those two):\n    "
+                   + launch_cmd("codex", v, None, strict=False, cwd=Path.cwd()) + "\n  (`orch agents launch codex "
+                   "--role lead --model <id>` adds a model; `orch models` lists them)")
+    return out
+
+
 def lead_check():
     """Preflight: is this agent driving Herdr? HERDR_ENV=1 is the fast path; otherwise ask the herdr server."""
+    for line in sandbox_warnings():
+        print(line)
     if os.environ.get("HERDR_ENV") == "1":
         print(f"OK inside a Herdr pane (HERDR_ENV=1, pane {os.environ.get('HERDR_PANE_ID') or '?'})")
         return
@@ -6912,6 +7089,9 @@ def cmd_lead(args):
             pb = asset("playbooks/subagent.md") or die("playbooks/subagent.md not found next to orch or in the install")
             label = "run (subagent mode)"
         print(f"herdr-orchestra {installed_version()} — lead playbook: {label}\n")
+        if not subagent:
+            for line in sandbox_warnings():
+                print(line)
         if not part and not subagent:
             lead_self_name()
         if subagent and sub == "plan":
@@ -7299,7 +7479,14 @@ def doctor_kind(kind, v, full=True):
             launch = shlex.split(v.get(key) or binary)
         except ValueError:
             launch = [binary]
-        flags += [f for f in (tok.split("=")[0] for tok in launch[1:] if tok.startswith("-")) if f not in flags]
+        for f in (tok.split("=")[0] for tok in launch[1:] if tok.startswith("-")):
+            if f not in flags:              # one line per flag, even when a command repeats it (codex -c ... -c ...)
+                flags.append(f)
+    for key in ("launch", "review_launch"):
+        for part in v.get("launch_needs") or [] if v.get(key) else []:
+            if part not in v[key]:
+                out.append((False, f"{key} has no `{part}`: without it orch's commands fail inside {kind} (its sandbox "
+                                   f"blocks them) — keep it in your own launch in {short(user_agents_file())}"))
     for fl in flags:
         if code is None:
             out.append((False, f"launch flag {fl}: `{hcmd}` did not run ({help_.strip()[:80]})"))

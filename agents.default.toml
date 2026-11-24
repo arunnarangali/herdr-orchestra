@@ -8,6 +8,10 @@
 #                 `orch agents launch <kind> --role reviewer` prints it. Left out: the reviewer starts like a coder
 #   model_flag    the launch option that picks the model (`orch agents launch <kind> --model <id>`); leave it
 #                 out when the tool has none or it is unverified, and choose the model inside the tool
+#   effort_flag   the launch option that sets how hard the model thinks, with {effort} where the level goes. A model
+#                 id written `<model>@<level>` (e.g. gpt-6.2-sol@low) starts on <model> with this option
+#   launch_needs  parts the launch command must keep for orch to work in that tool; `orch doctor` says when your
+#                 own launch drops one. In `launch`, {git_dir} is the repo's .git folder (filled in by orch)
 #   herdr_detect  herdr can tell idle / working / blocked for it (false: orch relies on the done file only)
 #   interrupt_keys the keys that stop its current step, as `herdr agent send-keys` names them (default ["esc"]).
 #                 orch presses them when a milestone is paused or moved while the coder still works, before the
@@ -49,8 +53,14 @@ notes = "Claude Code 2.1: --permission-mode acceptEdits in --help; ~/.claude/ski
 
 [codex]
 binary = "codex"
-launch = "codex --approve-for-me"
+# Codex runs every command in its sandbox, which blocks two things orch needs: talking to herdr (a local socket,
+# blocked with the network) and writing the repo's .git (branches, worktrees, commits). These two settings open
+# exactly that, so `orch start`, `orch team up` and every herdr call work the first time instead of each one
+# waiting for an approval review.
+launch = "codex --approve-for-me -c sandbox_workspace_write.network_access=true -c 'sandbox_workspace_write.writable_roots=[\"{git_dir}\"]'"
+launch_needs = ["sandbox_workspace_write.network_access=true", "sandbox_workspace_write.writable_roots"]
 model_flag = "--model"
+effort_flag = "-c model_reasoning_effort={effort}"
 herdr_detect = true
 interrupt_keys = ["esc"]
 roles = ["lead", "coder", "reviewer"]
@@ -58,7 +68,7 @@ skills_dirs = ["~/.agents/skills", "~/.codex/skills"]
 skills_reads = ["~/.agents/skills", "~/.codex/skills"]
 invoke = "$orch-plan <feature>   (or: use the orch-plan skill: <feature>)"
 verified = true
-notes = "codex-cli 0.167: --full-auto is gone; --approve-for-me routes approvals to automatic review in the workspace-write sandbox. Reads ~/.codex/skills and ~/.agents/skills (its docs name ~/.agents/skills as the user folder, and say two skills with the same name both show up, so orch keeps one copy)."
+notes = "codex-cli 0.167: --full-auto is gone; --approve-for-me routes approvals to automatic review in the workspace-write sandbox. Reads ~/.codex/skills and ~/.agents/skills (its docs name ~/.agents/skills as the user folder, and say two skills with the same name both show up, so orch keeps one copy). codex-cli 0.172 (checked with `codex sandbox`): in workspace-write, .git is read-only and connecting to a local socket is refused; sandbox_workspace_write.network_access=true lets the herdr socket through (it also allows the internet) and writable_roots with the repo's .git lets git work. Thinking level: -c model_reasoning_effort=low|medium|high|xhigh|max. `codex debug models` lists the models this Codex has (see [discover.codex] in models.default.toml)."
 
 [amp]
 binary = "amp"

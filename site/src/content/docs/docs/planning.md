@@ -82,8 +82,8 @@ orch records the real time of every step while the run goes, and the summary (an
 Whole feature: estimated 1h30m, actual 1h40m, 10m longer than estimated
 
 | Milestone | Estimate | Actual | Difference | Built by |
-| M1        | 40m      | 1h40m  | +1h00m     | claude-1 (sonnet), codex-1 (gpt-6-sol) |
-| M2        | 30m      | 25m    | -5m        | codex-1 (gpt-6-sol) |
+| M1        | 40m      | 1h40m  | +1h00m     | claude-1 (sonnet), codex-1 (gpt-6.2-sol@low) |
+| M2        | 30m      | 25m    | -5m        | codex-1 (gpt-6.2-sol@low) |
 
 Why M1 took 1h00m longer than its 40m estimate:
 - 24m claude-1 (sonnet): work cut short (claude-1 hit a usage/rate limit); the next attempt carried on from it
