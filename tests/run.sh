@@ -2037,7 +2037,7 @@ check "orch lead plan outside a git repo still prints the playbook (no guard to 
 newrepo grd2
 out=$("$ORCH" lead plan 2>&1)
 check "orch lead plan installs the guard quietly in a repo" '! grep -q "GUARD" <<<"$out" && grep -q "main guard v1" .git/hooks/pre-push'
-cd "$WORK/grd/app"
+cd "$WORK/grd/app" || exit 1
 mkdir -p "$WORK/gh-grd"; printf '#!/usr/bin/env bash\ncase "$*" in *rules/branches*) echo 0;; *branches/main*) echo false;; *) echo true;; esac\n' > "$WORK/gh-grd/gh"; chmod +x "$WORK/gh-grd/gh"
 git remote set-url origin https://github.com/acme/app.git
 out=$(ORCH_GUARD_GITHUB=1 PATH="$WORK/gh-grd:$PATH" "$ORCH" guard status 2>&1); code=$?
