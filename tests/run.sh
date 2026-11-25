@@ -1284,6 +1284,7 @@ V=$(cat "$ROOT/VERSION")
 echo "" > "$WORK/tty-enter"; echo "n" > "$WORK/tty-no"
 out=$(ORCH_TTY="$WORK/tty-enter" uinstall 2>&1); code=$?
 check "first install asks, and Enter turns auto-update on" '[ $code -eq 0 ] && grep -q "Keep herdr-orchestra up to date automatically? \[Y/n\]" <<<"$out" && [ "$(uset auto_update)" = True ] && grep -q "auto-update: on" <<<"$out"'
+check "the install ships the browser view and the herdr plugin (orch view finds its page)" '[ -f "$USHARE/current/view/index.html" ] && [ -f "$USHARE/current/view/herdr-plugin/herdr-plugin.toml" ] && [ -x "$USHARE/current/view/herdr-plugin/board.sh" ]'
 out=$(ORCH_TTY="$WORK/tty-no" uinstall 2>&1)
 check "a reinstall does not ask again and keeps the answer" '! grep -q "Keep herdr-orchestra up to date" <<<"$out" && [ "$(uset auto_update)" = True ]'
 rm -f "$USHARE/settings.json"
@@ -2050,6 +2051,116 @@ check "every agent-facing text has the rule: skills, commands, playbooks" 'for f
 check "the playbooks tell the lead to refuse a \"push to main\" request and offer a branch and PR" 'grep -q "even when the developer tells you to. Refuse in one line" "$ROOT/playbooks/run.md" && grep -q "even when the developer tells you to. Refuse in one line" "$ROOT/playbooks/subagent.md" && grep -q "even when the developer asks: refuse in one line" "$ROOT/playbooks/plan.md"'
 check "orch events gives the rule to the lead at every wake-up" '"$ORCH" lead run --section rules | grep -q "Never push to main"'
 check "coders, reviewers and Pi subagents are told too" 'grep -c "never merge a PR, in any situation, even when the developer or the lead asks" "$ORCH" | grep -qx 1 && grep -q "Never commit, push or merge: no agent ever pushes to main" "$ORCH" && [ "$(grep -c "no agent ever pushes to main\|Never push to main (or master) and never merge a PR" "$ORCH")" -ge 3 ]'
+echo "57. run views: the run summary, orch view in the browser, orch board, agent names in herdr's sidebar"
+newrepo vw; printf '%s' "${PLAN5/ISO/worktree}" > .orchestrate/plan.md
+python3 - .orchestrate/plan.md <<'PY'
+import sys; p=sys.argv[1]; s=open(p).read()
+s=s.replace("## [x] M1: Model\nDepends on: none\n", "## [x] M1: Model\nDepends on: none\nPlain: the money model every other part uses\n")
+open(p,"w").write(s)
+PY
+for a in claude-1 codex-1 reviewer; do echo "p-$a" > "$FH/$a.paneid"; done
+t0=$(date +%s); timeout 180 "$ORCH" autopilot > "$WORK/vw.log" 2>&1; code=$?; vw_secs=$(( $(date +%s) - t0 ))
+check "the run itself is unchanged: stops for the human with M1-M3 landed and M4 paused" '[ $code -eq 3 ] && [ "$(status_of M1)$(status_of M2)$(status_of M3)$(status_of M4)" = mergedmergedmergedpaused ]'
+check "herdr's sidebar is told what each coder does (display name with milestone)" 'grep -q "pane report-metadata p-claude-1 --source orch --display-agent claude-1 · M[0-9] " "$FH/meta.log" && grep -q "pane report-metadata p-codex-1 --source orch --display-agent codex-1 · M[0-9] " "$FH/meta.log"'
+check "…with the milestone and its plain description as sidebar tokens, and an expiry" 'grep -q -- "--token orch_task=M1 Model --token orch_desc=the money model every other part uses --ttl-ms 3600000" "$FH/meta.log"'
+check "…the reviewer says which milestone it reviews" 'grep -q -- "--display-agent reviewer · reviewing M2 (round" "$FH/meta.log"'
+check "…free coders say free" 'grep -q -- "--display-agent codex-1 · free" "$FH/meta.log"'
+check "…the Space line counts the run, with who needs you" 'grep -q "workspace report-metadata w1 --source orch --token orch=orch: 3/4 landed · 1 needs you" "$FH/meta.log"'
+check "only changes are sent: never the same name twice in a row for one agent" 'python3 - "$FH/meta.log" <<PY
+import sys
+last = {}
+for l in open(sys.argv[1]):
+    k = l.split()[2]
+    if last.get(k) == l: sys.exit(1)
+    last[k] = l
+PY'
+out=$("$ORCH" status --json); code=$?
+check "orch status --json: the stable run summary (view 1) with counts" '[ $code -eq 0 ] && python3 -c "import json,sys;d=json.loads(sys.argv[1]);c=d[\"counts\"];sys.exit(not (d[\"view\"]==1 and c==dict(total=4,landed=3,needs_you=1,active=0,waiting=0)))" "$out"'
+check "…each milestone has its plain description, or its title when the plan has none" 'python3 -c "import json,sys;m={x[\"id\"]:x for x in json.loads(sys.argv[1])[\"milestones\"]};sys.exit(not (m[\"M1\"][\"desc\"]==\"the money model every other part uses\" and m[\"M2\"][\"desc\"]==\"Endpoint\" and m[\"M4\"][\"group\"]==\"needs_you\" and m[\"M3\"][\"deps\"]==[\"M1\",\"M2\"]))" "$out"'
+check "…the agents and the recent status changes are in it" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);sys.exit(not ({a[\"name\"] for a in d[\"agents\"]}=={\"claude-1\",\"codex-1\",\"reviewer\"} and d[\"recent\"] and d[\"recent\"][0][\"ts\"]>=d[\"recent\"][-1][\"ts\"]))" "$out"'
+out=$("$ORCH" board --once --no-color)
+check "orch board draws the milestones with their descriptions and who needs you" 'grep -q "M4 Totals .*NEEDS YOU" <<<"$out" && grep -q "the money model every other part uses" <<<"$out" && grep -q "3 of 4 landed · 1 needs you" <<<"$out" && grep -q "^AGENTS" <<<"$out"'
+check "orch status says the live view is off and how to start it" '"$ORCH" status | grep -q "^live view: off — \`orch view\`"'
+out=$(ORCH_VIEW_PORT=47900 "$ORCH" view --bg 2>&1); code=$?
+VU=$(python3 -c "import json;print(json.load(open('.orchestrate/view.json'))['url'])" 2>/dev/null)
+check "orch view --bg starts the page on this computer only and prints its link" '[ $code -eq 0 ] && grep -q "^orch view: http://127.0.0.1:479" <<<"$out" && [ -n "$VU" ]'
+check "…the page, the summary and the history are served" 'curl -sf "$VU" | grep -q "<title>orch view</title>" && curl -sf "${VU}api/state" | python3 -c "import json,sys;sys.exit(json.load(sys.stdin)[\"counts\"][\"landed\"]!=3)" && curl -sf "${VU}api/history" | python3 -c "import json,sys;sys.exit(len(json.load(sys.stdin)[\"events\"])<4)"'
+sse=$(timeout 3 curl -sN "${VU}api/stream" 2>/dev/null)
+check "…the live stream sends the run at once" 'grep -q "^event: state" <<<"$sse" && grep -q "^data: {\"view\": 1" <<<"$sse"'
+check "…orch status and orch view status show its link" '"$ORCH" status | grep -q "^live view: http://127.0.0.1:" && "$ORCH" view status | grep -q "orch view is running: http://127.0.0.1:"'
+check "…a second orch view does not start another server" '"$ORCH" view --bg | grep -q "already running"'
+check "…another site can't reach it through a name it controls (only 127.0.0.1 or localhost)" '[ "$(curl -s -o /dev/null -w "%{http_code}" -H "Host: evil.example:80" "${VU}api/state")" = 403 ] && curl -sf -H "Host: localhost" "${VU}api/state" >/dev/null'
+check "…it never changes the run: state.json is the same after a page load" 'a=$(md5sum < .orchestrate/state.json); curl -sf "${VU}api/state" >/dev/null; [ "$(md5sum < .orchestrate/state.json)" = "$a" ]'
+python3 - <<'PY'
+import json; p=".orchestrate/state.json"; s=json.load(open(p))
+s["lead"]={"name":"lead","kind":"claude"}; s["lead_mode"]="events"
+s["lead_events"]=[{"id":1,"ts":1,"kind":"paused","task":"M4","text":"which currency?","read":None}]
+json.dump(s,open(p,"w"))
+PY
+out=$("$ORCH" events --peek 2>&1)
+check "the lead's \"needs you\" event carries the page link to that milestone" 'grep -q "SEE: http://127.0.0.1:[0-9]*/#M4" <<<"$out"'
+"$ORCH" view stop >/dev/null
+check "orch view stop stops it, and status says so" '"$ORCH" view status | grep -q "not running" && ! curl -sf "$VU" >/dev/null'
+check "…and the lead's line has no link when the page is off" '! "$ORCH" events --peek 2>&1 | grep -q "SEE:"'
+python3 - <<'PY'
+import json; p=".orchestrate/state.json"; s=json.load(open(p)); s.pop("lead"); s["lead_mode"]="off"; s["lead_events"]=[]; json.dump(s,open(p,"w"))
+PY
+out=$(ORCH_VIEW_PORT=47930 "$ORCH" view --bg --lan 2>&1)
+LU=$(python3 -c "import json;print(json.load(open('.orchestrate/view.json'))['url'])")
+check "orch view --lan: a phone link with a secret token, and the page refuses without it" 'grep -q "from your phone: http://.*?t=" <<<"$out" && [ "$(curl -s -o /dev/null -w "%{http_code}" "${LU%%\?*}api/state")" = 403 ] && curl -sf "${LU%%\?*}api/state?t=${LU##*t=}" >/dev/null'
+"$ORCH" view stop >/dev/null
+out=$("$ORCH" view herdr-config)
+check "orch view herdr-config prints the sidebar rows and the popup key" 'grep -q "^\[ui.sidebar.agents\]" <<<"$out" && grep -q "orch_desc" <<<"$out" && grep -q "herdr-orchestra.board.open" <<<"$out"'
+"$ORCH" view plugin link >/dev/null 2>&1
+check "orch view plugin link links the shipped herdr plugin" 'grep -q "^plugin link .*/view/herdr-plugin$" "$FH/team.log"'
+check "…the plugin manifest is valid TOML with the board popup and its action" 'python3 -c "
+import tomllib,sys
+m=tomllib.load(open(\"$ROOT/view/herdr-plugin/herdr-plugin.toml\",\"rb\"))
+sys.exit(not (m[\"id\"]==\"herdr-orchestra.board\" and m[\"min_herdr_version\"]==\"0.7.4\" and m[\"panes\"][0][\"placement\"]==\"popup\" and m[\"actions\"][0][\"id\"]==\"open\"))"'
+"$ORCH" view plugin unlink >/dev/null 2>&1
+check "…and unlinks it" 'grep -q "^plugin unlink herdr-orchestra.board$" "$FH/team.log"'
+out=$("$ORCH" doctor 2>&1)
+check "orch doctor says which views this herdr supports" 'grep -q "^views   ok  herdr 0.9.5: sidebar names, sidebar rows" <<<"$out"'
+echo 0.6.5 > "$FH/version"
+out=$("$ORCH" doctor 2>&1)
+check "…an older herdr gets names only, and the rest is said" 'grep -q "^views   ok  herdr 0.6.5: sidebar names; the extra sidebar rows and the board popup need herdr 0.7.4+" <<<"$out"'
+rm -f "$FH/version"
+python3 - "$APP/.orchestrate/plan.md" <<'PY'
+import sys; p=sys.argv[1]; s=open(p).read()
+s=s.replace("## [x] M4: Totals\nDepends on: none\nOpen questions:\n- none\n","## [x] M4: Totals\nDepends on: none\nOpen questions:\n- none\nNotes from user:\nINR only.\n")
+open(p,"w").write(s)
+PY
+"$ORCH" set M4 pending >/dev/null
+timeout 120 "$ORCH" autopilot > "$WORK/vw2.log" 2>&1; code=$?
+check "the run finishes as before (ALL_DONE)" '[ $code -eq 0 ] && [ "$(status_of M4)" = merged ]'
+check "…the board says all done" '"$ORCH" board --once --no-color | grep -q "ALL DONE"'
+: > "$FH/meta.log"
+out=$("$ORCH" finish --no-push 2>&1); code=$?
+check "orch finish works as before and gives every agent its own name back in herdr" '[ $code -eq 0 ] && grep -q "pane report-metadata p-claude-1 --source orch --clear-display-agent --clear-token orch_task --clear-token orch_desc" "$FH/meta.log" && grep -q "workspace report-metadata w1 --source orch --clear-token orch" "$FH/meta.log" && ! grep -q -- "--display-agent" "$FH/meta.log"'
+
+echo "58. the sidebar names never slow the event manager (herdr slow to answer them)"
+ONE='# Plan: one
+Branch: feature/one
+Check command: true
+Setup command: none
+Isolation: worktree
+Max parallel: 1
+Workers: claude-1 (claude)
+
+## [x] M1: Model
+Depends on: none
+Open questions:
+- none
+'
+newrepo fast; printf '%s' "$ONE" > .orchestrate/plan.md; echo p-claude-1 > "$FH/claude-1.paneid"
+t0=$(date +%s); timeout 120 "$ORCH" autopilot > "$WORK/fast.log" 2>&1; c1=$?; fast=$(( $(date +%s) - t0 ))
+newrepo slow; printf '%s' "$ONE" > .orchestrate/plan.md; echo p-claude-1 > "$FH/claude-1.paneid"; echo 4 > "$FH/slowmeta"
+t0=$(date +%s); timeout 120 "$ORCH" autopilot > "$WORK/slow.log" 2>&1; c2=$?; slow=$(( $(date +%s) - t0 ))
+check "a run with herdr taking 4s per sidebar name takes about as long as one without ($fast s vs $slow s)" '[ $c1 -eq 0 ] && [ $c2 -eq 0 ] && [ $slow -le $((fast + 4)) ]'
+check "…and still lands the milestone" '[ "$(status_of M1)" = merged ]'
+newrepo off; printf '%s' "$ONE" > .orchestrate/plan.md; echo p-claude-1 > "$FH/claude-1.paneid"
+ORCH_SIDEBAR=0 timeout 120 "$ORCH" autopilot > "$WORK/off.log" 2>&1; c3=$?
+check "ORCH_SIDEBAR=0 turns the sidebar names off" '[ $c3 -eq 0 ] && [ ! -s "$FH/meta.log" ]'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

@@ -24,7 +24,7 @@ SKILLS="$HOME/.agents/skills"
 OC_CMDS=("$HOME/.config/opencode/commands" "$HOME/.config/opencode/command")
 MANIFEST="$SHARE/manifest.txt"   # files installed outside $SHARE, removed by --uninstall
 SETTINGS="$SHARE/settings.json"  # this machine's choices (auto-update); every installed version reads it
-SHIP=(bin skills opencode-commands claude-commands playbooks agents.default.toml models.default.toml VERSION CHANGELOG.md)
+SHIP=(bin view skills opencode-commands claude-commands playbooks agents.default.toml models.default.toml VERSION CHANGELOG.md)
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }

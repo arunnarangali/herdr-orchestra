@@ -1,0 +1,22 @@
+# Optional herdr plugin shipped with herdr-orchestra: the run board as a popup, and a key to open it.
+# Link it with `orch view plugin link` (unlink: `orch view plugin unlink`). Needs herdr 0.7.4 or newer.
+id = "herdr-orchestra.board"
+name = "orch run board"
+version = "1.0.0"
+min_herdr_version = "0.7.4"
+description = "The herdr-orchestra run as a live board: milestones, what each one is, and what every agent does"
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "orch: run board"
+contexts = ["workspace"]
+command = ["sh", "open.sh"]
+
+[[panes]]
+id = "board"
+title = "orch board"
+placement = "popup"
+width = "90%"
+height = "85%"
+command = ["sh", "board.sh"]

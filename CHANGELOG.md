@@ -2,6 +2,27 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.11.0] - 2026-11-25
+
+You can now watch a run as a picture: in your browser, in a Herdr pane, and in Herdr's own sidebar. Every view shows each milestone with a one-line description of what it is for, not only its id.
+
+Example: run `orch view` and your browser shows the milestones as a graph. `M6 Docs page · Help page that explains the CSV import` is red, and clicking it shows the coder's question and the command `orch answer M6 "..."`. Herdr's sidebar meanwhile reads `codex-1 · M2 building` instead of just `codex-1`.
+
+### Added
+- **`orch view`: the run in your browser, live and view only.** The run ring (how many milestones are with the lead, coders, checks, reviewer, or waiting for you), a milestone graph with arrows for "needs this first", coloured by where each milestone is, with its plain description under it. Click a milestone for its question, the exact command to answer it, its steps and files. Also the agents (model, tier, what they hold), time and cost (against the lead's estimates, why a milestone took longer, tokens and cost per model), a replay slider that plays the run back from `events.jsonl`, and an optional browser alert when a milestone starts to need you. It updates by itself (Server-Sent Events) and never writes or locks the run. Listens on 127.0.0.1 only. `orch view --bg`, `stop`, `status`, `--port`, `--no-open`.
+- **Phone view.** On a narrow screen the graph becomes a list and the milestone that needs you sits at the top. `orch view --lan` opens it to your phone on the same Wi-Fi, with a secret token in the link; without the token the page refuses. Off unless you ask.
+- **`orch board`: the same run as text** for a Herdr pane, split or popup: the milestones as a tree with their descriptions, the agents, the last events. Arrow keys pick an agent, Enter jumps to its pane, `w` starts the browser view. `--once` prints it once.
+- **Agent names in Herdr's sidebar.** The event manager tells Herdr what each agent does (`codex-1 · M2 building`, `reviewer · reviewing M7 (round 1)`, `codex-3 · free`) and puts a run line on the Space (`orch: 3/7 landed · 1 needs you`). Display only: Herdr still finds agents by their real name. Sent on a separate thread, only on changes, so it never slows the run (tested with a Herdr that takes 4 seconds per call). Names fade an hour after the last change; `orch finish` gives every agent its own name back. Needs Herdr 0.6.3+ (the extra rows 0.7.4+). `ORCH_SIDEBAR=0` turns it off.
+- **`orch view herdr-config`** prints the sidebar rows (each agent's milestone description, the run line) and a popup key for Herdr's config. **`orch view plugin link|unlink`** links a small Herdr plugin shipped with orch that opens `orch board` as a popup (Herdr 0.7.4+).
+- **`orch status --json`**: one stable run summary (`"view": 1`) that both views read, documented in `docs/contracts.md`.
+- `orch status` prints the browser view's link (or how to start it), and the lead's "needs you" events carry a `SEE:` link straight to that milestone while the view runs.
+- `orch doctor` says which views your Herdr supports.
+- Docs: [Watch a run](https://herdr-orchestra.vercel.app/docs/watching/), and the new commands in Commands.
+
+### Not yet tried
+- The sidebar names, the plugin popup and the Enter-to-jump key with a real Herdr. They follow Herdr 0.9.5's documented commands (`pane report-metadata`, `workspace report-metadata`, `plugin link`, `agent focus`) and were tested with the simulated Herdr. The browser page was checked in Chromium (desktop and phone size).
+
+
 ## [6.10.0] - 2026-11-25
 
 No agent ever pushes to main. This is now a hard rule, in words and in code: the lead, the coders and the reviewer (on any tool: Claude, Codex, Pi, OpenCode, AGY…) never push to `main`, `master` or the repo's default branch, and never merge a PR, in any situation, even when the developer asks. Work stays on the run's branch, `orch finish` pushes only that branch and opens a PR, and a person merges it by hand.
@@ -144,6 +165,7 @@ and the lead's chat shows "Try these by hand before you merge:" with the same tw
 
 ### Changed
 - **ALL_DONE:** the lead now lists the manual checklist items themselves in its chat (it used to give only how many there are), so you can try them before you run `orch finish`. Same in subagent runs.
+
 ## [6.3.0] - 2026-11-21
 
 Moving a milestone away from a coder now really stops that coder. Before, `orch set M7 paused` only typed a STOP note into the coder's pane and marked the coder free at once. An agent in the middle of a step (agy, for example) only reads a typed message after that step, so it kept editing files while `orch status` showed it as free, and it could be handed the next milestone.
@@ -161,6 +183,7 @@ Moving a milestone away from a coder now really stops that coder. Before, `orch 
 - **`orch sync` warns when plan.md changed under a running milestone.** A coder works from the task.md it got, which is not rewritten mid-work, so an edit to that milestone's plan text does not reach it by itself. sync now says, for example, `WARN: M7 changed in plan.md, but rs-claude-1 is already working from its old task.md ... orch set M7 paused, then orch dispatch M7`. Answers (`Notes from user`) still reach the coder as before and give no warning.
 - `orch status` says `free, but herdr shows it working` for a coder with no task whose pane is busy.
 - Tests (section 49): the interrupt key before the STOP note; the stopping coder is not free in status, pick, prepare or ready; the event manager presses the key again; it is free once idle; `orch free`; the interrupt keys per kind; team up leaves the lead's pane and its own pane alone; the reviewer starts with `cd` into the repo; whoami and lead run use the plan's lead name; `--help` and `-h` run nothing; the plan-changed warning. Section 44's whoami test now expects the plan's lead name instead of `lead`.
+
 ## [6.2.1] - 2026-11-21
 
 Fixes `/orch-setup` and `/orch-mode` not working in Pi when an older `orch` is already on the machine.
@@ -373,6 +396,7 @@ Tested with simulated agents and a simulated herdr only. herdr's docs say `pane 
 
 ### Added
 - `orch agents check` (and `orch doctor`) report `DUPLICATE` when an agent would see a skill twice, with the two folders, and tell you to run `orch agents sync`.
+
 ## [5.3.0] - 2026-11-13
 
 ### Fixed
