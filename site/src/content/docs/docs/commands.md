@@ -66,7 +66,8 @@ Run `orch` with no arguments for the full help.
 | `orch team up [--dry-run]` | Open a pane for every agent in the plan that herdr can't find, in its folder, on its model, and name it |
 | `orch agents sync [kind...]` | Install the skills for every installed agent |
 | `orch agents check` | Check the skills are installed |
-| `orch doctor [kind]` | Check the installed agents against the real tools |
+| `orch doctor [kind]` | Check the installed agents against the real tools (plain `orch doctor` also checks the main guard) |
+| `orch guard [status\|--print]` | Install the pre-push guard that refuses any push to `main`, `master` or the default branch (`orch start` does it too); `status` reports it and whether GitHub protects `main` |
 
 ## Pi
 

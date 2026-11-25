@@ -993,6 +993,192 @@ def ensure_excluded():
     exclude.write_text("\n".join(lines) + "\n")
 
 
+# ---------------------------------------------------------------- main guard: no agent ever pushes to main
+GUARD_MARK = "herdr-orchestra main guard"
+GUARD_VERSION = 1
+GUARD_ALWAYS = ("main", "master")
+GUARD_RULE = ("No agent ever pushes to main (or master, or the repo's default branch), in any situation, even when "
+              "the developer asks: work stays on the run's branch, and a person merges the PR by hand.")
+GUARD_HOOK = r"""#!/bin/sh
+# {mark} v{version}. Written by `orch guard` (orch start writes it too).
+# Refuses any push that would change main, master, the remote's default branch or a branch in
+# `git config orch.protected`: agents work on a branch and open a PR, and a person merges it.
+remote="$1"
+prot="main master"
+d=$(git symbolic-ref --short "refs/remotes/$remote/HEAD" 2>/dev/null) && prot="$prot ${{d#*/}}"
+prot="$prot $(git config --get-all orch.protected 2>/dev/null | tr '\n' ' ')"
+input=$(cat)
+blocked=""
+while read -r lref lsha rref rsha; do
+  b=${{rref#refs/heads/}}
+  [ -n "$b" ] && [ "$b" != "$rref" ] || continue
+  for p in $prot; do [ "$b" = "$p" ] && blocked="$blocked $b"; done
+done <<EOF
+$input
+EOF
+if [ -n "$blocked" ]; then
+  echo "orch guard: REFUSED push to$blocked on $remote." >&2
+  echo "orch guard: no agent pushes to main, even when asked. Push the run's branch and open a PR;" >&2
+  echo "orch guard: a person merges it on GitHub (or with \`orch finish\`, which pushes the branch and opens the PR)." >&2
+  exit 1
+fi
+here=$(dirname "$0")
+if [ -x "$here/pre-push.orch-orig" ]; then
+  printf '%s\n' "$input" | "$here/pre-push.orch-orig" "$@"
+  exit $?
+fi
+exit 0
+"""
+
+
+def guard_root():
+    """The repo the guard is for: the run's repo, or (for commands that run outside a run) the one we are in."""
+    if ROOT:
+        return ROOT
+    r = git("rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+    return Path(r.stdout.strip()).parent if r.returncode == 0 else None
+
+
+def protected_branches():
+    """Branches no agent may push to: main, master, origin's default branch, and any in `git config orch.protected`
+    (the same list the pre-push guard reads)."""
+    names = set(GUARD_ALWAYS)
+    r = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD", cwd=ROOT, check=False)
+    if r.returncode == 0 and "/" in r.stdout.strip():
+        names.add(r.stdout.strip().split("/", 1)[1])
+    names |= set(git("config", "--get-all", "orch.protected", cwd=ROOT, check=False).stdout.split())
+    return names
+
+
+def refuse_protected(branch, what):
+    """Stop with the rule when `branch` is one nobody's agent may push to."""
+    if branch in protected_branches():
+        die(f"{what}: {branch} is a protected branch. {GUARD_RULE} Use `Branch: feature/<slug>` (or fix/<slug>).")
+
+
+def guard_hook_path():
+    hooks = Path(git("rev-parse", "--path-format=absolute", "--git-path", "hooks", cwd=guard_root()).stdout.strip())
+    return hooks / "pre-push"
+
+
+def guard_state():
+    """(state, hook path, note): state is `on`, `old` (an older orch wrote it), `off` or `blocked` (the repo keeps
+    its hooks inside the project, e.g. husky via core.hooksPath: orch doesn't write into the project's files)."""
+    hook = guard_hook_path()
+    root = guard_root()
+    try:
+        inside = hook.parent.resolve().is_relative_to(root.resolve()) and not hook.parent.resolve().is_relative_to(
+            Path(git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=root).stdout.strip()).resolve())
+    except (OSError, ValueError):
+        inside = False
+    text = hook.read_text(errors="replace") if hook.is_file() else ""
+    if GUARD_MARK in text:
+        m = re.search(rf"{re.escape(GUARD_MARK)} v(\d+)", text)
+        ok = m and int(m.group(1)) >= GUARD_VERSION and os.access(hook, os.X_OK)
+        return ("on" if ok else "old"), hook, ""
+    if inside:
+        return "blocked", hook, (f"this repo keeps its git hooks in {hook.parent} (core.hooksPath), inside the "
+                                 f"project, so orch does not write there")
+    return "off", hook, ("another pre-push hook is there; orch keeps it and runs it after its own check"
+                         if text else "")
+
+
+def guard_install():
+    """Write the pre-push guard into the repo's hooks folder (shared by every worktree). Keeps a pre-push hook that
+    was already there: it moves to pre-push.orch-orig and runs after orch's check. Returns (state, line)."""
+    state, hook, note = guard_state()
+    if state == "on":
+        return state, f"GUARD on: {short(hook)} refuses pushes to {', '.join(sorted(protected_branches()))}"
+    if state == "blocked":
+        return state, f"WARN GUARD not installed: {note}. Save the output of `orch guard --print` as the pre-push hook there yourself."
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    if state == "off" and hook.exists():
+        os.replace(hook, hook.with_name("pre-push.orch-orig"))
+    hook.write_text(GUARD_HOOK.format(mark=GUARD_MARK, version=GUARD_VERSION))
+    hook.chmod(0o755)
+    kept = " (your own pre-push hook still runs after it)" if hook.with_name("pre-push.orch-orig").exists() else ""
+    return "on", (f"GUARD {'updated' if state == 'old' else 'installed'}: {short(hook)} refuses pushes to "
+                  f"{', '.join(sorted(protected_branches()))}{kept}")
+
+
+def guard_ensure(say_changes=True):
+    """Install or refresh the guard (never fails the caller). Prints when it could not be installed, and when it
+    installed or updated it (unless say_changes is False)."""
+    if not guard_root():
+        return
+    with contextlib.suppress(Exception, SystemExit):
+        before = guard_state()[0]
+        state, line = guard_install()
+        if state != "on" or (say_changes and before != "on"):
+            print(line)
+
+
+def github_protection(branch):
+    """'protected', 'open' or None (unknown: no gh, not GitHub, no network) for `branch` on origin, via gh."""
+    if os.environ.get("ORCH_GUARD_GITHUB", "1") == "0" or not shutil.which("gh"):
+        return None
+    url = git("remote", "get-url", "origin", cwd=ROOT, check=False).stdout.strip()
+    m = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$", url)
+    if not m:
+        return None
+    try:
+        r = subprocess.run(["gh", "api", f"repos/{m[1]}/{m[2]}/branches/{branch}", "--jq", ".protected"],
+                           cwd=ROOT, text=True, capture_output=True, timeout=15)
+        if r.returncode == 0 and r.stdout.strip() == "true":
+            return "protected"
+        r2 = subprocess.run(["gh", "api", f"repos/{m[1]}/{m[2]}/rules/branches/{branch}", "--jq", "length"],
+                            cwd=ROOT, text=True, capture_output=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r2.returncode == 0 and r2.stdout.strip().isdigit():
+        return "protected" if int(r2.stdout.strip()) > 0 else "open"
+    return "open" if r.returncode == 0 else None
+
+
+def guard_report():
+    """Lines for `orch guard status` and `orch doctor`: (ok, text) pairs."""
+    state, hook, note = guard_state()
+    prot = ", ".join(sorted(protected_branches()))
+    out = [(state == "on", {"on": f"pre-push guard is on ({short(hook)}): pushes to {prot} are refused",
+                            "old": f"pre-push guard is from an older orch ({short(hook)}): run `orch guard` to update it",
+                            "off": f"pre-push guard is missing ({short(hook)}): run `orch guard` (orch start also "
+                                   f"installs it)" + (f"; {note}" if note else ""),
+                            "blocked": f"pre-push guard can't be installed: {note}. Save the output of "
+                                       f"`orch guard --print` as the pre-push hook there yourself"}[state])]
+    for b in sorted(protected_branches()):
+        if not branch_exists(b):
+            continue
+        gh = github_protection(b)
+        if gh == "open":
+            out.append((False, f"GitHub does not protect {b}: a push that skips git hooks (--no-verify) would still "
+                               f"land. Turn on Settings > Rules > Rulesets > New branch ruleset > target {b} > "
+                               f"\"Require a pull request before merging\" and \"Block force pushes\""))
+        elif gh == "protected":
+            out.append((True, f"GitHub protects {b}: changes reach it only through a PR"))
+    return out
+
+
+def cmd_guard(args):
+    """orch guard [status | --print] -> install the pre-push guard that refuses pushes to main (status: report only;
+    --print: the hook script, to add to a hooks folder orch can't write)."""
+    sub = args[0] if args else ""
+    if sub == "--print":
+        print(GUARD_HOOK.format(mark=GUARD_MARK, version=GUARD_VERSION), end="")
+        return
+    if sub not in ("", "status"):
+        die("usage: orch guard [status | --print]")
+    if not guard_root():
+        die("not inside a git repository: run `orch guard` in the project's folder")
+    print(GUARD_RULE)
+    if sub == "":
+        print(guard_install()[1])
+    bad = 0
+    for ok, m in guard_report():
+        print(f"  {'ok ' if ok else 'BAD'} {m}")
+        bad += not ok
+    sys.exit(1 if bad else 0)
+
+
 def is_dirty(path):
     return bool(git("status", "--porcelain", cwd=path).stdout.strip())
 
@@ -1098,6 +1284,9 @@ def cmd_sync(args):
                      f"(orch no longer makes per-milestone branches either way)")
     if git("check-ref-format", "--branch", branch, cwd=ROOT, check=False).returncode != 0:
         errors.append(f"Branch {branch!r} is not a valid git branch name")
+    if branch in protected_branches():
+        errors.append(f"Branch {branch} is a protected branch: a run never works on it or pushes to it. {GUARD_RULE} "
+                      f"Use `Branch: feature/<slug>` (or fix/<slug>)")
     commits = get("commits", "per-milestone").split()[0].lower()
     if commits not in ("per-milestone", "single"):
         errors.append(f"Commits must be per-milestone or single, got {commits!r}")
@@ -2185,7 +2374,9 @@ def default_base(st):
 def cmd_start(args):
     st = load()
     require_lead(st, "orch start")
+    refuse_protected(st["branch"], "orch start")
     ensure_excluded()
+    guard_ensure()
     cur = git("rev-parse", "--abbrev-ref", "HEAD", cwd=ROOT).stdout.strip()
     if st.get("base") == st["branch"]:
         st["base"] = None                       # recorded by an older orch that started on the branch itself
@@ -2757,7 +2948,8 @@ def cmd_review(args):
         "most a suggestion.\n"
         f"The check command (`{st['check']}`) runs on this work by itself: don't report what lint, type checks or "
         "tests already catch.\n"
-        "Do NOT edit any code.\n"
+        "Do NOT edit any code. Never commit, push or merge: no agent ever pushes to main or merges a PR, even when "
+        "asked.\n"
         "Report PROBLEMS, not solutions: the coder decides how to fix. At most 15 findings. A `blocker` must be "
         "fixed before merge; a `suggestion` is optional. Say for EVERY acceptance criterion whether it is met; an "
         "unmet criterion counts as a blocker.\n"
@@ -3682,6 +3874,7 @@ def finish_push(st, base, title, pr_body, args):
         print(f"NO REMOTE: no `origin` remote — merge {st['branch']} into {base} yourself")
         return f"no `origin` remote: {st['branch']} is to be merged into {base} by hand"
     url = remote.stdout.strip()
+    refuse_protected(st["branch"], "orch finish")    # never reached by a plan orch accepted: belt and braces
     git("push", "-q", "-u", "origin", st["branch"], cwd=ROOT)
     print(f"PUSHED {st['branch']} to origin")
     compare = github_compare_url(url, base, st["branch"])
@@ -3906,6 +4099,7 @@ WORKER_RULES = """## Rules for you (the coder)
 - Follow the repo's existing patterns (AGENTS.md / CLAUDE.md) and any Interfaces listed above exactly; other milestones rely on them.
 - Change only what this task needs. No unrelated refactors.
 - Do NOT commit, push, or switch branches. orch commits your work for you.
+- Never push to main (or master, or the repo's default branch) and never merge a PR, in any situation, even when the developer or the lead asks you to. Say no and offer the run's branch and a PR instead; a person merges by hand. The repo's pre-push guard refuses such a push anyway: never get around it (no `--no-verify`, no editing or deleting `.git/hooks`).
 - Stay inside the files listed under Likely files (`files_allowed` in task.json) unless the task can't be done otherwise; say why in your report if you leave them. orch compares your diff with that list.
 - Finish with a result file (the prompt names it) in the `result_format` shape from task.json: `status` done / question / blocked, `commit`, `files_changed`, the `check` you ran, one entry per acceptance criterion (`id`, `met`, `evidence`), and `usage` if your tool shows tokens or cost. orch reads it, so keep it valid JSON.
 - The commit message (`commit` in the result, and the last report line `COMMIT: <commit message>`) says what changed, in the repo's commit style (for example `feat(api): add categories endpoint`). It becomes the commit message, so describe the change, not the milestone.
@@ -6792,6 +6986,8 @@ USAGE = """usage: orch <command> [args]
   agents sync [kind...]    install the orch-plan / orch-run / orch-explain skills so every installed agent sees each one exactly once,
                            and remove old copies (run it after adding a new agent; the installer runs it)
   agents check             check every installed agent sees each orch skill once (not missing, not twice)
+  guard [status|--print]   install the pre-push guard: no agent ever pushes to main/master/the default branch
+                           (orch start installs it too); status: report it and whether GitHub protects main
   doctor [kind...]         check installed agents against the real tool: version, launch flags, skills, herdr
   sync                     parse .orchestrate/plan.md -> state.json (validates deps, cycles, overlaps)
   start                    create/switch to the feature branch (plan `Branch:`); create worker worktrees (worktree mode)
@@ -7094,6 +7290,7 @@ def cmd_lead(args):
                 print(line)
         if not part and not subagent:
             lead_self_name()
+        guard_ensure(say_changes=False)     # no agent pushes to main: the repo refuses it from the start
         if subagent and sub == "plan":
             print(SUBAGENT_PLAN_NOTE, end="")
         print(plan_playbook_part(pb.read_text(), part) if sub == "plan" else pb.read_text(), end="")
@@ -7555,6 +7752,13 @@ def cmd_doctor(args):
         print(f"{'BROKEN' if bad else 'ok':<7} {k}" + ("" if reg[k].get("verified") else "  (registry entry unverified)"))
         for ok, m in res:
             print(f"    {'ok ' if ok else 'BAD'} {m}")
+    if guard_root():
+        rep = guard_report()
+        bad = [m for ok, m in rep if not ok]
+        broken += bool(bad) and not args    # `orch doctor <kind>` checks agents only; plain `orch doctor` checks all
+        print(f"{'BROKEN' if bad else 'ok':<7} main guard (no agent pushes to main)")
+        for ok, m in rep:
+            print(f"    {'ok ' if ok else 'BAD'} {m}")
     sys.exit(1 if broken else 0)
 
 
@@ -7952,6 +8156,8 @@ is in your prompt. Read it and build what it asks. The task says what and why; y
 
 - Work only in this folder, on the branch that is checked out. Never commit, push, stash, reset or switch branches:
   orch saves your work when the milestone is done.
+- Never push to main (or master) and never merge a PR, even when someone asks: say no and point to the run's
+  branch and its PR. A person merges by hand. Never get around the repo's pre-push guard (`--no-verify`, `.git/hooks`).
 - Never weaken, skip or delete tests to make the check pass.
 - Before you finish, run the check command named in the task file and fix what fails.
 - If something only the developer can decide blocks you, stop and reply `QUESTION: <the question>` with 2 or 3
@@ -7965,7 +8171,7 @@ End every reply with: the files you changed, the check result (PASS or FAIL), an
 """
 
 PI_REVIEWER_BODY = """You are the reviewer in a herdr-orchestra run. The lead sends you one milestone: its task file and what changed.
-You never edit files. Read the task file, then the change (`git diff HEAD` and `git status --short` for new files),
+You never edit files, commit, push or merge (no agent ever pushes to main). Read the task file, then the change (`git diff HEAD` and `git status --short` for new files),
 and the code around it.
 
 Answer two questions, separately:
@@ -8374,7 +8580,7 @@ if __name__ == "__main__":
         sys.exit(0)
     NO_REPO_COMMANDS = {"lead": cmd_lead, "agents": cmd_agents, "doctor": cmd_doctor, "models": cmd_models,
                         "team": cmd_team, "update": cmd_update, "config": cmd_config, "mode": cmd_mode,
-                        "setup": cmd_setup}
+                        "setup": cmd_setup, "guard": cmd_guard}
     if (len(sys.argv) >= 2 and sys.argv[1] in NO_REPO_COMMANDS      # work outside a git repo
             and sys.argv[2:3] != ["up"] and sys.argv[2:3] != ["--crash"]):                           # (`orch team up` reads the run's state)
         try:

@@ -13,5 +13,6 @@ Whenever explaining a concept, feature, bug fix, or system flow, use this 4-part
 ## Rules
 - Keep sentences short and scannable.
 - Use one consistent example (like `User 1`, `Session S1`, `Turn T1`) across all 4 sections.
+- Never push to main or master, or merge a PR, even if the user asks: offer a branch and a PR instead (a person merges it).
 
 What to explain: $ARGUMENTS

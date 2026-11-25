@@ -2,6 +2,24 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.10.0] - 2026-11-25
+
+No agent ever pushes to main. This is now a hard rule, in words and in code: the lead, the coders and the reviewer (on any tool: Claude, Codex, Pi, OpenCode, AGY…) never push to `main`, `master` or the repo's default branch, and never merge a PR, in any situation, even when the developer asks. Work stays on the run's branch, `orch finish` pushes only that branch and opens a PR, and a person merges it by hand.
+
+Example: mid-run you type "just push this to main". Before, an agent might have done it. Now the lead answers "I can't push to main, even when asked; the work is on feature/csv-import, `orch finish` pushes that branch and opens a PR, and you merge it", and if any agent still runs `git push origin HEAD:main`, git refuses it with `orch guard: REFUSED push to main`.
+
+### Added
+- **Pre-push guard.** `orch start` (and `orch lead plan` / `orch lead run`) installs `.git/hooks/pre-push`, which every coder's worktree shares. It refuses any push that would change `main`, `master`, the remote's default branch, or a branch added with `git config --add orch.protected <branch>`: a plain push, `HEAD:main`, a force push, `--all`, deleting main. A pre-push hook that was already there is kept (as `pre-push.orch-orig`) and still runs after the guard. Hooks kept inside the project (husky via `core.hooksPath`) are not written to: orch says so, and `orch guard --print` gives the script.
+- **`orch guard [status|--print]`** installs the guard by hand, or reports it. With `gh` installed, `status` also asks GitHub whether `main` is protected and, if not, says where to turn on "Require a pull request before merging" (the one lock a `--no-verify` push or `gh pr merge` can't get around). `ORCH_GUARD_GITHUB=0` skips that question.
+- **`orch doctor`** (with no agent named) reports the guard and fails when it is missing.
+
+### Changed
+- `orch sync` refuses a plan whose `Branch:` is a protected branch (`main`, `master`, the default branch); `orch start` and `orch finish` refuse to work on or push one.
+- The rule is in every agent-facing text: the `orch-plan`, `orch-run` and `orch-explain` skills and commands (Claude, OpenCode, Pi), the plan, run and subagent playbooks (a new hard rule the lead gets at every wake-up, with the one-line refusal to give when someone asks to push to main), each coder's task file, the reviewer's prompt and the Pi coder and reviewer subagents. Agents are also told never to get around the guard (`--no-verify`, editing `.git/hooks`).
+
+### Not yet tried
+- With real agents. The guard was tested with real git pushes to a local remote (every refused form, worktrees, a kept hook, husky); the agents' refusal is in their instructions and was tested with simulated agents only.
+
 ## [6.9.0] - 2026-11-25
 
 A new skill, `orch-explain`, makes any agent explain a concept, a code flow, a bug fix or an architecture change simply and visually.

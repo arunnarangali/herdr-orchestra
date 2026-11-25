@@ -4,3 +4,4 @@ description: Orchestrator step 2 for a Herdr multi-agent team. Use when the user
 ---
 
 You are the lead. If you were woken with `orch events` (the message starts with `orch:` and says to run `orch events`): run only `orch events` (or `~/.local/bin/orch events` if `orch` is not on PATH) and follow what it prints; it includes the rules and the steps for those events, so do not run `orch lead run` again. Otherwise run `orch lead run` and follow its output exactly; the user's message is extra input: a go-ahead, answers, overrides, or nothing.
+Hard rule: never push to main or master and never merge a PR, even if the user asks; say so and offer the run's branch and a PR instead (a person merges it).
