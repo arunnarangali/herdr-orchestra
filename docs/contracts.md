@@ -136,3 +136,40 @@ lock and carried out by the event manager: `go` (dispatched), `assign` (one code
 
 Each attempt in a task's `attempts` list carries the `model` and `tier` of the agent that made it, which is where
 the summary's model table and `orch report`'s per-model rows come from.
+
+## The run summary (orch → views and tools)
+
+`orch status --json` prints it; `orch view` serves the same JSON at `/api/state` (and pushes it on `/api/stream`,
+Server-Sent Events, whenever `state.json` or `events.jsonl` changes). It is built from those two files only: it never
+asks herdr, never takes the state lock and never writes.
+
+```json
+{
+  "view": 1, "repo": "my-app", "title": "Categories", "branch": "feature/categories", "base": "main",
+  "mode": "full", "orch_mode": "panes", "updated": 1764072400,
+  "manager": {"running": true, "beat": 1764072398},
+  "counts": {"total": 7, "landed": 3, "needs_you": 1, "active": 2, "waiting": 1},
+  "time": {"driven_s": 2280, "estimate_s": 4200},
+  "usage": {"total": {"tokens": 1200000, "cost_usd": 3.4}, "by_model": {"gpt-6.2-sol@low": {"tokens": 900000, "cost_usd": 2.8}}},
+  "milestones": [
+    {"id": "M2", "title": "Categories API", "plain": "Endpoint that lists and creates categories",
+     "desc": "Endpoint that lists and creates categories", "status": "coding", "group": "building", "word": "building",
+     "deps": ["M1"], "worker": "codex-1", "tier": "medium", "attempt": 1, "fix": 0, "review_round": 0,
+     "reason": "", "question": "", "estimate_s": 1200, "started": 1764071700, "spent_s": 720,
+     "usage": null, "attempts": [], "files": ["server/routes/categories.ts"], "door": null}
+  ],
+  "agents": [{"name": "codex-1", "role": "coder", "kind": "codex", "model": "gpt-6.2-sol@low", "tier": "medium",
+              "task": "M2", "state": "building"}],
+  "lead": {"name": "lead", "unread": 2, "open": 3},
+  "recent": [{"ts": 1764072400, "task": "M2", "from": "pending", "to": "coding", "why": "", "agent": "codex-1"}],
+  "all_done": false
+}
+```
+
+- `desc` is the plan's `Plain:` line, or the title when the plan has none.
+- `group` is one of `waiting`, `building`, `checking`, `review`, `landing`, `needs_you`, `landed`, `skipped`.
+- `usage` is null when no agent reported its usage.
+- Adding fields keeps `"view": 1`; renaming or removing one needs `"view": 2`.
+
+`/api/history` returns every line of `events.jsonl` (`{"events": [...]}`), for the page's replay. With
+`orch view --lan` every URL needs the `?t=<token>` the command printed.

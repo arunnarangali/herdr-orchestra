@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orch view</title>
+<style>
+:root{--bg:#0d0e11;--surface:#13151a;--s2:#181b21;--line:#242832;--line2:#343a47;--text:#ededed;--muted:#8e95a5;--faint:#626979;
+--accent:#e5a93b;--landed:#8fcf7d;--bad:#e5675b;--building:#7aa2f7;--checking:#5fc4b8;--review:#b392f0;--landing:#e5a93b;--waiting:#626979;
+--mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono",monospace;--sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px}
+button{font:inherit;color:inherit;background:none;border:1px solid var(--line2);border-radius:3px;padding:3px 9px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:12px 20px;border-bottom:1px solid var(--line)}
+.logo{font-family:var(--mono);font-weight:700;color:var(--accent)}
+.title{font-size:15px;font-weight:600}.branch{font-family:var(--mono);color:var(--muted);font-size:12px}
+.chip{font-family:var(--mono);font-size:12px;padding:3px 9px;border:1px solid var(--line2);border-radius:3px}
+.chip.r{color:var(--bad);border-color:#5a2a26;background:#2a1513}.chip.g{color:var(--landed)}
+.live{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--landed);display:flex;gap:10px;align-items:center}
+.live.off{color:var(--bad)}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;min-height:calc(100vh - 56px)}
+.left{border-right:1px solid var(--line);min-width:0}
+.sec{padding:12px 20px;border-bottom:1px solid var(--line);position:relative}
+.h{font-family:var(--mono);font-size:11px;letter-spacing:.08em;color:var(--faint);text-transform:uppercase;margin-bottom:8px}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:8px}
+.legend span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px;background:var(--c)}
+#ring svg{display:block;width:100%;max-width:960px;height:auto;margin:0 auto}
+#graphwrap{overflow:auto;position:relative}
+#graph{position:relative}
+#graph svg{position:absolute;left:0;top:0;pointer-events:none}
+.node{position:absolute;width:250px;min-height:104px;border:1px solid var(--line2);background:var(--surface);border-radius:4px;padding:8px 11px;border-left-width:4px;cursor:pointer}
+.node:hover{border-color:var(--accent)}
+.node.sel{box-shadow:0 0 0 2px var(--accent)}
+.node .id{font-family:var(--mono);font-weight:700}.node .nm{font-weight:600}
+.ds{font-size:11.5px;color:var(--muted);margin-top:3px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.node .s{font-family:var(--mono);font-size:11.5px;margin-top:5px}
+.node .m{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:2px}
+.bar{height:4px;background:var(--line);border-radius:2px;margin-top:6px;overflow:hidden}.bar i{display:block;height:100%}
+.g-landed{border-left-color:var(--landed)}.g-landed .s{color:var(--landed)}
+.g-building{border-left-color:var(--building)}.g-building .s{color:var(--building)}
+.g-checking{border-left-color:var(--checking)}.g-checking .s{color:var(--checking)}
+.g-review{border-left-color:var(--review)}.g-review .s{color:var(--review)}
+.g-landing{border-left-color:var(--landing)}.g-landing .s{color:var(--landing)}
+.g-waiting,.g-skipped{border-left-color:var(--waiting)}.g-waiting .s,.g-skipped .s{color:var(--muted)}.g-skipped{opacity:.5}
+.g-needs_you{border-left-color:var(--bad);background:#1d1312;border-color:#5a2a26;box-shadow:0 0 0 2px #e5675b44}.g-needs_you .s{color:var(--bad);font-weight:700}
+#list{display:none}
+.li{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);cursor:pointer}
+.li .b{width:4px;align-self:stretch;border-radius:2px}.li .id{font-family:var(--mono);font-weight:700;width:30px}
+.li .st{margin-left:auto;font-family:var(--mono);font-size:11px;text-align:right}.li .sub{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.tl .row{font-family:var(--mono);font-size:12px;line-height:1.75}.tl .row b{color:var(--faint);font-weight:400;margin-right:10px}
+.scrub{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.scrub input{flex:1;accent-color:var(--accent)}
+.banner{display:none;background:#221b0d;border:1px solid var(--accent);color:var(--accent);padding:6px 10px;border-radius:3px;font-family:var(--mono);font-size:12px;margin-bottom:8px}
+.right{background:var(--surface)}
+.ag{display:grid;grid-template-columns:14px 1fr auto;gap:2px 8px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.ag .dot{width:9px;height:9px;border-radius:50%;margin-top:4px}.ag .n{font-family:var(--mono);font-weight:700}
+.ag .k{grid-column:2 / 4;color:var(--muted);font-family:var(--mono);font-size:11px}.ag .w{font-family:var(--mono);font-size:12px;text-align:right}
+.card{margin:14px 16px;border:1px solid var(--line2);border-radius:4px;padding:12px 14px;font-size:12.5px;line-height:1.55}
+.card.you{border-color:#5a2a26;background:#1d1312}
+.card .q{background:var(--bg);border:1px solid var(--line2);padding:8px 10px;border-radius:3px;margin:8px 0;font-style:italic}
+.card code,.mono{font-family:var(--mono);font-size:11.5px}
+.card code{background:var(--bg);padding:5px 8px;display:block;border-radius:3px;margin-top:6px;color:var(--accent);word-break:break-all}
+.card table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px}.card td{padding:3px 0;vertical-align:top}.card td:last-child{text-align:right}
+.muted{color:var(--muted)}.faint{color:var(--faint)}.bad{color:var(--bad)}.ok{color:var(--landed)}.warn{color:var(--accent)}
+.empty{padding:60px 20px;text-align:center;color:var(--muted);font-size:14px}
+@media (max-width:820px){
+  .grid{grid-template-columns:1fr}.left{border-right:0}
+  #ring{display:none}#graphwrap{display:none}#list{display:block}
+  .top{padding:10px 14px}.sec{padding:10px 14px}.live{margin-left:0}
+  .right{order:-1}#agentsec{display:none}
+}
+</style>
+</head>
+<body>
+<div class="top">
+  <span class="logo">orch view</span><span class="title" id="t-title">…</span><span class="branch" id="t-branch"></span>
+  <span id="chips" style="display:flex;gap:8px;flex-wrap:wrap"></span>
+  <span class="live" id="live"><button id="alerts" title="Show a notification when a milestone needs you">alerts: off</button><span id="livetxt">connecting…</span></span>
+</div>
+<div id="root"></div>
+<script>
+"use strict";
+const Q = location.search;                      // carries ?t=<token> for `orch view --lan`
+const GROUP_WORD = {landed:"landed",building:"building",checking:"checking",review:"in review",landing:"landing",needs_you:"needs you",waiting:"waiting",skipped:"skipped"};
+const GROUP_COLOR = {landed:"#8fcf7d",building:"#7aa2f7",checking:"#5fc4b8",review:"#b392f0",landing:"#e5a93b",needs_you:"#e5675b",waiting:"#626979",skipped:"#626979"};
+const GROUP_OF = {"pending":"waiting","coding":"building","needs-fix":"building","conflict":"building","verifying":"checking","awaiting-review":"review","reviewing":"review","reviewed":"review","committed":"landing","held":"needs_you","paused":"needs_you","needs-answer":"needs_you","failed":"needs_you","merged":"landed","skipped":"skipped"};
+const ICON = {landed:"✔",building:"●",checking:"●",review:"●",landing:"●",needs_you:"■",waiting:"○",skipped:"–"};
+let VM = null, HIST = null, replayAt = null, sel = decodeURIComponent(location.hash.slice(1)) || null, seenNeeds = null;
+let alertsOn = localStorage.getItem("orch-view-alerts") === "1";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const mins = (s) => s == null ? "?" : (s >= 3600 ? `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m` : `${Math.max(0, Math.floor(s/60))}m`);
+const clock = (ts) => new Date(ts * 1000).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+const money = (u) => u ? `${(u.tokens/1e6).toFixed(1)}M tok · $${u.cost_usd.toFixed(2)}` : "unknown";
+
+function view() { return replayAt == null || !HIST ? VM : replayed(VM, HIST, replayAt); }
+
+// Replay: start every milestone at "pending" and apply events.jsonl up to the slider.
+function replayed(vm, hist, upto) {
+  const v = JSON.parse(JSON.stringify(vm));
+  const by = Object.fromEntries(v.milestones.map((m) => [m.id, m]));
+  for (const m of v.milestones) { m.status = "pending"; m.worker = null; m.question = ""; m.reason = ""; m.started = null; m.spent_s = 0; m.attempts = []; }
+  for (const e of hist.slice(0, upto + 1)) {
+    const m = by[e.task]; if (!m) continue;
+    m.status = e.to; if (e.agent) m.worker = e.agent; m.reason = e.why || "";
+  }
+  for (const m of v.milestones) { m.group = GROUP_OF[m.status] || "waiting"; m.word = GROUP_WORD[m.group]; m.estimate_s = m.estimate_s; }
+  const g = v.milestones.map((m) => m.group);
+  v.counts = {total: g.filter((x) => x !== "skipped").length, landed: g.filter((x) => x === "landed").length,
+              needs_you: g.filter((x) => x === "needs_you").length, active: 0, waiting: 0};
+  v.agents = v.agents.map((a) => ({...a, task: null, state: "—"}));
+  v.recent = hist.slice(0, upto + 1).reverse().slice(0, 40);
+  return v;
+}
+
+function render() {
+  const v = view();
+  if (!v) return;
+  if (v.empty) { $("root").innerHTML = `<div class="empty">${esc(v.text)}</div>`; $("t-title").textContent = v.repo; return; }
+  const c = v.counts;
+  document.title = (c.needs_you ? `(${c.needs_you}) ` : "") + `orch view · ${v.title}`;
+  $("t-title").textContent = v.title || v.branch;
+  $("t-branch").textContent = `${v.repo} · ${v.branch}${v.base ? " → " + v.base : ""}`;
+  $("chips").innerHTML = `<span class="chip g">${c.landed} of ${c.total} landed</span>` +
+    (c.needs_you ? `<span class="chip r">${c.needs_you} needs you</span>` : "") +
+    `<span class="chip">${mins(v.time.driven_s)} so far${v.time.estimate_s ? " · est. ~" + mins(v.time.estimate_s) : ""}</span>` +
+    (v.all_done ? `<span class="chip g">ALL DONE · run orch finish</span>` : "");
+  if (!$("graph")) build();
+  ring(v); graph(v); list(v); agents(v); detail(v); cost(v); timeline(v);
+}
+
+function build() {
+  $("root").innerHTML = `<div class="grid"><div class="left">
+    <div class="sec" id="ring"><div class="h">The run right now</div><div id="ringsvg"></div></div>
+    <div class="sec"><div class="h">Milestones (arrows = "needs this first")</div>
+      <div class="legend">${["landed","building","checking","review","landing","needs_you","waiting"].map((g) => `<span style="--c:${GROUP_COLOR[g]}">${GROUP_WORD[g]}</span>`).join("")}</div>
+      <div id="graphwrap"><div id="graph"></div></div><div id="list"></div></div>
+    <div class="sec tl"><div class="h">What happened (newest first)</div><div class="banner" id="banner"></div>
+      <div class="scrub"><button id="rp">◀ Replay</button><input type="range" id="slider" min="0" max="0" value="0"><span id="rpwhen"></span><button id="golive">back to live</button></div>
+      <div id="tl"></div></div>
+  </div><div class="right">
+    <div class="sec" id="agentsec"><div class="h">Agents</div><div id="agents"></div></div>
+    <div id="detail"></div><div id="cost"></div>
+  </div></div>`;
+  $("rp").onclick = () => startReplay();
+  $("golive").onclick = () => { replayAt = null; render(); };
+  $("slider").oninput = (e) => { if (!HIST) return; replayAt = +e.target.value; render(); };
+}
+
+async function startReplay() {
+  HIST = (await (await fetch("/api/history" + Q)).json()).events;
+  if (!HIST.length) return;
+  replayAt = 0; render();
+}
+
+function ring(v) {
+  const n = (g) => v.milestones.filter((m) => g.includes(m.group));
+  const ids = (a) => a.map((m) => m.id).join(" · ") || "none now";
+  const lead = v.lead ? (v.lead.unread ? `${v.lead.unread} event(s) to read` : "waiting") : "no lead";
+  const stops = [
+    {x:480,y:30,w:230,t:"Lead dispatches, pauses",s:lead,c:"#e5a93b",k:0},
+    {x:800,y:82,w:200,t:"Coders build",s:ids(n(["building"])),c:"#7aa2f7",k:n(["building"]).length},
+    {x:640,y:156,w:190,t:"Checks run",s:ids(n(["checking","landing"])),c:"#5fc4b8",k:n(["checking","landing"]).length},
+    {x:320,y:156,w:200,t:"Reviewer reads diff",s:ids(n(["review"])),c:"#b392f0",k:n(["review"]).length},
+    {x:160,y:82,w:220,t:"Waiting for you",s:ids(n(["needs_you"])),c:"#e5675b",k:n(["needs_you"]).length},
+  ];
+  $("ringsvg").innerHTML = `<svg viewBox="0 0 960 190"><ellipse cx="480" cy="94" rx="330" ry="64" fill="none" stroke="#343a47" stroke-width="1.5" stroke-dasharray="5 5"/>
+    <g font-family="JetBrains Mono,ui-monospace,monospace" font-size="12">${stops.map((s) => `
+    <g transform="translate(${s.x},${s.y})"><rect x="${-s.w/2}" y="-20" width="${s.w}" height="40" rx="3" fill="#13151a" stroke="${s.c}"/>
+    <text x="${-s.w/2+12}" y="-3" fill="${s.c}">${esc(s.t)}</text><text x="${-s.w/2+12}" y="13" fill="#ededed">${esc(s.s.length > 26 ? s.s.slice(0,25) + "…" : s.s)}</text>
+    ${s.k ? `<circle cx="${s.w/2-14}" cy="-18" r="11" fill="${s.c}"/><text x="${s.w/2-14}" y="-14" text-anchor="middle" fill="#0d0e11" font-weight="bold">${s.k}</text>` : ""}</g>`).join("")}</g></svg>`;
+}
+
+function nodeHTML(m, v) {
+  const word = m.group === "waiting" && m.deps.length ? waitsFor(m, v) : (m.status === "needs-fix" && m.fix ? `fix round ${m.fix}` : m.word);
+  const who = m.worker ? `${m.worker}${m.tier ? " · " + m.tier : ""}` : (m.tier || "");
+  const tm = m.started && m.estimate_s ? `${mins(m.spent_s)} of ~${mins(m.estimate_s)}` : m.spent_s ? mins(m.spent_s) + (m.estimate_s ? ` (est. ${mins(m.estimate_s)})` : "") : m.estimate_s ? `est. ~${mins(m.estimate_s)}` : "";
+  const pct = m.started && m.estimate_s && ["building","checking","review","landing"].includes(m.group) ? Math.min(100, Math.round(100 * m.spent_s / m.estimate_s)) : null;
+  return `<div><span class="id">${esc(m.id)}</span> <span class="nm">${esc(m.title)}</span></div>
+    ${m.desc && m.desc !== m.title ? `<div class="ds" title="${esc(m.desc)}">${esc(m.desc)}</div>` : ""}
+    <div class="s">${ICON[m.group]} ${esc(m.group === "needs_you" ? "NEEDS YOU · " + m.word : word)}${m.attempt > 1 ? " · try " + m.attempt : ""}</div>
+    <div class="m">${esc([who, tm].filter(Boolean).join(" · "))}</div>
+    ${pct != null ? `<div class="bar"><i style="width:${pct}%;background:${GROUP_COLOR[m.group]}"></i></div>` : ""}`;
+}
+function waitsFor(m, v) {
+  const by = Object.fromEntries(v.milestones.map((x) => [x.id, x]));
+  const open = m.deps.filter((d) => by[d] && by[d].group !== "landed");
+  return open.length ? "waits for " + open.join(", ") : "ready to start";
+}
+
+function graph(v) {
+  const by = Object.fromEntries(v.milestones.map((m) => [m.id, m]));
+  const lvl = {};
+  const level = (id, seen = new Set()) => {
+    if (lvl[id] != null) return lvl[id];
+    if (seen.has(id)) return 0; seen.add(id);
+    const ds = (by[id]?.deps || []).filter((d) => by[d]);
+    return (lvl[id] = ds.length ? 1 + Math.max(...ds.map((d) => level(d, seen))) : 0);
+  };
+  v.milestones.forEach((m) => level(m.id));
+  const cols = {}, pos = {};
+  const W = 250, H = 104, GX = 80, GY = 22;
+  v.milestones.forEach((m) => { (cols[lvl[m.id]] ||= []).push(m.id); });
+  let maxY = 0, maxX = 0;
+  for (const [L, ids] of Object.entries(cols)) ids.forEach((id, i) => {
+    pos[id] = {x: 4 + L * (W + GX), y: 4 + i * (H + GY + 18)};
+    maxY = Math.max(maxY, pos[id].y + H + 30); maxX = Math.max(maxX, pos[id].x + W + 8);
+  });
+  const arrows = [];
+  for (const m of v.milestones) for (const d of m.deps) if (pos[d]) {
+    const a = pos[d], b = pos[m.id];
+    const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x - 6, y2 = b.y + H / 2, mx = (x1 + x2) / 2;
+    arrows.push(`<path d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"/>`);
+  }
+  const g = $("graph");
+  g.style.width = maxX + "px"; g.style.height = maxY + "px";
+  g.innerHTML = `<svg width="${maxX}" height="${maxY}"><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#626979"/></marker></defs>
+    <g stroke="#626979" stroke-width="1.6" fill="none" marker-end="url(#a)">${arrows.join("")}</g></svg>` +
+    v.milestones.map((m) => `<div class="node g-${m.group}${sel === m.id ? " sel" : ""}" data-id="${esc(m.id)}" style="left:${pos[m.id].x}px;top:${pos[m.id].y}px">${nodeHTML(m, v)}</div>`).join("");
+  g.querySelectorAll(".node").forEach((el) => el.onclick = () => pick(el.dataset.id));
+}
+
+function list(v) {
+  // phone: the graph as a list; "after M1" says what each waits for
+  $("list").innerHTML = v.milestones.map((m) => `<div class="li" data-id="${esc(m.id)}"><i class="b" style="background:${GROUP_COLOR[m.group]}"></i>
+    <span class="id">${esc(m.id)}</span><div style="min-width:0">${esc(m.title)}${m.desc && m.desc !== m.title ? `<div class="sub">${esc(m.desc)}</div>` : ""}
+    <div class="sub">${esc([m.deps.length ? "after " + m.deps.join(", ") : "", m.worker || ""].filter(Boolean).join(" · "))}</div></div>
+    <span class="st" style="color:${GROUP_COLOR[m.group]}">${esc(m.status === "needs-fix" && m.fix ? "fix round " + m.fix : m.word)}</span></div>`).join("");
+  $("list").querySelectorAll(".li").forEach((el) => el.onclick = () => pick(el.dataset.id));
+}
+
+function agents(v) {
+  $("agents").innerHTML = v.agents.map((a) => {
+    const col = a.role === "lead" ? "#e5a93b" : !a.task ? "#626979" : a.role === "reviewer" ? "#b392f0" : "#7aa2f7";
+    return `<div class="ag"><i class="dot" style="background:${col}"></i><span class="n">${esc(a.name)}</span>
+      <span class="w" style="color:${col}">${esc(a.task ? a.task + " · " + a.state : a.state)}</span>
+      <span class="k">${esc([a.role, a.kind, a.model, a.tier].filter(Boolean).join(" · "))}</span></div>`;
+  }).join("") || `<div class="muted">No agents in this run.</div>`;
+}
+
+function detail(v) {
+  let id = sel && v.milestones.some((m) => m.id === sel) ? sel : (v.milestones.find((m) => m.group === "needs_you") || {}).id;
+  const m = v.milestones.find((x) => x.id === id);
+  if (!m) { $("detail").innerHTML = `<div class="card muted">Click a milestone to see what it is, who works on it and what happened.</div>`; return; }
+  const you = m.group === "needs_you";
+  const ask = m.question || m.reason;
+  const how = {paused: `orch answer ${m.id} "..."`, "needs-answer": `orch answer ${m.id} "..."`, held: `orch approve ${m.id}`, failed: `orch fix ${m.id} "..."`}[m.status];
+  $("detail").innerHTML = `<div class="card${you ? " you" : ""}">
+    <div style="font-weight:700;font-size:14px">${esc(m.id)} ${esc(m.title)} <span class="mono" style="color:${GROUP_COLOR[m.group]};margin-left:6px">${esc(you ? "NEEDS YOU" : m.word)}</span></div>
+    <div class="muted" style="margin-top:4px">${esc(m.desc)}</div>
+    ${you && ask ? `<div class="q">${esc(ask)}</div>` : (m.reason ? `<div class="muted" style="margin-top:6px">${esc(m.reason)}</div>` : "")}
+    <div class="muted" style="margin-top:6px">${esc([m.worker ? "coder " + m.worker : "", m.tier ? "tier " + m.tier : "", m.deps.length ? "after " + m.deps.join(", ") : "", m.door === "one-way" ? "hard to undo" : ""].filter(Boolean).join(" · "))}</div>
+    ${you && how ? `<div style="margin-top:8px">Answer in the lead's pane, or run:</div><code>${esc(how)}</code>` : ""}
+    ${m.attempts.length ? `<div class="h" style="margin:10px 0 4px">Steps so far</div><table>${m.attempts.map((a) => `<tr><td class="muted">${esc(a.kind || "step")} · ${esc(a.agent || "")}${a.model ? " · " + esc(a.model) : ""}</td><td>${mins(a.secs)} ${esc(a.outcome || "")}</td></tr>`).join("")}</table>` : ""}
+    ${m.files && m.files.length ? `<div class="h" style="margin:10px 0 4px">Files</div><div class="mono muted">${m.files.map(esc).join("<br>")}</div>` : ""}
+  </div>`;
+}
+
+function cost(v) {
+  const done = v.milestones.filter((m) => m.spent_s && m.estimate_s);
+  const est = v.time.estimate_s, so = v.time.driven_s;
+  const rows = done.map((m) => {
+    const late = m.spent_s > m.estimate_s * 1.2;
+    return `<tr><td class="muted">${esc(m.id)} ${esc(m.title)}</td><td class="${late ? "warn" : ""}">${mins(m.spent_s)} / est ${mins(m.estimate_s)}</td></tr>` +
+      (late && (m.fix || m.review_round > 1 || m.attempt > 1) ? `<tr><td colspan="2" class="faint" style="text-align:left;font-size:10.5px">longer: ${esc([m.fix ? m.fix + " fix round(s)" : "", m.attempt > 1 ? m.attempt + " tries" : "", m.review_round > 1 ? m.review_round + " review rounds" : ""].filter(Boolean).join(", "))}</td></tr>` : "");
+  }).join("");
+  const models = Object.entries(v.usage.by_model || {}).map(([k, u]) => `<tr><td class="muted">${esc(k)}</td><td>${money(u)}</td></tr>`).join("");
+  $("cost").innerHTML = `<div class="card"><div class="h" style="margin-bottom:6px">Time and cost</div>
+    <div style="margin-bottom:8px">${mins(so)} so far${est ? ` of ~${mins(est)} planned` : ""}</div>
+    <table>${rows}${models}<tr><td><b>Total</b></td><td><b>${v.usage.total ? money(v.usage.total) : "tokens unknown"}</b></td></tr></table>
+    ${v.usage.total ? "" : `<div class="faint" style="font-size:11px;margin-top:6px">Cost shows when the agents report their usage in their result files.</div>`}</div>`;
+}
+
+function timeline(v) {
+  const s = $("slider");
+  const live = replayAt == null;
+  $("banner").style.display = live ? "none" : "block";
+  if (!live && HIST && HIST[replayAt]) {
+    $("banner").textContent = `Replaying: ${clock(HIST[replayAt].ts)} (step ${replayAt + 1} of ${HIST.length}). Press "live" to go back.`;
+    s.max = HIST.length - 1; s.value = replayAt; $("rpwhen").textContent = clock(HIST[replayAt].ts);
+  } else { s.max = 1; s.value = 1; $("rpwhen").textContent = "now"; }
+  $("tl").innerHTML = (v.recent || []).slice(0, 25).map((e) => {
+    const g = GROUP_OF[e.to] || "waiting";
+    return `<div class="row"><b>${clock(e.ts)}</b><span style="color:${g === "needs_you" ? GROUP_COLOR.needs_you : g === "landed" ? GROUP_COLOR.landed : "inherit"}">${esc(e.task)} ${esc(e.from || "")} → ${esc(e.to)}</span>${e.why ? ` <span class="faint">${esc(e.why.slice(0, 90))}</span>` : ""}</div>`;
+  }).join("") || `<div class="muted">Nothing has happened yet.</div>`;
+}
+
+function pick(id) { sel = id; history.replaceState(null, "", "#" + encodeURIComponent(id)); render(); }
+window.addEventListener("hashchange", () => { sel = decodeURIComponent(location.hash.slice(1)) || null; render(); });
+
+// "needs you" alert: a browser notification for each milestone that newly needs the developer
+function alertsLabel() { $("alerts").textContent = alertsOn ? "alerts: on" : "alerts: off"; }
+$("alerts").onclick = async () => {
+  if (!alertsOn && "Notification" in window && Notification.permission !== "granted") await Notification.requestPermission();
+  alertsOn = !alertsOn; localStorage.setItem("orch-view-alerts", alertsOn ? "1" : "0"); alertsLabel();
+};
+alertsLabel();
+function notify(vm) {
+  const now = new Set(vm.milestones.filter((m) => m.group === "needs_you").map((m) => m.id));
+  if (seenNeeds) for (const id of now) if (!seenNeeds.has(id)) {
+    const m = vm.milestones.find((x) => x.id === id);
+    if (alertsOn && "Notification" in window && Notification.permission === "granted") {
+      const n = new Notification(`${id} needs you`, {body: `${m.title}: ${m.question || m.reason || m.word}`, tag: "orch-" + id});
+      n.onclick = () => { window.focus(); pick(id); };
+    }
+  }
+  seenNeeds = now;
+}
+
+function got(vm) {
+  VM = vm; if (!vm.empty) notify(vm);
+  const t = new Date().toLocaleTimeString();
+  $("live").classList.toggle("off", false);
+  $("livetxt").textContent = (vm.manager && vm.manager.running ? "● live" : "● live · event manager not running") + " · " + t;
+  if (replayAt != null && HIST && vm.recent && vm.recent.length && HIST.length < (vm.recent.length)) HIST = null;
+  render();
+}
+function connect() {
+  fetch("/api/state" + Q).then((r) => r.json()).then(got).catch(() => {});
+  if (!window.EventSource) { setInterval(() => fetch("/api/state" + Q).then((r) => r.json()).then(got), 2000); return; }
+  const es = new EventSource("/api/stream" + Q);
+  es.addEventListener("state", (e) => got(JSON.parse(e.data)));
+  es.onerror = () => { $("live").classList.add("off"); $("livetxt").textContent = "disconnected: is `orch view` still running? retrying…"; };
+}
+connect();
+</script>
+</body>
+</html>

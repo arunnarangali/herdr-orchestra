@@ -316,6 +316,15 @@ A subagent run: `/orch-plan` as usual (the plan's team is `Workers: coder (pi)`,
 - **worktree**: each coder works in `../<repo>-wt/<name>`, independent tasks run in parallel, and each task is squash-merged when it passes checks and review. Start each coder inside its own worktree.
 - **shared**: everyone works in your folder, one milestone at a time. Two agents in one folder would overwrite each other's files and mix their changes, so this is only safe sequentially. Use it when every milestone depends on the previous one.
 
+### Watch a run: browser, board and Herdr's sidebar
+Three views show a run while it goes; none of them changes it.
+
+- **`orch view`** opens the run as a live picture in your browser: the run ring, a milestone graph (arrows = "needs this first", red = needs you) with a one-line description under each milestone, the agents, the details of the milestone you click (with the exact `orch answer` command), time and cost against the estimate, a replay slider, and an optional browser alert when something needs you. `orch view --lan` also opens it to your phone on the same Wi-Fi, behind a secret link. `orch status` and the lead's "needs you" lines print its link while it runs.
+- **`orch board`** draws the same run as text for a Herdr pane; `orch view plugin link` adds a small Herdr plugin that opens it as a popup (Herdr 0.7.4+).
+- **Herdr's sidebar** names each agent by what it does (`codex-1 · M2 building`), set by the event manager on a separate thread, display only (Herdr 0.6.3+; `ORCH_SIDEBAR=0` turns it off). `orch view herdr-config` prints extra sidebar rows.
+
+`orch status --json` prints the run summary all three read (see [docs/contracts.md](docs/contracts.md)). More: [Watch a run](https://herdr-orchestra.vercel.app/docs/watching/).
+
 ### What the event manager handles by itself
 | Situation | Behaviour |
 |---|---|

@@ -47,6 +47,7 @@ export default defineConfig({
             { label: 'Modes', slug: 'docs/modes' },
             { label: 'Git, commits and the PR', slug: 'docs/git' },
             { label: 'When a run needs you', slug: 'docs/when-it-stops' },
+            { label: 'Watch a run', slug: 'docs/watching' },
           ],
         },
         {

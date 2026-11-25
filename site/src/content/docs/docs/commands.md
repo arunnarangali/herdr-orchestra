@@ -10,6 +10,10 @@ Run `orch` with no arguments for the full help.
 | Command | What it does |
 |---|---|
 | `orch status` | Workers with their models, milestones with their tiers, events waiting for the lead; prints `ALL_DONE` or `STUCK` when relevant |
+| `orch status --json` | The run summary as JSON (`"view": 1`): milestones with their descriptions, agents, counts, time and cost. See [Watch a run](/docs/watching/) |
+| `orch view [--lan] [--bg] [--port N] [--no-open]` | The run as a live picture in your browser (view only): milestone graph, agents, details, "needs you" alerts, time and cost, replay. `--lan`: also from your phone with a secret link. `orch view stop`, `orch view status` |
+| `orch view herdr-config` / `orch view plugin link\|unlink` | Lines for Herdr's config (sidebar rows, popup key) / the optional Herdr plugin that opens `orch board` as a popup |
+| `orch board [--once]` | The run as text, redrawn when it changes: for a Herdr pane or popup |
 | `orch ready` | Free coder slots, fix jobs, then ready milestones |
 | `orch resume` | After a restart (computer off, herdr closed): leaves the downtime out of every time budget, names the agents' panes again, saves unsaved work, sends the tasks in progress again and starts the event manager |
 | `orch autopilot` | The event manager: runs the plan as a script and wakes the lead; exits 0 when done, 3 when it needs you |

@@ -168,7 +168,8 @@ def state_lock():
 
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
 LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "defer",
-              "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story", "check", "free", "manual"}
+              "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story", "check", "free", "manual", "view",
+              "board"}
 _LEASE = None
 
 
@@ -3615,6 +3616,9 @@ def cmd_set(args):
 
 
 def cmd_status(args):
+    if "--json" in args:
+        print(json.dumps(view_model(load() if STATE.exists() else None), indent=2))
+        return
     st = load()
     dead = None if driver_alive() else note_dead_manager(st)
     here = {n: presence_word(st, n) for n in st["workers"]}    # ask herdr first, then print in one go
@@ -3632,6 +3636,8 @@ def cmd_status(args):
         print(f"QUICK RUN because: {st.get('quick_because') or '-'}")
     print(f"branch={st['branch']} base={st.get('base')} isolation={st['isolation']} "
           f"max_parallel={st['max_parallel']} reviewer={st['reviewer']} (busy: {st.get('reviewer_busy')})")
+    vu = view_url()
+    print(f"live view: {vu}" if vu else "live view: off — `orch view` shows this run as a picture in your browser")
     if st.get("integration_broken"):
         print(f"  INTEGRATION BROKEN: the check failed on {st['branch']} after merging "
               f"{st['integration_broken']} — fix it; autopilot re-checks before it continues")
@@ -3903,6 +3909,7 @@ def cmd_finish(args):
     left = [f"{k} ({v['status']})" for k, v in st["tasks"].items() if v["status"] not in ("merged", "skipped")]
     if left:
         die("not every milestone has landed: " + ", ".join(left))
+    sidebar_clear_now(st)                # the run is over: herdr's sidebar shows the agents' own names again
     if git("rev-parse", "--abbrev-ref", "HEAD", cwd=ROOT).stdout.strip() != st["branch"] or is_dirty(ROOT):
         die(f"main tree must be clean and on {st['branch']}")
     base = st.get("base") or default_base(st)
@@ -4745,6 +4752,8 @@ def cmd_events(args):
             print(head + (f": {e['text']}" if e.get("text") else ""))
             print("    -> " + EVENT_HELP.get(e["kind"], "").format(t=e.get("task") or "<Mn>"))
             print("    SAY: " + say_line(st, e))
+            if e.get("task") and e["kind"] in LEAD_BLOCKING and (vu := view_url(e["task"])):
+                print(f"    SEE: {vu}   (give the developer this link with the SAY line)")
             if e["kind"] == "finished":
                 print("\n".join("    " + x for x in manual_block(st)[0]))
         print(f"EVENTS for the lead — run {st['branch']}: {len(new)} new, {len(old)} still open")
@@ -5876,9 +5885,12 @@ def _autopilot(args):
         elif not gone and present == before:
             seen["told"] = False
 
+    names = SidebarNames() if run_mode(load()) != "subagent" else None   # herdr's sidebar says what each agent does
     while True:
         _stop_point()
         st = load()
+        if names:
+            names.update(st)
         if time.time() - seen["procs"] > PROCS_EVERY_S:      # agents come and go: keep this run's processes current
             seen["procs"] = time.time()
             procs = run_processes(st)
@@ -6928,6 +6940,709 @@ def cmd_resume(args):
         print("The lead is woken with `orch events` when something needs it.")
 
 
+# ---------------------------------------------------------------- views: run summary, `orch view`, `orch board`
+# Both views (and anything else) read one small, stable summary of the run: view_model(). It is built from state.json
+# and events.jsonl only, never asks herdr, never takes the state lock and never writes, so a view can't slow or break
+# a run. `orch status --json` prints it; `orch view` serves it to a browser page; `orch board` draws it as text.
+VIEW_SCHEMA = 1
+VIEW_GROUPS = {"pending": "waiting", "coding": "building", "needs-fix": "building", "conflict": "building",
+               "verifying": "checking", "awaiting-review": "review", "reviewing": "review", "reviewed": "review",
+               "committed": "landing", "held": "needs_you", "paused": "needs_you", "needs-answer": "needs_you",
+               "failed": "needs_you", "merged": "landed", "skipped": "skipped"}
+VIEW_WORDS = {"pending": "waiting", "coding": "building", "needs-fix": "fix round", "conflict": "fixing a conflict",
+              "verifying": "checks running", "awaiting-review": "waiting for review", "reviewing": "in review",
+              "reviewed": "reviewed", "committed": "landing", "held": "waits for your OK", "paused": "paused",
+              "needs-answer": "needs your answer", "failed": "failed", "merged": "landed", "skipped": "skipped"}
+VIEW_PORT = int(os.environ.get("ORCH_VIEW_PORT", "47231"))
+
+
+def _usage_sum(rows):
+    tok = cost = 0
+    known = False
+    for u in rows:
+        if not isinstance(u, dict):
+            continue
+        known = True
+        tok += int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
+        cost += float(u.get("cost_usd") or 0)
+    return {"tokens": tok, "cost_usd": round(cost, 2)} if known else None
+
+
+def view_events(limit=None):
+    """events.jsonl as a list (oldest first); the last `limit` lines when given. Bad lines are skipped."""
+    p = ORCH / "events.jsonl"
+    try:
+        lines = p.read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for ln in (lines[-limit:] if limit else lines):
+        with contextlib.suppress(ValueError):
+            e = json.loads(ln)
+            if isinstance(e, dict) and e.get("task"):
+                out.append({k: e.get(k) for k in ("ts", "task", "from", "to", "why", "agent", "attempt")})
+    return out
+
+
+def view_model(st=None, recent=40):
+    """The run in one stable shape ("view": 1). Adding fields is fine; renaming one needs "view": 2."""
+    if st is None:
+        try:
+            st = json.loads(STATE.read_text())
+        except (OSError, ValueError):
+            return {"view": VIEW_SCHEMA, "empty": True, "repo": ROOT.name,
+                    "text": "No run in this repo yet: the lead writes the plan, then `orch sync` / `orch start`."}
+    tasks, t_now = st.get("tasks", {}), now()
+    ms, by_model = [], {}
+    for tid in st.get("order", []):
+        t = tasks.get(tid) or {}
+        w = t.get("wait") or {}
+        atts = [a for a in t.get("attempts", []) if isinstance(a, dict)]
+        cur = max(0, t_now - w.get("started", w.get("since", t_now))) if w and t.get("status") in ACTIVE else 0
+        for a in atts:
+            if a.get("usage") and a.get("model"):
+                by_model.setdefault(a["model"], []).append(a["usage"])
+        open_ev = [e for e in st.get("lead_events", []) if e.get("task") == tid and e["kind"] in LEAD_BLOCKING
+                   and event_open(st, e)]
+        ms.append({
+            "id": tid, "title": t.get("title", tid), "plain": t.get("plain") or "",
+            "desc": (t.get("plain") or t.get("title") or tid).strip(),
+            "status": t.get("status", "pending"), "group": VIEW_GROUPS.get(t.get("status"), "waiting"),
+            "word": VIEW_WORDS.get(t.get("status"), t.get("status")),
+            "deps": list(t.get("deps", [])), "worker": t.get("worker"), "tier": t.get("min_tier") or t.get("tier"),
+            "role": t.get("role") or "", "attempt": t.get("attempt", 0), "fix": t.get("fix", 0),
+            "review_round": t.get("review_round", 0), "reason": t.get("reason") or "",
+            "question": (open_ev[-1].get("text") or "") if open_ev else "",
+            "door": t.get("door"), "door_why": t.get("door_why"),
+            "estimate_s": t.get("estimate_s"), "started": (w.get("started") or w.get("since")) if cur else None,
+            "spent_s": int(sum(a.get("secs", 0) for a in atts) + cur),
+            "usage": _usage_sum([a.get("usage") for a in atts if a.get("usage")]),
+            "attempts": [{"kind": a.get("kind"), "agent": a.get("agent"), "model": a.get("model"),
+                          "tier": a.get("tier"), "secs": a.get("secs"), "outcome": a.get("outcome")}
+                         for a in atts[-12:]],
+            "files": t.get("files", [])[:20],
+        })
+    agents = []
+    if st.get("lead"):
+        ld = st["lead"]
+        ev_open = [e for e in st.get("lead_events", []) if event_open(st, e)]
+        agents.append({"name": ld["name"], "role": "lead", "kind": ld.get("kind"), "model": ld.get("model"),
+                       "tier": ld.get("tier"), "task": None,
+                       "state": (f"{len(unread_events(st))} event(s) to read" if unread_events(st) else
+                                 f"waiting ({len(ev_open)} open)" if ev_open else "waiting")})
+    for n, w in st.get("workers", {}).items():
+        cd = max(0, w.get("cooldown_until", 0) - t_now)
+        state = ("off" if w.get("off") else "stopping" if w.get("stopping") else
+                 (VIEW_WORDS.get(tasks.get(w["task"], {}).get("status"), "working") if w.get("task") else
+                  f"benched {cd // 60}m" if cd else "free"))
+        agents.append({"name": n, "role": "coder", "kind": w.get("kind"), "model": w.get("model"),
+                       "tier": w.get("tier"), "task": w.get("task"), "state": state})
+    if st.get("reviewer"):
+        ri = st.get("reviewer_info") or {}
+        busy = st.get("reviewer_busy")
+        agents.append({"name": st["reviewer"], "role": "reviewer", "kind": ri.get("kind"), "model": ri.get("model"),
+                       "tier": ri.get("tier"), "task": busy, "state": "reviewing" if busy else "free"})
+    groups = [m["group"] for m in ms]
+    run = st.get("run") or {}
+    return {
+        "view": VIEW_SCHEMA, "repo": ROOT.name, "title": st.get("title") or st.get("branch"),
+        "branch": st.get("branch"), "base": st.get("base"), "mode": st.get("mode") or "full",
+        "orch_mode": st.get("orch_mode") or "panes", "updated": t_now,
+        "manager": {"running": driver_alive(), "beat": run.get("beat")},
+        "counts": {"total": len([g for g in groups if g != "skipped"]), "landed": groups.count("landed"),
+                   "needs_you": groups.count("needs_you"),
+                   "active": len([g for g in groups if g in ("building", "checking", "review", "landing")]),
+                   "waiting": groups.count("waiting")},
+        "time": {"driven_s": int(run.get("driven_s", 0)), "estimate_s": st.get("estimate_s")},
+        "usage": {"total": _usage_sum([u for v in by_model.values() for u in v]),
+                  "by_model": {k: _usage_sum(v) for k, v in by_model.items()}},
+        "milestones": ms, "agents": agents,
+        "lead": ({"name": st["lead"]["name"], "unread": len(unread_events(st)),
+                  "open": len([e for e in st.get("lead_events", []) if event_open(st, e)])} if st.get("lead") else None),
+        "recent": view_events(recent)[::-1],
+        "all_done": bool(ms) and all(m["status"] in ("merged", "skipped") for m in ms),
+    }
+
+
+def view_info():
+    """The running `orch view` of this repo ({pid, port, url, ...}), or None."""
+    try:
+        v = json.loads((ORCH / "view.json").read_text())
+        os.kill(int(v["pid"]), 0)
+        return v
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def view_url(tid=None):
+    v = view_info()
+    return (v["url"] + (f"#{tid}" if tid else "")) if v else None
+
+
+def _lan_ip():
+    with contextlib.suppress(OSError):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("10.255.255.255", 1))          # no packet is sent: this only picks the outgoing address
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    return None
+
+
+def _view_snapshot_key():
+    k = []
+    for f in ("state.json", "events.jsonl"):
+        with contextlib.suppress(OSError):
+            s = (ORCH / f).stat()
+            k.append((s.st_mtime_ns, s.st_size))
+    return tuple(k)
+
+
+def serve_view(port, lan, token, opened):
+    """The `orch view` web server (Python's own library). Read-only: GET only, never writes the run."""
+    import http.server
+    import urllib.parse
+    page = asset("view/index.html")
+    if not page:
+        die("view/index.html not found next to orch or in the install — reinstall herdr-orchestra")
+
+    class H(http.server.BaseHTTPRequestHandler):
+        server_version = "orch-view"
+
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, body, ctype):
+            b = body.encode() if isinstance(body, str) else body
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            u = urllib.parse.urlparse(self.path)
+            q = urllib.parse.parse_qs(u.query)
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            if not lan and host not in ("127.0.0.1", "localhost", "::1"):
+                # another web page can't reach this one through a name it controls (DNS rebinding)
+                return self._send(403, "orch view: open it as http://127.0.0.1:<port>/\n", "text/plain; charset=utf-8")
+            if token and q.get("t", [""])[0] != token:
+                return self._send(403, "orch view: this page needs the link with its token (printed by `orch view "
+                                       "--lan`).\n", "text/plain; charset=utf-8")
+            if u.path in ("/", "/index.html"):
+                return self._send(200, page.read_text(), "text/html; charset=utf-8")
+            if u.path == "/api/state":
+                return self._send(200, json.dumps(view_model()), "application/json")
+            if u.path == "/api/history":
+                return self._send(200, json.dumps({"events": view_events()}), "application/json")
+            if u.path == "/api/stream":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                last, beat = None, time.time()
+                try:
+                    while True:
+                        k = _view_snapshot_key()
+                        if k != last:
+                            last = k
+                            self.wfile.write(f"event: state\ndata: {json.dumps(view_model())}\n\n".encode())
+                            self.wfile.flush()
+                            beat = time.time()
+                        elif time.time() - beat > 15:
+                            self.wfile.write(b": keep-alive\n\n")
+                            self.wfile.flush()
+                            beat = time.time()
+                        time.sleep(0.5)
+                except (OSError, ValueError):
+                    return
+            return self._send(404, "not found\n", "text/plain")
+
+    class S(http.server.ThreadingHTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+    host = "0.0.0.0" if lan else "127.0.0.1"
+    srv = None
+    for p in ([port] if port else [*range(VIEW_PORT, VIEW_PORT + 20), 0]):
+        try:
+            srv = S((host, p), H)
+            break
+        except OSError:
+            if port:
+                die(f"port {port} is in use — try `orch view --port <another>` (or leave --port out)")
+    real = srv.server_address[1]
+    q = f"?t={token}" if token else ""
+    url = f"http://127.0.0.1:{real}/{q}"
+    info = {"pid": os.getpid(), "port": real, "url": url, "lan": bool(lan), "started": now()}
+    if lan:
+        info["lan_url"] = f"http://{_lan_ip() or '<this-computer-ip>'}:{real}/{q}"
+    tmp = ORCH / "view.json.tmp"
+    tmp.write_text(json.dumps(info))
+    tmp.replace(ORCH / "view.json")
+    print(f"orch view: {url}   (Ctrl-C to stop)")
+    if lan:
+        print(f"  from your phone (same Wi-Fi): {info['lan_url']}\n  anyone with this link and on your network can "
+              f"see the run (not change it). Stop with Ctrl-C when done.")
+    else:
+        print(f"  over SSH: ssh -L {real}:127.0.0.1:{real} <this-computer>, then open the link on your own computer")
+    sys.stdout.flush()
+    if opened and os.environ.get("ORCH_VIEW_NO_OPEN") != "1" and (os.environ.get("DISPLAY") or
+                                                                  os.environ.get("WAYLAND_DISPLAY") or sys.platform == "darwin"):
+        import webbrowser
+        with contextlib.suppress(Exception):
+            webbrowser.open(url)
+
+    def bye(*_):
+        raise KeyboardInterrupt
+    with contextlib.suppress(ValueError, OSError):
+        signal.signal(signal.SIGTERM, bye)
+    try:
+        srv.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        with contextlib.suppress(OSError):
+            v = json.loads((ORCH / "view.json").read_text())
+            if v.get("pid") == os.getpid():
+                (ORCH / "view.json").unlink()
+        srv.server_close()
+
+
+VIEW_PLUGIN_ID = "herdr-orchestra.board"
+SIDEBAR_CONFIG = """# Add to herdr's config (~/.config/herdr/config.toml), then reload config in herdr.
+# orch already renames each agent in herdr's normal sidebar during a run (e.g. "codex-1 · M2 building").
+# These rows add one more line per agent (what its milestone is) and a run line on the Space:
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "agent"],
+  [{ token = "$orch_desc", dim = true }],
+  ["workspace", "tab"],
+]
+
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status"],
+  [{ token = "$orch", fg = "#e5a93b", rules = [{ contains = "needs you", fg = "#e5675b", bold = true }] }],
+]
+
+# Optional: open the run board as a popup with one key (after `orch view plugin link`):
+[[keys.command]]
+key = "prefix+o"
+type = "plugin_action"
+command = "herdr-orchestra.board.open"
+description = "orch run board"
+"""
+
+
+def cmd_view(args):
+    """orch view [--lan] [--port N] [--no-open] [--bg] -> the run as a live picture in your browser (view only).
+    orch view stop | status | herdr-config | plugin link|unlink"""
+    sub = args[0] if args and not args[0].startswith("-") else None
+    if sub == "status":
+        v = view_info()
+        print(f"orch view is running: {v['url']}" + (f"  (phone: {v['lan_url']})" if v.get("lan_url") else "")
+              if v else "orch view is not running. Start it with `orch view` (or `orch view --bg`).")
+        return
+    if sub == "stop":
+        v = view_info()
+        if not v:
+            print("orch view is not running.")
+            return
+        os.kill(int(v["pid"]), signal.SIGTERM)
+        for _ in range(30):
+            if not view_info():
+                break
+            time.sleep(0.1)
+        print(f"stopped orch view ({v['url']})")
+        return
+    if sub == "herdr-config":
+        print(SIDEBAR_CONFIG, end="")
+        return
+    if sub == "plugin":
+        act = args[1] if len(args) > 1 else ""
+        d = asset("view/herdr-plugin")
+        if act == "link":
+            if not d:
+                die("view/herdr-plugin not found next to orch or in the install")
+            r = subprocess.run([HERDR, "plugin", "link", str(d)], text=True, capture_output=True)
+            print((r.stdout + r.stderr).strip() or f"linked {d}")
+            if r.returncode == 0:
+                print("Bind a key to open the board as a popup: `orch view herdr-config` prints the lines "
+                      "(the [[keys.command]] part). Undo with `orch view plugin unlink`.")
+            sys.exit(r.returncode)
+        if act == "unlink":
+            r = subprocess.run([HERDR, "plugin", "unlink", VIEW_PLUGIN_ID], text=True, capture_output=True)
+            print((r.stdout + r.stderr).strip() or f"unlinked {VIEW_PLUGIN_ID}")
+            sys.exit(r.returncode)
+        die("usage: orch view plugin link|unlink   (herdr 0.7.4 or newer)")
+    if sub:
+        die(f"unknown `orch view {sub}` — use: orch view [--lan] [--port N] [--no-open] [--bg] | stop | status | "
+            f"herdr-config | plugin link|unlink")
+    lan = "--lan" in args
+    port = 0
+    if "--port" in args:
+        i = args.index("--port")
+        try:
+            port = int(args[i + 1])
+        except (IndexError, ValueError):
+            die("usage: orch view --port <number>")
+    v = view_info()
+    if v and not ("--lan" in args and not v.get("lan")):
+        print(f"orch view is already running: {v['url']}" + (f"\n  from your phone: {v['lan_url']}"
+                                                              if v.get("lan_url") else ""))
+        return
+    if v:
+        die("orch view is already running without --lan: `orch view stop`, then `orch view --lan`")
+    if "--bg" in args:
+        rest = [a for a in args if a != "--bg"]
+        log = ORCH / "view.log"
+        with open(log, "w") as f:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__), "view", "--no-open", *rest], cwd=ROOT,
+                             stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        for _ in range(50):
+            v = view_info()
+            if v:
+                break
+            time.sleep(0.1)
+        if not v:
+            die(f"orch view did not start — see {short(log)}")
+        print(f"orch view: {v['url']}" + (f"\n  from your phone: {v['lan_url']}" if v.get("lan_url") else "")
+              + "\n  stop it with `orch view stop`")
+        return
+    token = hashlib.sha256(os.urandom(32)).hexdigest()[:24] if lan else None
+    serve_view(port, lan, token, "--no-open" not in args)
+
+
+# ---- the event manager names each agent in herdr's sidebar (display only; herdr 0.6.3+, tokens 0.7.4+)
+class SidebarNames:
+    """Tells herdr, on a background thread, what each agent of the run is doing, so herdr's own sidebar says it:
+    `codex-1 · M2 building`. Only changes are sent; nothing here can block or fail the event manager. Display only:
+    herdr still finds agents by their real name. Off with ORCH_SIDEBAR=0."""
+    TTL_MS = 3600000          # names fade out by themselves an hour after the last change (e.g. after a crash)
+    REFRESH_S = 1200          # ...so a quiet name is sent again every 20 minutes
+
+    def __init__(self):
+        import queue
+        import threading
+        self.on = os.environ.get("ORCH_SIDEBAR", "1") != "0"
+        self.sent, self.ws, self.panes, self.version, self.told, self.cleared = {}, None, {}, None, False, False
+        self.q = queue.Queue()
+        if self.on:
+            threading.Thread(target=self._loop, daemon=True, name="orch-sidebar").start()
+            atexit.register(self._final)
+
+    def _final(self, wait_s=3):
+        """The event manager is ending (stopped for the developer, done, Ctrl-C): send the last state it left."""
+        if self.cleared:
+            return
+        with contextlib.suppress(Exception):
+            self.update(json.loads(STATE.read_text()))
+            end = time.time() + wait_s
+            while self.q.unfinished_tasks and time.time() < end:
+                time.sleep(0.05)
+
+    def _herdr_version(self):
+        try:
+            r = subprocess.run([HERDR, "--version"], text=True, capture_output=True, timeout=HERDR_TIMEOUT_S)
+            m = re.search(r"(\d+)\.(\d+)\.(\d+)", r.stdout + r.stderr)
+            return tuple(int(x) for x in m.groups()) if m else None
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+    def _run(self, cmd):
+        try:
+            r = subprocess.run(cmd, text=True, capture_output=True, timeout=HERDR_TIMEOUT_S)
+            ok = r.returncode == 0
+            err = (r.stdout + r.stderr).strip()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            ok, err = False, str(e)
+        if not ok and not self.told:
+            self.told = True
+            with contextlib.suppress(Exception):
+                log_line(f"sidebar names: herdr refused `{' '.join(cmd[1:4])}` ({err.splitlines()[-1] if err else 'no answer'})"
+                         " — the run is not affected; agent names in herdr's sidebar may not show what they do")
+        return ok
+
+    def _pane(self, name, pane):
+        if pane:
+            return pane
+        if name in self.panes:
+            return self.panes[name]
+        ok, data, _ = _herdr_json([HERDR, "agent", "get", name])
+        pid = _find_key(data, "pane_id") if ok and data is not None else None
+        if pid and not self.ws:
+            self.ws = _find_key(data, "workspace_id")
+        if pid:
+            self.panes[name] = pid
+        return pid
+
+    def _loop(self):
+        self.version = self._herdr_version()
+        while True:
+            job = self.q.get()
+            with contextlib.suppress(Exception):
+                if job[0] == "agent":
+                    _, name, pane, disp, toks, clear = job
+                    pid = self._pane(name, pane)
+                    if not pid:
+                        self.sent.pop(name, None)          # try again on the next change
+                        continue
+                    cmd = [HERDR, "pane", "report-metadata", pid, "--source", "orch"]
+                    tokens_ok = self.version is None or self.version >= (0, 7, 4)
+                    if clear:
+                        cmd += ["--clear-display-agent"] + (sum((["--clear-token", k] for k in toks), [])
+                                                            if tokens_ok else [])
+                    else:
+                        cmd += ["--display-agent", disp[:80]]
+                        if tokens_ok:
+                            for k, v in toks.items():
+                                cmd += ["--token", f"{k}={v[:80]}"] if v else ["--clear-token", k]
+                        cmd += ["--ttl-ms", str(self.TTL_MS)]
+                    if not self._run(cmd):
+                        self.panes.pop(name, None)
+                elif job[0] == "space" and self.ws and (self.version is None or self.version >= (0, 7, 4)):
+                    _, text = job
+                    self._run([HERDR, "workspace", "report-metadata", self.ws, "--source", "orch"]
+                              + (["--token", f"orch={text[:80]}", "--ttl-ms", str(self.TTL_MS)] if text
+                                 else ["--clear-token", "orch"]))
+            self.q.task_done()
+
+    @staticmethod
+    def labels(st):
+        """{agent: (pane or None, display name, tokens)} for every agent of the run, and the Space line."""
+        tasks, out = st.get("tasks", {}), {}
+
+        def task_bits(tid):
+            t = tasks.get(tid) or {}
+            word = VIEW_WORDS.get(t.get("status"), t.get("status") or "")
+            if t.get("status") == "coding" and t.get("attempt", 0) > 1:
+                word += f" (try {t['attempt']})"
+            if t.get("status") == "needs-fix" and t.get("fix"):
+                word = f"fix round {t['fix']}"
+            return word, {"orch_task": f"{tid} {t.get('title', '')}".strip(),
+                          "orch_desc": (t.get("plain") or t.get("title") or "").strip()}
+        for n, w in st.get("workers", {}).items():
+            if w.get("off"):
+                out[n] = (w.get("pane"), f"{n} · off", {"orch_task": "", "orch_desc": ""})
+            elif w.get("task"):
+                word, toks = task_bits(w["task"])
+                out[n] = (w.get("pane"), f"{n} · {w['task']} {word}", toks)
+            else:
+                out[n] = (w.get("pane"), f"{n} · free", {"orch_task": "", "orch_desc": ""})
+        if st.get("reviewer"):
+            ri, busy = st.get("reviewer_info") or {}, st.get("reviewer_busy")
+            if busy:
+                _, toks = task_bits(busy)
+                rr = (tasks.get(busy) or {}).get("review_round") or 1
+                out[st["reviewer"]] = (ri.get("pane"), f"{st['reviewer']} · reviewing {busy} (round {rr})", toks)
+            else:
+                out[st["reviewer"]] = (ri.get("pane"), f"{st['reviewer']} · free", {"orch_task": "", "orch_desc": ""})
+        if st.get("lead") and lead_on(st):
+            ld = st["lead"]
+            un = len(unread_events(st))
+            out[ld["name"]] = (ld.get("pane"), f"{ld['name']} · " + (f"{un} event(s) to read" if un else "waiting"),
+                               {"orch_task": "", "orch_desc": ""})
+        groups = [VIEW_GROUPS.get(t.get("status"), "waiting") for t in tasks.values()]
+        total = len([g for g in groups if g != "skipped"])
+        need = groups.count("needs_you")
+        space = f"orch: {groups.count('landed')}/{total} landed" + (f" · {need} needs you" if need else "")
+        return out, space
+
+    def update(self, st):
+        if not self.on:
+            return
+        with contextlib.suppress(Exception):
+            agents, space = self.labels(st)
+            t = time.time()
+            for n, (pane, disp, toks) in agents.items():
+                key = (disp, tuple(sorted(toks.items())))
+                old = self.sent.get(n)
+                if old and old[0] == key and t - old[1] < self.REFRESH_S:
+                    continue
+                self.sent[n] = (key, t)
+                self.q.put(("agent", n, pane, disp, toks, False))
+            old = self.sent.get("\0space")
+            if not old or old[0] != space or t - old[1] >= self.REFRESH_S:
+                self.sent["\0space"] = (space, t)
+                self.q.put(("space", space))
+
+    def clear(self, st, wait_s=5):
+        """Back to herdr's own names (end of the run). Waits a little for the queue, never long."""
+        if not self.on:
+            return
+        self.cleared = True
+        with contextlib.suppress(Exception):
+            agents, _ = self.labels(st)
+            for n, (pane, _, toks) in agents.items():
+                self.q.put(("agent", n, pane, "", {"orch_task": "", "orch_desc": ""}, True))
+            self.q.put(("space", ""))
+            self.sent.clear()
+            end = time.time() + wait_s
+            while self.q.unfinished_tasks and time.time() < end:
+                time.sleep(0.05)
+
+
+def sidebar_clear_now(st):
+    """`orch finish`: give every agent its own name back in herdr's sidebar (best effort, a few seconds at most)."""
+    if os.environ.get("ORCH_SIDEBAR", "1") == "0" or run_mode(st) == "subagent":
+        return
+    SidebarNames().clear(st)
+
+
+# ---- `orch board`: the run as text, for a herdr pane (or any terminal)
+_C = {"g": "32", "b": "34", "t": "36", "p": "35", "r": "31", "a": "33", "d": "2", "B": "1"}
+_GROUP_C = {"landed": "g", "building": "b", "checking": "t", "review": "p", "landing": "a", "needs_you": "r",
+            "waiting": "d", "skipped": "d"}
+_GROUP_ICON = {"landed": "✔", "building": "●", "checking": "●", "review": "●", "landing": "●", "needs_you": "■",
+               "waiting": "○", "skipped": "-"}
+
+
+def _fmt_min(s):
+    if s is None:
+        return "?"
+    s = int(s)
+    return f"{s // 3600}h {s % 3600 // 60}m" if s >= 3600 else f"{max(0, s) // 60}m"
+
+
+def render_board(vm, width=100, color=True, sel=None, note=""):
+    def c(k, s):
+        return f"\x1b[{_C[k]}m{s}\x1b[0m" if color and k else s
+
+    def cut(s, n):
+        return s if len(s) <= n else s[:max(0, n - 1)] + "…"
+    if vm.get("empty"):
+        return [c("a", "orch board"), "", vm.get("text", "No run yet.")]
+    cn = vm["counts"]
+    out = [c("a", f"orch board · {vm.get('branch')}") + c("d", f"   {time.strftime('%H:%M')} · live"),
+           c("B", f"{cn['landed']} of {cn['total']} landed")
+           + (" · " + c("r", f"{cn['needs_you']} needs you") if cn["needs_you"] else "")
+           + c("d", f" · {_fmt_min(vm['time']['driven_s'])} so far"
+                    + (f" of ~{_fmt_min(vm['time']['estimate_s'])}" if vm["time"].get("estimate_s") else ""))]
+    u = (vm.get("usage") or {}).get("total")
+    if u:
+        out.append(c("d", f"tokens {u['tokens'] / 1e6:.1f}M · cost ~${u['cost_usd']:.2f}"))
+    if vm.get("all_done"):
+        out.append(c("g", "ALL DONE — `orch finish` pushes the branch and opens the PR"))
+    out += ["", c("d", "MILESTONES")]
+    ms = {m["id"]: m for m in vm["milestones"]}
+    kids = {}
+    for m in vm["milestones"]:
+        for d in m["deps"][:1]:
+            kids.setdefault(d, []).append(m["id"])
+    shown = set()
+    name_w = max(18, min(34, width - 52))
+
+    def line(m, pre, sub):
+        g = m["group"]
+        word = m["word"] + (f" {m['fix']}" if m["status"] == "needs-fix" and m.get("fix") else "")
+        who = m.get("worker") or ""
+        extra = (f"{_fmt_min(m['spent_s'])} of ~{_fmt_min(m['estimate_s'])}" if m.get("started")
+                 and m.get("estimate_s") else f"{_fmt_min(m['spent_s'])}" if m["spent_s"] else "")
+        if g == "waiting" and m["deps"]:
+            word = "waits for " + ",".join(d for d in m["deps"] if ms.get(d, {}).get("group") != "landed") \
+                if any(ms.get(d, {}).get("group") != "landed" for d in m["deps"]) else "ready"
+        head = cut(f"{pre}{_GROUP_ICON[g]} {m['id']} {m['title']}", name_w + 8)
+        out.append(head.ljust(name_w + 9).replace(_GROUP_ICON[g], c(_GROUP_C[g], _GROUP_ICON[g]), 1)
+                   + c(_GROUP_C[g], word.ljust(16) if g != "needs_you" else "NEEDS YOU".ljust(16))
+                   + c("d", f"{who}  {extra}".rstrip()))
+        if m["desc"] and m["desc"] != m["title"]:
+            out.append(sub + c("d", cut(m["desc"], width - len(sub) - 1)))
+        if m["group"] == "needs_you" and (m.get("question") or m.get("reason")):
+            out.append(sub + c("r", cut(f"\"{m.get('question') or m.get('reason')}\"", width - len(sub) - 1)))
+
+    def walk(tid, prefix, last, depth):
+        if tid in shown:
+            return
+        shown.add(tid)
+        conn = "" if depth == 0 else ("└─ " if last else "├─ ")
+        cont = prefix + ("" if depth == 0 else ("   " if last else "│  "))
+        line(ms[tid], prefix + conn, cont + "   ")
+        ch = [k for k in kids.get(tid, []) if k not in shown]
+        for i, k in enumerate(ch):
+            walk(k, cont, i == len(ch) - 1, depth + 1)
+    for m in vm["milestones"]:
+        if not any(d in ms for d in m["deps"][:1]):
+            walk(m["id"], "", True, 0)
+    for m in vm["milestones"]:
+        walk(m["id"], "", True, 0)
+    out += ["", c("d", "AGENTS")]
+    for i, a in enumerate(vm["agents"]):
+        busy = a.get("task") or a["role"] == "lead"
+        col = "a" if a["role"] == "lead" else ("p" if a["role"] == "reviewer" else "b") if a.get("task") else "d"
+        mark = "›" if sel == i else " "
+        out.append(f"{mark}{c(col, '◆' if a['role'] == 'lead' else '●' if busy else '○')} "
+                   f"{a['name']:<12} {str(a.get('kind') or ''):<8} {str(a.get('tier') or ''):<7} "
+                   + c(col if busy else "d", (f"{a['task']} · " if a.get("task") else "") + a["state"]))
+    if vm.get("recent"):
+        out += ["", c("d", "LAST EVENTS")]
+        for e in vm["recent"][:6]:
+            out.append(c("d", time.strftime("%H:%M", time.localtime(e["ts"] or 0))) + f" {e['task']} {e['from']} → {e['to']}"
+                       + (c("d", f"  {cut(e.get('why') or '', 50)}") if e.get("why") else ""))
+    if note:
+        out += ["", c("a", note)]
+    out += ["", c("d", "[↑↓] pick agent  [enter] jump to it  [w] web view  [q] close")]
+    return out
+
+
+def cmd_board(args):
+    """orch board [--once] [--no-color] -> the run as text, redrawn when it changes (for a herdr pane or popup)."""
+    once = "--once" in args or not sys.stdout.isatty()
+    color = "--no-color" not in args and sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    if once:
+        print("\n".join(render_board(view_model(), shutil.get_terminal_size((100, 40)).columns, color)))
+        return
+    import select
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    sel, note, last, drawn = None, "", None, 0.0
+    try:
+        tty.setcbreak(fd)
+        sys.stdout.write("\x1b[?1049h\x1b[?25l")
+        while True:
+            k = _view_snapshot_key()
+            if k != last or time.time() - drawn > 30:
+                last, drawn = k, time.time()
+                vm = view_model()
+                size = shutil.get_terminal_size((100, 40))
+                lines = render_board(vm, size.columns, color, sel, note)[:size.lines]
+                sys.stdout.write("\x1b[H\x1b[2J" + "\n".join(lines))
+                sys.stdout.flush()
+            r, _, _ = select.select([sys.stdin], [], [], 0.5)
+            if not r:
+                continue
+            ch = os.read(fd, 8).decode(errors="ignore")
+            n = len(vm.get("agents", []))
+            if ch in ("q", "Q", "\x1b"):
+                break
+            if ch in ("\x1b[A", "k"):
+                sel = (n - 1 if sel is None else max(0, sel - 1)) if n else None
+            elif ch in ("\x1b[B", "j"):
+                sel = (0 if sel is None else min(n - 1, sel + 1)) if n else None
+            elif ch in ("\r", "\n") and sel is not None and n:
+                a = vm["agents"][sel]
+                r2 = subprocess.run([HERDR, "agent", "focus", a["name"]], text=True, capture_output=True)
+                note = f"jumped to {a['name']}" if r2.returncode == 0 else f"herdr could not focus {a['name']}"
+            elif ch in ("w", "W"):
+                r2 = subprocess.run([sys.executable, os.path.abspath(__file__), "view", "--bg"], text=True,
+                                    capture_output=True, cwd=ROOT)
+                note = (r2.stdout.strip().splitlines() or ["orch view: could not start"])[0]
+            last = None
+    except KeyboardInterrupt:
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\x1b[?25h\x1b[?1049l")
+        sys.stdout.flush()
+
+
 COMMANDS = {
     "resume": cmd_resume,
     "sync": cmd_sync, "start": cmd_start, "ready": cmd_ready, "pick": cmd_pick, "prepare": cmd_prepare,
@@ -6940,10 +7655,11 @@ COMMANDS = {
     "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer, "defer": cmd_defer,
     "escalate": cmd_escalate, "fix": cmd_fix, "plan": cmd_plan, "story": cmd_story, "manual": cmd_manual, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
     "free": cmd_free, "doctor": lambda a: cmd_doctor_crash(a), "check": lambda a: cmd_check(a), "sub": lambda a: cmd_sub(a),
+    "view": lambda a: cmd_view(a), "board": lambda a: cmd_board(a),
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
 UNLOCKED = {"manual", "autopilot", "poll", "merge", "events", "dispatch", "answer", "defer", "fix", "team", "resume", "bench", "stop",
-            "doctor", "check", "free"}
+            "doctor", "check", "free", "view", "board"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
@@ -6991,7 +7707,14 @@ USAGE = """usage: orch <command> [args]
   doctor [kind...]         check installed agents against the real tool: version, launch flags, skills, herdr
   sync                     parse .orchestrate/plan.md -> state.json (validates deps, cycles, overlaps)
   start                    create/switch to the feature branch (plan `Branch:`); create worker worktrees (worktree mode)
-  status                   table of workers + tasks; prints ALL_DONE or STUCK when relevant
+  status [--json]          table of workers + tasks; prints ALL_DONE or STUCK when relevant. --json: the run summary
+                           both views read (milestones with their plain description, agents, counts, time, cost)
+  view [--lan] [--port N] [--no-open] [--bg]
+                           the run as a live picture in your browser (view only): milestone graph, agents, details,
+                           "needs you" alert, time and cost, replay. --lan: also from your phone, with a secret link
+  view stop|status|herdr-config|plugin link|unlink
+                           stop it / show its link / sidebar lines for herdr's config / the optional herdr plugin
+  board [--once]           the run as text, redrawn when it changes: for a herdr pane or popup (any terminal)
   report [--json]          estimate vs actual time (why longer, who), rounds, first-pass rate, wasted work, tokens/cost
   ready                    free coder slots, FIX jobs (do these first), then READY milestones
   pick <Mn>                first available worker for the task (respects Tier, then Prefer), or NONE (exit 3)
@@ -7759,7 +8482,30 @@ def cmd_doctor(args):
         print(f"{'BROKEN' if bad else 'ok':<7} main guard (no agent pushes to main)")
         for ok, m in rep:
             print(f"    {'ok ' if ok else 'BAD'} {m}")
+    if not args:
+        print(doctor_views_line())
     sys.exit(1 if broken else 0)
+
+
+def doctor_views_line():
+    """Which run views this herdr supports: sidebar names 0.6.3, sidebar rows and the plugin popup 0.7.4."""
+    try:
+        r = subprocess.run([HERDR, "--version"], text=True, capture_output=True, timeout=HERDR_TIMEOUT_S)
+        m = re.search(r"(\d+)\.(\d+)\.(\d+)", r.stdout + r.stderr)
+    except (OSError, subprocess.TimeoutExpired):
+        m = None
+    v = tuple(int(x) for x in m.groups()) if m else None
+    if v is None:
+        return ("views   herdr not found: `orch view` (browser) and `orch board` work; agent names in herdr's "
+                "sidebar need herdr 0.6.3+")
+    hv = ".".join(map(str, v))
+    if v >= (0, 7, 4):
+        return (f"views   ok  herdr {hv}: sidebar names, sidebar rows (`orch view herdr-config`), board popup plugin "
+                f"(`orch view plugin link`); `orch view` and `orch board` always work")
+    if v >= (0, 6, 3):
+        return (f"views   ok  herdr {hv}: sidebar names; the extra sidebar rows and the board popup need herdr 0.7.4+ "
+                f"(`orch view` and `orch board` work)")
+    return f"views   herdr {hv} is too old for sidebar names (0.6.3+); `orch view` and `orch board` work"
 
 
 def installed_version():
