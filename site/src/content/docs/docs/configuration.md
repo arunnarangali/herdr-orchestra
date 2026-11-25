@@ -66,7 +66,7 @@ skills_dirs = ["~/.myagent/skills"]
 | `model_flag` | The option that picks the model, used by `orch agents launch <kind> --model <id>`. Leave it out when the tool has none |
 | `herdr_detect` | Herdr can tell when it is idle, working or blocked |
 | `roles` | Any of `lead`, `coder`, `reviewer` |
-| `skills_dirs` | Folders the `orch-plan` / `orch-run` skills are copied into |
+| `skills_dirs` | Folders the `orch-plan` / `orch-run` / `orch-explain` skills are copied into |
 | `commands_dirs`, `commands_from` | Slash-command folders and flavour (`claude-commands` or `opencode-commands`) |
 | `invoke` | How you start the plan playbook in that agent |
 

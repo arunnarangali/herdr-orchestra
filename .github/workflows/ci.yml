@@ -24,6 +24,7 @@ jobs:
           "$HOME/.local/bin/orch" version
           test -f "$HOME/.agents/skills/orch-plan/SKILL.md"
           test -f "$HOME/.config/opencode/commands/orch-run.md"
+          test -f "$HOME/.agents/skills/orch-explain/SKILL.md"
           ls -d "$HOME/.local/share/herdr-orchestra"/v*
       - name: npm package
         run: |
@@ -38,6 +39,7 @@ jobs:
         run: |
           npm pack --dry-run 2>&1 | grep -q 'extensions/orch-mode.ts'
           npm pack --dry-run 2>&1 | grep -q 'pi/skills/orch-plan/SKILL.md'
+          npm pack --dry-run 2>&1 | grep -q 'skills/orch-explain/SKILL.md'
           d=$(mktemp -d)
           npm install --prefix "$d" --silent --no-audit --no-fund @earendil-works/pi-coding-agent typescript@5 @types/node@22
           printf '{"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","strict":true,"noEmit":true,"skipLibCheck":true,"types":["node"],"typeRoots":["%s/node_modules/@types"],"baseUrl":"%s","paths":{"@earendil-works/pi-coding-agent":["node_modules/@earendil-works/pi-coding-agent"]}},"files":["%s/extensions/orch-mode.ts"]}' "$d" "$d" "$PWD" > "$d/tsconfig.json"

@@ -102,8 +102,8 @@ case "$ACTION" in
       done < "$MANIFEST"
     fi
     rm -f "$BIN/orch"
-    rm -rf "$SKILLS/orch-plan" "$SKILLS/orch-run" "$SHARE"
-    for d in "${OC_CMDS[@]}"; do rm -f "$d/orch-plan.md" "$d/orch-run.md"; done
+    rm -rf "$SKILLS/orch-plan" "$SKILLS/orch-run" "$SKILLS/orch-explain" "$SHARE"
+    for d in "${OC_CMDS[@]}"; do rm -f "$d/orch-plan.md" "$d/orch-run.md" "$d/orch-explain.md"; done
     say "herdr-orchestra removed. (The herdr skill and your projects' .orchestrate/ folders were left alone.)"
     exit 0;;
 esac
@@ -175,7 +175,7 @@ touch "$MANIFEST"
 record() { grep -qxF "$1" "$MANIFEST" || echo "$1" >> "$MANIFEST"; }
 install_skills() {  # install_skills <skills dir>
   local s
-  for s in orch-plan orch-run; do
+  for s in orch-plan orch-run orch-explain; do
     rm -rf "${1:?}/$s"; mkdir -p "$1/$s"
     cp "$CUR/skills/$s/SKILL.md" "$1/$s/SKILL.md"; record "$1/$s"
   done
@@ -194,7 +194,7 @@ if ! "$CUR/bin/orch" agents sync; then
   warn "per-agent skills skipped (orch agents sync failed — Python >= 3.11 needed for the agent registry)"
   install_skills "$SKILLS"                               # ~/.agents/skills: Amp, OpenCode and Codex read it
   install_commands "${OC_CMDS[0]}" opencode-commands     # one folder only: OpenCode reads both, two = listed twice
-  rm -f "${OC_CMDS[1]}/orch-plan.md" "${OC_CMDS[1]}/orch-run.md"
+  rm -f "${OC_CMDS[1]}/orch-plan.md" "${OC_CMDS[1]}/orch-run.md" "${OC_CMDS[1]}/orch-explain.md"
 fi
 
 # clean up files from pre-repo kit versions

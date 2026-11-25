@@ -2,6 +2,16 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.9.0] - 2026-11-25
+
+A new skill, `orch-explain`, makes any agent explain a concept, a code flow, a bug fix or an architecture change simply and visually.
+
+Example: in Claude Code type `/orch-explain how does orch fix work`. The answer comes in four parts: 2–3 plain bullets with an everyday analogy, a small table of the parts involved, an ASCII flowchart under 65 characters wide (so it fits a narrow herdr pane), and a 3-row "why it matters" table, all using one example such as `Turn T1`.
+
+### Added
+- **`orch-explain` skill** (`skills/orch-explain/SKILL.md`), installed next to `orch-plan` and `orch-run`: one copy per agent through `orch agents sync`, recorded for `--uninstall`, checked by `orch agents check`. OpenCode gets a `/orch-explain` command; Pi loads it from the package (`/skill:orch-explain`). Unlike the other two it is not a thin wrapper: the playbook is in the skill itself and it needs no run.
+- An `orch-explain` copy in a folder orch no longer uses (such as OpenCode's old `command/`) is recognised as orch's own and removed, like old `orch-plan` / `orch-run` copies, so no agent lists it twice.
+
 ## [6.8.0] - 2026-11-24
 
 An all-Codex team (Codex as the lead, the coders and the reviewer) now runs without getting stuck and without an approval check on every orch command.

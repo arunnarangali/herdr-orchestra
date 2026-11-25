@@ -3,7 +3,7 @@ title: "Use herdr-orchestra in Pi, step by step"
 description: "Install herdr-orchestra as a Pi package, set up the orch command, pick panes or subagent mode, and run your first plan from inside Pi."
 ---
 
-herdr-orchestra is also a [Pi](https://pi.dev) package. Inside Pi you get the `orch-plan` and `orch-run` skills, two commands (`/orch-setup` and `/orch-mode`), and a footer line that shows which mode you are in (`orch: panes` or `orch: subagent`).
+herdr-orchestra is also a [Pi](https://pi.dev) package. Inside Pi you get the `orch-plan`, `orch-run` and `orch-explain` skills, two commands (`/orch-setup` and `/orch-mode`), and a footer line that shows which mode you are in (`orch: panes` or `orch: subagent`).
 
 You can run orch from Pi in two ways:
 

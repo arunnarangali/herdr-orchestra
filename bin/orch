@@ -6789,7 +6789,7 @@ USAGE = """usage: orch <command> [args]
                            rounds or escalation for them; the summary lists them as NOT done, with a follow-up
   fix <Mn> <text> [--to <worker>]   a change to something Mn already landed: a small follow-up milestone, sent
                            straight to the coder who built Mn (no new plan; check, review and summary still apply)
-  agents sync [kind...]    install the orch-plan / orch-run skills so every installed agent sees each one exactly once,
+  agents sync [kind...]    install the orch-plan / orch-run / orch-explain skills so every installed agent sees each one exactly once,
                            and remove old copies (run it after adding a new agent; the installer runs it)
   agents check             check every installed agent sees each orch skill once (not missing, not twice)
   doctor [kind...]         check installed agents against the real tool: version, launch flags, skills, herdr
@@ -7250,8 +7250,9 @@ def _ours(p):
         text = f.read_text(errors="replace") if f.is_file() else ""
     except OSError:
         return False
-    # every version's skills and commands: thin wrappers say "orch lead", the first (4.0) skills "Orchestrator step"
-    return "orch lead" in text or "Orchestrator step" in text
+    # every version's skills and commands: thin wrappers say "orch lead", the first (4.0) skills "Orchestrator step",
+    # orch-explain (6.9) carries its playbook, whose heading is "Simple & Visual Explanation Playbook"
+    return "orch lead" in text or "Orchestrator step" in text or "Simple & Visual Explanation Playbook" in text
 
 
 def _remove(p):
@@ -7447,7 +7448,7 @@ def cmd_agents(args):
     missing = [k for k, v in reg.items()
                if installed[k] and any(st != "ok" for _, st in agent_assets(v))]
     if missing:
-        print(f"\n{', '.join(missing)}: orch-plan/orch-run missing or listed twice — run: orch agents sync")
+        print(f"\n{', '.join(missing)}: orch skills (orch-plan/orch-run/orch-explain) missing or listed twice — run: orch agents sync")
     print(f"\nOverride or add kinds in {user_agents_file()}")
 
 
