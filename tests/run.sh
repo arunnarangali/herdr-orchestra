@@ -2152,11 +2152,15 @@ Depends on: none
 Open questions:
 - none
 '
+landing_secs(){ python3 -c "
+import json
+ev=[json.loads(l) for l in open('.orchestrate/events.jsonl')]
+print(max(e['ts'] for e in ev if e['to']=='merged') - min(e['ts'] for e in ev))"; }
 newrepo fast; printf '%s' "$ONE" > .orchestrate/plan.md; echo p-claude-1 > "$FH/claude-1.paneid"
-t0=$(date +%s); timeout 120 "$ORCH" autopilot > "$WORK/fast.log" 2>&1; c1=$?; fast=$(( $(date +%s) - t0 ))
+timeout 120 "$ORCH" autopilot > "$WORK/fast.log" 2>&1; c1=$?; fast=$(landing_secs)
 newrepo slow; printf '%s' "$ONE" > .orchestrate/plan.md; echo p-claude-1 > "$FH/claude-1.paneid"; echo 4 > "$FH/slowmeta"
-t0=$(date +%s); timeout 120 "$ORCH" autopilot > "$WORK/slow.log" 2>&1; c2=$?; slow=$(( $(date +%s) - t0 ))
-check "a run with herdr taking 4s per sidebar name takes about as long as one without ($fast s vs $slow s)" '[ $c1 -eq 0 ] && [ $c2 -eq 0 ] && [ $slow -le $((fast + 4)) ]'
+timeout 120 "$ORCH" autopilot > "$WORK/slow.log" 2>&1; c2=$?; slow=$(landing_secs)
+check "with herdr taking 4s per sidebar name, the milestone lands as fast as without ($fast s vs $slow s from start to landed)" '[ $c1 -eq 0 ] && [ $c2 -eq 0 ] && [ "$slow" -le $((fast + 2)) ] && [ -s "$FH/meta.log" ]'
 check "…and still lands the milestone" '[ "$(status_of M1)" = merged ]'
 newrepo off; printf '%s' "$ONE" > .orchestrate/plan.md; echo p-claude-1 > "$FH/claude-1.paneid"
 ORCH_SIDEBAR=0 timeout 120 "$ORCH" autopilot > "$WORK/off.log" 2>&1; c3=$?
