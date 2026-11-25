@@ -17,13 +17,13 @@
 #                 orch presses them when a milestone is paused or moved while the coder still works, before the
 #                 STOP note: a typed message is only read after the current step (agy queues it)
 #   roles         any of "lead", "coder", "reviewer"
-#   skills_dirs   global SKILL.md folders the installer may put the thin orch-plan / orch-run skills into
+#   skills_dirs   global SKILL.md folders the installer may put the orch-plan / orch-run / orch-explain skills into
 #                 (first = preferred)
 #   skills_reads  every global skills folder the tool reads, its own and shared ones (e.g. ~/.agents/skills).
 #                 `orch agents sync` picks the fewest folders so each installed tool reads exactly ONE copy
 #                 of each skill (a skill in two folders it reads is listed twice), and removes orch's copies
 #                 from every other folder
-#   commands_dirs slash-command folders the installer may put orch-plan.md / orch-run.md into
+#   commands_dirs slash-command folders the installer may put orch-plan.md / orch-run.md / orch-explain.md into
 #   skills_one_wins true when the tool shows a skill once even if two folders it reads have it (its docs
 #                 say one copy wins); false or unset: it lists both, so orch keeps exactly one copy
 #   commands_reads every slash-command folder the tool reads (same one-copy rule)

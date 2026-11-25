@@ -59,8 +59,8 @@ It installs:
 | What | Where |
 |---|---|
 | `orch` CLI (scheduler + autopilot) | `~/.local/bin/orch` |
-| `orch-plan`, `orch-run` skills, one copy per agent (an agent never lists them twice) | `~/.agents/skills/` or the agent's own skills folder |
-| `/orch-plan`, `/orch-run` OpenCode commands | `~/.config/opencode/commands/` |
+| `orch-plan`, `orch-run`, `orch-explain` skills, one copy per agent (an agent never lists them twice) | `~/.agents/skills/` or the agent's own skills folder |
+| `/orch-plan`, `/orch-run`, `/orch-explain` OpenCode commands | `~/.config/opencode/commands/` |
 
 Updating replaces the skills, it never adds a second copy: the installer picks one folder per agent and removes orch's older copies from the rest (your own skills are left alone). `orch agents check` says `DUPLICATE` if an agent would still see a skill twice.
 | every installed version, side by side | `~/.local/share/herdr-orchestra/` |
@@ -71,7 +71,7 @@ Install once — you don't need to run the installer again when you add an agent
 orch agents sync
 ```
 
-It finds every installed agent (binary on `PATH`), copies the `orch-plan` / `orch-run` skills and slash commands into that agent's folders, and records them so `--uninstall` still removes exactly what was installed. `orch agents` prints a hint when a new agent is missing its skills.
+It finds every installed agent (binary on `PATH`), copies the `orch-plan` / `orch-run` / `orch-explain` skills and slash commands into that agent's folders, and records them so `--uninstall` still removes exactly what was installed. `orch agents` prints a hint when a new agent is missing its skills.
 
 ## Updates
 
@@ -202,7 +202,17 @@ The agent whose pane you start the plan playbook in becomes the lead. orch names
 | Antigravity (`agy`) | "use the orch-plan skill: <feature>" |
 | **any agent** | "Run `orch lead plan` and follow it. Feature: <feature>" |
 
-The skills and slash commands are thin wrappers: the playbooks themselves live in `orch` (`orch lead plan`, `orch lead run`), so every agent follows the same, versioned instructions. They are printed in parts so the lead reads only what it needs: `orch lead plan` prints research and the quick-or-full decision, then `orch lead plan quick` (a quick run's rules) or `orch lead plan full` (steps 3 to 10); on a wake-up, `orch events` prints the rules and steps for those events, so the run playbook is read once.
+### Explain something simply
+`orch-explain` makes any agent explain a concept, a code flow, a bug fix or an architecture change in plain words, in four parts: a short summary with an everyday analogy, a table of the parts involved, an ASCII flowchart under 65 characters wide (it fits a narrow pane), and a 3-row "why it matters" table, with one example used all the way through. It needs no run and no `orch` command.
+
+| Agent | Ask it |
+|---|---|
+| Claude Code, OpenCode | `/orch-explain how does the event manager wake the lead` |
+| Codex | `$orch-explain how does orch fix work` |
+| Pi | `/skill:orch-explain <topic>` |
+| any other | "use the orch-explain skill: <topic>" (or just "explain X simply") |
+
+The orch-plan and orch-run skills and slash commands are thin wrappers: the playbooks themselves live in `orch` (`orch lead plan`, `orch lead run`), so every agent follows the same, versioned instructions. They are printed in parts so the lead reads only what it needs: `orch lead plan` prints research and the quick-or-full decision, then `orch lead plan quick` (a quick run's rules) or `orch lead plan full` (steps 3 to 10); on a wake-up, `orch events` prints the rules and steps for those events, so the run playbook is read once.
 
 ### Agent registry
 `orch agents` shows every known kind: installed or not, roles, whether herdr can watch it, and its launch command. Defaults ship in `agents.default.toml`; add or fix kinds in `~/.config/herdr-orchestra/agents.toml` (merged key by key):
@@ -259,7 +269,7 @@ pi install npm:herdr-orchestra
 
 You can also install it straight from GitHub (same files, no npm needed): `pi install git:github.com/arunnarangali/herdr-orchestra` (add `@vX.Y.Z` to pin a release). Step-by-step setup: the [Pi page](https://herdr-orchestra.vercel.app/docs/pi/) of the docs.
 
-Pi then has the `orch-plan` and `orch-run` skills and two commands. The first time, Pi says the `orch` command is missing (or older than the package): type `/orch-setup` once and it runs this package's installer. Pi may warn once that `orch-plan` / `orch-run` were found twice (the installer also puts them in `~/.agents/skills` for Codex, Amp and OpenCode); it keeps one copy and works.
+Pi then has the `orch-plan`, `orch-run` and `orch-explain` skills and two commands. The first time, Pi says the `orch` command is missing (or older than the package): type `/orch-setup` once and it runs this package's installer. Pi may warn once that `orch-plan` / `orch-run` were found twice (the installer also puts them in `~/.agents/skills` for Codex, Amp and OpenCode); it keeps one copy and works.
 
 Runs have two modes. Nothing changes for anyone who never picks the second one.
 

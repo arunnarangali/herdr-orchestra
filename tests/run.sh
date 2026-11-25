@@ -746,6 +746,7 @@ SAFE_PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin"
 HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --no-herdr-skill > "$WORK/install.log" 2>&1; code=$?
 check "installer ran" '[ $code -eq 0 ]'
 check "skills in each installed agent's folder" '(for d in .claude/skills .hermes/skills .gemini/config/skills .agents/skills; do [ -f "$IH/$d/orch-plan/SKILL.md" ] && [ -f "$IH/$d/orch-run/SKILL.md" ] || exit 1; done)'
+check "orch-explain installed next to orch-plan and orch-run in each folder" '(for d in .claude/skills .hermes/skills .gemini/config/skills .agents/skills; do cmp -s "$ROOT/skills/orch-explain/SKILL.md" "$IH/$d/orch-explain/SKILL.md" || exit 1; done) && [ ! -e "$IH/.codex/skills/orch-explain" ]'
 check "codex gets one copy (from the shared ~/.agents/skills), not a second in ~/.codex/skills" '[ ! -e "$IH/.codex/skills/orch-plan" ]'
 check "no claude slash command next to the skill of the same name" '[ ! -e "$IH/.claude/commands/orch-plan.md" ]'
 check "agents that aren't installed are skipped" '[ ! -e "$IH/.config/agents/skills" ]'
@@ -1946,6 +1947,23 @@ printf '[codex]\nlaunch = "codex --approve-for-me"\n' > "$WORK/cx-agents.toml"
 out=$(ORCH_AGENTS_FILE="$WORK/cx-agents.toml" PATH="$CX:$PATH" "$ORCH" doctor codex 2>&1); code=$?
 check "doctor: your own Codex launch without the two settings is BROKEN, and says why" '[ $code -ne 0 ] && grep -q "BAD launch has no \`sandbox_workspace_write.network_access=true\`" <<<"$out" && grep -q "BAD launch has no \`sandbox_workspace_write.writable_roots\`" <<<"$out"'
 unset CODEX_FAKE_FAIL
+
+echo "orch-explain skill"
+check "orch-explain: frontmatter parses as strict YAML (Pi loads it as is) with its name and description" 'python3 -c "
+import sys,yaml
+f=yaml.safe_load(open(sys.argv[1]).read().split(\"---\")[1])
+assert f[\"name\"]==\"orch-explain\" and f[\"description\"].startswith(\"Explain any concept\")
+" "$ROOT/skills/orch-explain/SKILL.md"'
+check "orch-explain: the 4-part playbook and the 65-char flowchart rule" 'f="$ROOT/skills/orch-explain/SKILL.md"; for h in "Plain-English Summary" "Key Parts Involved" "Visual Flow" "Why It Matters" "under 65 chars wide" "one consistent example"; do grep -qF "$h" "$f" || exit 1; done'
+check "orch-explain: the OpenCode and Claude commands carry the same playbook as the skill" 'body=$(sed "1,/^---$/d" "$ROOT/skills/orch-explain/SKILL.md" | sed "1{/^\$/d}"); for c in claude-commands opencode-commands; do [ "$(sed "1,/^---$/d" "$ROOT/$c/orch-explain.md" | sed "/^What to explain: /,\$d" | sed "\${/^\$/d}")" = "$body" ] && grep -q "^What to explain: \$ARGUMENTS" "$ROOT/$c/orch-explain.md" || exit 1; done'
+check "orch-explain: the Pi package lists it and npm packs it" 'grep -q "\"./skills/orch-explain\"" "$ROOT/package.json" && python3 -c "import json;import sys;sys.exit(\"./skills/orch-explain\" not in json.load(open(sys.argv[1]))[\"pi\"][\"skills\"])" "$ROOT/package.json"'
+check "orch-explain: uninstall and the old-Python fallback name it" '[ "$(grep -c orch-explain "$ROOT/install.sh")" -ge 4 ]'
+XH="$WORK/explain-home"; mkdir -p "$XH"
+HOME="$XH" PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin" bash "$ROOT/install.sh" --no-herdr-skill >/dev/null 2>&1
+check "orch-explain: a fresh install puts it in ~/.agents/skills and the OpenCode command folder" '[ -f "$XH/.agents/skills/orch-explain/SKILL.md" ] && [ -f "$XH/.config/opencode/commands/orch-explain.md" ] && grep -q "orch-explain" "$XH/.local/share/herdr-orchestra/manifest.txt"'
+check "orch-explain: agents check sees it once per agent" 'HOME="$XH" PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin" "$XH/.local/bin/orch" agents check >/dev/null 2>&1'
+HOME="$XH" PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin" bash "$ROOT/install.sh" --uninstall >/dev/null 2>&1
+check "orch-explain: --uninstall removes every copy" '[ -z "$(find "$XH" -name "orch-explain*" -print -quit)" ]'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]
