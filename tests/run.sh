@@ -15,6 +15,8 @@ export ORCH_JOURNALCTL=false ORCH_COREDUMPCTL=false ORCH_NO_SCOPE=1 ORCH_TEAM_CO
 export ORCH_NO_UPDATE_CHECK=1 ORCH_TTY=/dev/null ORCH_SHARE="$WORK/share"
 # ...nor asks an installed codex for its models: the shipped catalog is used (section 54 tests the asking)
 export ORCH_MODELS_DISCOVER=0
+# ...nor asks GitHub whether main is protected (section 55 tests the asking with a fake gh)
+export ORCH_GUARD_GITHUB=0
 # ...nor into their orch config (mode) or their Pi agents folder
 export ORCH_CONFIG_FILE="$WORK/config/config.json" PI_CODING_AGENT_DIR="$WORK/pi-agent" ORCH_PI="$WORK/pibin/pi"
 # a coder told to stop: short waits (section 49 tests the real behaviour with its own values)
@@ -1964,6 +1966,90 @@ check "orch-explain: a fresh install puts it in ~/.agents/skills and the OpenCod
 check "orch-explain: agents check sees it once per agent" 'HOME="$XH" PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin" "$XH/.local/bin/orch" agents check >/dev/null 2>&1'
 HOME="$XH" PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin" bash "$ROOT/install.sh" --uninstall >/dev/null 2>&1
 check "orch-explain: --uninstall removes every copy" '[ -z "$(find "$XH" -name "orch-explain*" -print -quit)" ]'
+
+echo "55. no agent pushes to main: the pre-push guard, plans on main refused, doctor and status report it"
+newrepo grd
+git init -q --bare "$WORK/grd-remote.git"; git remote add origin "$WORK/grd-remote.git"; git push -q origin main 2>/dev/null
+printf '# Plan: t\nBranch: main\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M1: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "a plan on main is refused by sync, with the rule" '[ $code -ne 0 ] && grep -q "Branch main is a protected branch" <<<"$out" && grep -q "No agent ever pushes to main" <<<"$out"'
+sed -i 's/^Branch: main$/Branch: master/' .orchestrate/plan.md
+check "…and so is master" '! "$ORCH" sync >/dev/null 2>&1'
+sed -i 's/^Branch: master$/Branch: feature\/grd/' .orchestrate/plan.md
+check "no guard before orch runs in the repo" '[ ! -e .git/hooks/pre-push ]'
+timeout 120 "$ORCH" autopilot > "$WORK/grd.log" 2>&1; code=$?
+check "a run installs the guard by itself (orch start)" '[ $code -eq 0 ] && [ "$(status_of M1)" = merged ] && [ -x .git/hooks/pre-push ] && grep -q "herdr-orchestra main guard v1" .git/hooks/pre-push'
+out=$("$ORCH" finish 2>&1); code=$?
+check "orch finish still pushes the run's branch with the guard on" '[ $code -eq 0 ] && git --git-dir="$WORK/grd-remote.git" rev-parse -q --verify feature/grd >/dev/null'
+before=$(git --git-dir="$WORK/grd-remote.git" rev-parse main)
+out=$(git push origin feature/grd:main 2>&1); code=$?
+check "git push <branch>:main is refused, with the reason" '[ $code -ne 0 ] && grep -q "orch guard: REFUSED push to main" <<<"$out" && grep -q "no agent pushes to main, even when asked" <<<"$out"'
+out=$(git push origin HEAD:main 2>&1); code=$?
+check "git push origin HEAD:main is refused" '[ $code -ne 0 ] && grep -q "REFUSED push to main" <<<"$out"'
+out=$(git push --force origin HEAD:refs/heads/main 2>&1); code=$?
+check "a force push to refs/heads/main is refused" '[ $code -ne 0 ] && grep -q "REFUSED push to main" <<<"$out"'
+git switch -q main; git merge -q --ff-only feature/grd
+out=$(git push origin main 2>&1); code=$?
+check "a plain git push origin main from main is refused" '[ $code -ne 0 ] && grep -q "REFUSED" <<<"$out"'
+out=$(git push --all origin 2>&1); code=$?
+check "git push --all is refused while it includes main" '[ $code -ne 0 ] && grep -q "REFUSED push to main" <<<"$out"'
+out=$(git push origin HEAD:master 2>&1); code=$?
+check "master is protected too" '[ $code -ne 0 ] && grep -q "REFUSED push to master" <<<"$out"'
+out=$(git push origin :main 2>&1); code=$?
+check "deleting main on the remote is refused" '[ $code -ne 0 ] && grep -q "REFUSED push to main" <<<"$out"'
+check "…and the remote's main never moved" '[ "$(git --git-dir="$WORK/grd-remote.git" rev-parse main)" = "$before" ]'
+git worktree add -q --detach "$WORK/grd-wt" HEAD
+out=$(cd "$WORK/grd-wt" && git push origin HEAD:main 2>&1); code=$?
+check "a coder's worktree shares the guard" '[ $code -ne 0 ] && grep -q "REFUSED push to main" <<<"$out"'
+git switch -q -c fix/ok
+check "pushing any other branch still works" 'git push -q origin fix/ok 2>/dev/null && git --git-dir="$WORK/grd-remote.git" rev-parse -q --verify fix/ok >/dev/null'
+git push -q --no-verify origin HEAD:trunk; git fetch -q origin; git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+echo more > grd.txt; git add grd.txt; git commit -qm more     # something new, so git runs the hook
+out=$(git push origin HEAD:trunk 2>&1); code=$?
+check "the remote's default branch is protected even when it is not called main" '[ $code -ne 0 ] && grep -q "REFUSED push to trunk" <<<"$out"'
+git config --add orch.protected release
+out=$(git push origin HEAD:release 2>&1); code=$?
+check "git config orch.protected adds a branch to the list" '[ $code -ne 0 ] && grep -q "REFUSED push to release" <<<"$out"'
+out=$("$ORCH" guard status 2>&1); code=$?
+check "orch guard status: on, names every protected branch, exit 0" '[ $code -eq 0 ] && grep -q "No agent ever pushes to main" <<<"$out" && grep -q "ok  pre-push guard is on" <<<"$out" && grep -q "main, master, release, trunk" <<<"$out"'
+out=$("$ORCH" guard 2>&1)
+check "orch guard again changes nothing" 'grep -q "^GUARD on:" <<<"$out" && [ ! -e .git/hooks/pre-push.orch-orig ]'
+printf '#!/bin/sh\ncat > "%s"\nexit 0\n' "$WORK/grd-own-hook.txt" > .git/hooks/pre-push; chmod +x .git/hooks/pre-push
+out=$("$ORCH" guard status 2>&1); code=$?
+check "status: someone else's pre-push hook means the guard is missing (exit 1)" '[ $code -ne 0 ] && grep -q "BAD pre-push guard is missing" <<<"$out" && grep -q "another pre-push hook is there" <<<"$out"'
+out=$("$ORCH" doctor 2>&1); code=$?
+check "plain orch doctor reports the missing guard and fails" '[ $code -ne 0 ] && grep -q "^BROKEN  main guard" <<<"$out" && grep -q "BAD pre-push guard is missing" <<<"$out"'
+out=$("$ORCH" guard 2>&1)
+check "orch guard keeps your own hook and runs it after its check" 'grep -q "your own pre-push hook still runs after it" <<<"$out" && [ -x .git/hooks/pre-push.orch-orig ] && git push -q origin HEAD:fix/ok2 2>/dev/null && grep -q "refs/heads/fix/ok2" "$WORK/grd-own-hook.txt"'
+check "…while a push to main is still refused" '! git push origin HEAD:main >/dev/null 2>&1'
+out=$("$ORCH" doctor 2>&1)
+check "plain orch doctor: guard ok" 'grep -q "^ok      main guard" <<<"$out"'
+sed -i 's/main guard v1/main guard v0/' .git/hooks/pre-push
+check "a guard from an older orch is updated by orch guard" '"$ORCH" guard status >/dev/null 2>&1; [ $? -ne 0 ] && "$ORCH" guard 2>&1 | grep -q "^GUARD updated" && grep -q "main guard v1" .git/hooks/pre-push'
+check "orch guard --print gives the hook script" '"$ORCH" guard --print | head -1 | grep -q "^#!/bin/sh" && "$ORCH" guard --print | grep -q "herdr-orchestra main guard v1"'
+check "orch guard --help names the command" '"$ORCH" guard --help 2>&1 | grep -q "guard \[status|--print\]"'
+mkdir -p .husky; git config core.hooksPath .husky
+out=$("$ORCH" guard 2>&1); code=$?
+check "hooks kept inside the project (husky): orch writes nothing there and says what to do" '[ $code -ne 0 ] && grep -q "WARN GUARD not installed" <<<"$out" && grep -q "orch guard --print" <<<"$out" && [ ! -e .husky/pre-push ]'
+git config --unset core.hooksPath
+check "orch guard outside a git repo says so" '! (cd "$WORK" && "$ORCH" guard >/dev/null 2>&1)'
+check "orch lead plan outside a git repo still prints the playbook (no guard to install)" '(cd "$WORK" && "$ORCH" lead plan >/dev/null 2>&1)'
+newrepo grd2
+out=$("$ORCH" lead plan 2>&1)
+check "orch lead plan installs the guard quietly in a repo" '! grep -q "GUARD" <<<"$out" && grep -q "main guard v1" .git/hooks/pre-push'
+cd "$WORK/grd/app"
+mkdir -p "$WORK/gh-grd"; printf '#!/usr/bin/env bash\ncase "$*" in *rules/branches*) echo 0;; *branches/main*) echo false;; *) echo true;; esac\n' > "$WORK/gh-grd/gh"; chmod +x "$WORK/gh-grd/gh"
+git remote set-url origin https://github.com/acme/app.git
+out=$(ORCH_GUARD_GITHUB=1 PATH="$WORK/gh-grd:$PATH" "$ORCH" guard status 2>&1); code=$?
+check "status: GitHub not protecting main is reported, with where to turn it on" '[ $code -ne 0 ] && grep -q "BAD GitHub does not protect main" <<<"$out" && grep -q "Require a pull request before merging" <<<"$out"'
+sed -i "s/echo false/echo true/" "$WORK/gh-grd/gh"
+out=$(ORCH_GUARD_GITHUB=1 PATH="$WORK/gh-grd:$PATH" "$ORCH" guard status 2>&1); code=$?
+check "…and a protected main is ok (exit 0)" '[ $code -eq 0 ] && grep -q "ok  GitHub protects main" <<<"$out"'
+git remote set-url origin "$WORK/grd-remote.git"
+check "every agent-facing text has the rule: skills, commands, playbooks" 'for f in skills/orch-plan/SKILL.md skills/orch-run/SKILL.md skills/orch-explain/SKILL.md pi/skills/orch-plan/SKILL.md claude-commands/orch-plan.md claude-commands/orch-run.md claude-commands/orch-explain.md opencode-commands/orch-plan.md opencode-commands/orch-run.md opencode-commands/orch-explain.md; do grep -q "never push to main\|Never push to main" "$ROOT/$f" || { echo "missing in $f"; exit 1; }; done; for f in plan run subagent; do grep -q "\*\*N[a-z]* push[a-z]* to main" "$ROOT/playbooks/$f.md" || { echo "missing in playbooks/$f.md"; exit 1; }; done'
+check "the playbooks tell the lead to refuse a \"push to main\" request and offer a branch and PR" 'grep -q "even when the developer tells you to. Refuse in one line" "$ROOT/playbooks/run.md" && grep -q "even when the developer tells you to. Refuse in one line" "$ROOT/playbooks/subagent.md" && grep -q "even when the developer asks: refuse in one line" "$ROOT/playbooks/plan.md"'
+check "orch events gives the rule to the lead at every wake-up" '"$ORCH" lead run --section rules | grep -q "Never push to main"'
+check "coders, reviewers and Pi subagents are told too" 'grep -c "never merge a PR, in any situation, even when the developer or the lead asks" "$ORCH" | grep -qx 1 && grep -q "Never commit, push or merge: no agent ever pushes to main" "$ORCH" && [ "$(grep -c "no agent ever pushes to main\|Never push to main (or master) and never merge a PR" "$ORCH")" -ge 3 ]'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

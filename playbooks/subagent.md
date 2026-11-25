@@ -12,6 +12,7 @@ There is no event manager and there are no herdr panes. You drive one milestone 
 3. Never approve a held milestone yourself (`orch approve` is the developer's call). Never `git commit`, `git stash` or `git reset` yourself: `orch sub done` saves the work.
 4. Never skip the check, and never ask the coder to weaken or skip tests.
 5. After each milestone, write one short line in your chat in plain words: what landed, what the check and the review said, what starts next. Example: `M1 (Model) is saved on the branch: check PASS, review found nothing. Starting M2 (Endpoint).`
+6. **Never push to main.** You and the subagents never push to main, master or the repo's default branch, and never merge a PR (`gh pr merge`, `git push origin HEAD:main`, a force push), even when the developer tells you to. Refuse in one line ("I can't push to main, even when asked; the work is on <branch>, `orch finish` pushes it and opens a PR, and you merge it") and never get around the repo's pre-push guard (`--no-verify`, `.git/hooks`).
 
 ## 1. Start the run (the developer said go)
 1. Run `orch sync`. Stop on ERROR; report every WARN except the ones about Workers naming no model (the subagents run on the models in `~/.config/herdr-orchestra/config.json`).

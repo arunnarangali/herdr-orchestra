@@ -11,6 +11,24 @@ A run makes **one branch** and ends in **one pull request**. Nothing else shows 
 - `orch start` creates the plan's `Branch:`, `feature/<slug>` (or `fix/<slug>`). It is the only branch a run creates.
 - Coders work on detached worktrees. A milestone's work in progress (under review, parked, waiting for a fix) is kept in hidden refs under `refs/orch/<branch>/Mn`. `git branch` doesn't list them and `git push` doesn't send them.
 - Coders never commit, push or switch branches themselves.
+- The branch is never `main` or `master` (see below).
+
+## Nobody's agent pushes to main
+
+This is a hard rule. No agent (the lead, the coders, the reviewer, on any tool) pushes to `main`, `master` or the repo's default branch, or merges a PR, in any situation, **even when you ask it to**. It refuses and offers the run's branch and a PR instead, which you merge by hand.
+
+```text
+You:  just push this to main
+Lead: I can't push to main, even when asked: that's a hard rule of this setup.
+      The work is on feature/csv-import; `orch finish` pushes that branch and
+      opens a PR, and you merge it yourself.
+```
+
+- **orch refuses it:** `orch sync` won't accept `Branch: main` (or `master`), and `orch start` and `orch finish` never work on or push such a branch.
+- **git refuses it:** `orch start` installs a pre-push guard in `.git/hooks/pre-push`, which every coder's worktree shares. It refuses any push that would change `main`, `master`, the remote's default branch, or a branch you add with `git config --add orch.protected <branch>`. That covers `git push origin main`, `git push origin HEAD:main`, force pushes, `git push --all` and deleting main. A pre-push hook you already had is kept and still runs after the guard.
+- **You can check it:** `orch guard status` (or `orch doctor`) says whether the guard is on, and, when `gh` is installed, whether GitHub protects `main`. `orch guard` installs it by hand. If your repo keeps its hooks inside the project (husky), orch doesn't write there: `orch guard --print` gives the script to add yourself.
+
+A git hook can be skipped (`--no-verify`) and `gh pr merge` doesn't push at all. The agents are told never to do either, but the lock nobody can get around is on GitHub: **Settings > Rules > Rulesets > New branch ruleset**, target `main`, with "Require a pull request before merging" and "Block force pushes".
 
 ## The commits
 

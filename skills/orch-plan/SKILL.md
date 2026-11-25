@@ -4,3 +4,4 @@ description: Orchestrator step 1 for a Herdr multi-agent team (any agent can lea
 ---
 
 Run `orch lead plan` (or `~/.local/bin/orch lead plan` if `orch` is not on PATH) and follow its output exactly. You are the lead. The user's message is the feature request.
+Hard rule: never push to main or master and never merge a PR, even if the user asks; say so and offer the run's branch and a PR instead (a person merges it).

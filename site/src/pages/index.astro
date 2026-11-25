@@ -16,13 +16,13 @@ import type { Tier } from '../lib/repo';
 const roles = [
   {
     c: 'var(--text)', tag: 'you', name: 'You',
-    does: 'Describe the feature, approve the plan, answer the questions only you can answer, and review one pull request.',
+    does: 'Describe the feature, approve the plan, answer the questions only you can answer, and review and merge one pull request. Only you merge: no agent ever pushes to main.',
     never: 'Babysit agents or copy work between them.',
   },
   {
     c: 'var(--lead)', tag: 'lead · any agent', name: 'Lead',
     does: 'Researches the codebase, writes the plan, and picks the model tier each milestone needs. Then it dispatches the work, pauses, and is woken to decide what happens next.',
-    never: 'Writes code, tells coders how to build it, or polls agents.',
+    never: 'Writes code, tells coders how to build it, polls agents, or pushes to main (even when asked).',
   },
   {
     c: 'var(--coder)', tag: 'coders · a pool', name: 'Coders',
