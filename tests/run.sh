@@ -1711,7 +1711,7 @@ if node -e 'process.exit(process.features && process.features.typescript ? 0 : 1
 else
   echo "  skip: this node cannot run TypeScript (needs 22.6+)"
 fi
-cd "$WORK"
+cd "$WORK" || exit
 
 echo "49. a coder moved off its milestone is really stopped (bug: STOP note queued, coder shown free while it still worked)"
 HPLAN='# Plan: t\nBranch: feature/halt\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M20: long job\nDepends on: none\nAcceptance criteria:\n- it works\nOpen questions:\n- none\n\n## [x] M8: next job\nDepends on: none\nOpen questions:\n- none\n'
