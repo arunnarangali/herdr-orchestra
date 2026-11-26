@@ -2,6 +2,16 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.17.0] - 2026-11-26
+
+A compact that ended quickly always gets its line in `orch story` now. Nothing else about compacting changed.
+
+Example: `claude-1` finishes M1, gets `/compact`, and is idle again before the event manager looks at it. The next job (M5) was sent at once, and the line `claude-1's chat after M1 is now a short summary (/compact)` was never written (about 1 run in 10 in the tests). Now whichever step sees the compact end first writes that line, exactly once.
+
+### Fixed
+- **The "compact is over" line could go missing.** When the next job reached the agent before the event manager noticed the compact had ended, `orch send` / `orch review` dropped the compact silently. Both now write the story line (`<agent>'s chat after Mn is now a short summary`), and the event manager writes it only when it is the one that ends the compact. The work itself was never affected: the agent was idle and got its job.
+- The test for it no longer depends on timing: section 60 checks the story lines, and a new check sends the next job before the event manager looks (it failed on 6.14.0).
+
 ## [6.15.0] - 2026-11-26
 
 The lead's questions before planning now open in your agent's own question picker, so you click your answers instead of typing `1 a, 2 both, 3 no`. This works in every agent that has a picker, and chat stays the fallback.

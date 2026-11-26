@@ -1,6 +1,6 @@
 {
   "name": "herdr-orchestra",
-  "version": "6.15.0",
+  "version": "6.17.0",
   "description": "Orchestrate AI coding agents (Claude Code, Codex, OpenCode, Amp, Pi) as one team: a lead plans, coders build, a reviewer checks, you get one PR. Runs in Herdr panes, or in one Pi window with subagents.",
   "license": "MIT",
   "bin": {

@@ -2113,6 +2113,20 @@ def start_compact(st, name, w, cmd, before=None):
     return True
 
 
+def end_compact(st, name, w, note=True):
+    """The agent's compact is over: forget it, and say so once in `orch story`. Whichever step sees it first calls
+    this: the event manager (herdr shows the agent idle again) or the next job sent to the agent (`orch send`,
+    `orch review`), so the story line never depends on which of the two came first. Returns the record or None."""
+    h = (w or {}).pop("compacting", None)
+    if not h:
+        return None
+    w["ctx"] = None
+    if note:
+        story_note(st, f"{name}'s chat after {h.get('after') or 'its last milestone'} is now a short summary "
+                       f"({h.get('cmd') or '/compact'})", who="event manager")
+    return h
+
+
 def compacting_line(st, name, w):
     h = w.get("compacting") or {}
     return (f"compacting its chat after {h.get('after') or '?'} ({h.get('cmd') or '/compact'}, sent "
@@ -2945,8 +2959,8 @@ def cmd_send(args):
                  "result": str(d / rel / f"result-{k}.json"), "since": now(), "started": now(), "kind": "coder",
                  "prompt": text, "nudges": 0, "file": fname, "delivering": True,
                  "model": st["workers"][t["worker"]].get("model"), "tier": st["workers"][t["worker"]].get("tier")}
+    end_compact(st, t["worker"], st["workers"][t["worker"]])   # compacted before this job: say so, once
     st["workers"][t["worker"]]["ctx"] = tid          # its chat now holds this milestone (compacted before another)
-    st["workers"][t["worker"]].pop("compacting", None)
     save(st)
     try:
         deliver(st, t["worker"], text)
@@ -3120,8 +3134,8 @@ def cmd_review(args):
     t["review_round"] = k
     st["reviewer_busy"] = tid
     if st.get("reviewer_info") is not None:
+        end_compact(st, st["reviewer"], st["reviewer_info"])
         st["reviewer_info"]["ctx"] = tid             # its chat now holds this milestone (compacted before another)
-        st["reviewer_info"].pop("compacting", None)
     move(st, tid, "reviewing")
     t["wait"] = {"agent": st["reviewer"], "sentinel": str(sentinel), "report": str(rd / f"review-{k}.md"),
                  "result": str(rd / f"review-{k}.json"), "since": now(), "started": now(), "kind": "reviewer",
@@ -5886,20 +5900,21 @@ def _autopilot(args):
                 late = now() - h.get("ts", 0) > COMPACT_MAX_S
                 done = not still_compacting(st_, n, w)
 
+                ended = {}
+
                 def upd(s_, n=n, idle=h.get("idle_since"), done=done, late=late, busy=busy):
                     a = _agent_of(s_, n)
                     if not a or not a.get("compacting"):
-                        return
+                        return                   # its next job was sent first: that step already said so
                     if not done:
                         a["compacting"]["idle_since"] = idle
                         return
-                    a.pop("compacting", None)
-                    a["ctx"] = None
+                    ended["yes"] = end_compact(s_, n, a, note=not (late and busy))
                     if late and busy:
                         story_note(s_, f"{n} was still busy {_fmt_secs(COMPACT_MAX_S)} after {h.get('cmd')}: orch "
                                        f"stopped waiting for it", who="event manager")
                 patch_state(upd)
-                if done:
+                if ended:
                     say(f"{n} is still working {_fmt_secs(COMPACT_MAX_S)} after {h.get('cmd')}: look at its pane"
                         if late and busy else f"COMPACTED {n}: its chat after {h.get('after')} is now a short summary",
                         late and busy)
