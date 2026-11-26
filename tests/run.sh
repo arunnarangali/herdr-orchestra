@@ -2278,7 +2278,13 @@ timeout 120 "$ORCH" autopilot > "$WORK/cmp.log" 2>&1; code=$?
 order=$(grep -oE '^claude-1 <- (/compact|Read \.orch-task/M[0-9]+)' "$FH/prompts.log" | sed 's/claude-1 <- //; s/Read .orch-task\///' | tr '\n' ' ')
 check "the run lands every milestone" '[ $code -eq 0 ] && [ "$(status_of M1)$(status_of M5)$(status_of M6)" = mergedmergedmerged ]'
 check "the coder gets /compact after M1 and after M5, before the next milestone, and never twice in a row ($order)" '[ "$order" = "M1 /compact M5 /compact M6 " ] || [ "$order" = "M1 /compact M5 /compact M6 /compact " ]'
-check "the event manager says so, and orch story has a line for it" 'grep -qE "claude-1 finished M1 and is idle: sent /compact so its chat does not keep growing|BUSY claude-1 is compacting its chat after M1 first" "$WORK/cmp.log" && grep -q "COMPACTED claude-1: its chat after M1 is now a short summary" "$WORK/cmp.log" && grep -q "the event manager did: claude-1 finished M1: orch sent /compact so its chat does not keep growing" <<<"$("$ORCH" story)"'
+check "the event manager says so, and orch story has a line for it" 'grep -qE "claude-1 finished M1 and is idle: sent /compact so its chat does not keep growing|BUSY claude-1 is compacting its chat after M1 first" "$WORK/cmp.log" && story=$("$ORCH" story) && grep -q "the event manager did: claude-1 finished M1: orch sent /compact so its chat does not keep growing" <<<"$story" && [ "$(grep -c "the event manager did: claude-1.s chat after M1 is now a short summary (/compact)" <<<"$story")" = 1 ] && [ "$(grep -c "the event manager did: claude-1.s chat after M5 is now a short summary (/compact)" <<<"$story")" = 1 ]'
+# the "compact is over" line is written by whichever step notices first: the event manager, or the next job sent
+newrepo cmprace; printf '%s' "$CPLAN" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null
+stpy "st['workers']['claude-1'].update(ctx='M1', compacting={'ts': now - 30, 'after': 'M1', 'cmd': '/compact', 'before': 'M5'})"
+"$ORCH" prepare M5 claude-1 >/dev/null && "$ORCH" write-task M5 >/dev/null && "$ORCH" send M5 task.md >/dev/null
+check "a compact that ended before the event manager looked still gets its one line in orch story (bug: it was lost about 1 run in 10)" '[ "$(grep -c "claude-1.s chat after M1 is now a short summary (/compact)" <<<"$("$ORCH" story)")" = 1 ] && python3 -c "import json,sys; w=json.load(open(\".orchestrate/state.json\"))[\"workers\"][\"claude-1\"]; sys.exit(0 if \"compacting\" not in w and w[\"ctx\"] == \"M5\" else 1)"'
 newrepo cmpoff; printf '%s' "$CPLAN" > .orchestrate/plan.md
 ORCH_COMPACT=0 timeout 120 "$ORCH" autopilot > "$WORK/cmpoff.log" 2>&1; code=$?
 check "ORCH_COMPACT=0: the same run, no /compact at all" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ] && ! grep -q "/compact" "$FH/prompts.log"'
