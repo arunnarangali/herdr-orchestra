@@ -2,7 +2,12 @@
 // "How it works" in four numbered steps, a data-flow diagram that lights up the active step, and a
 // terminal that replays one run with real orch commands and log lines (Play / Pause / Step / Restart).
 // Without JavaScript all four steps show, the diagram is fully lit and the terminal shows the whole log.
-import { simLines } from '../lib/runlog';
+import { simLines, frames, type PaneId } from '../lib/runlog';
+const runFrames = frames(simLines);
+const last = runFrames[runFrames.length - 1];
+const paneIds: PaneId[] = ['lead', 'claude-1', 'claude-2', 'reviewer'];
+const hms = (s: number) => `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+const n = simLines.length;
 
 const steps = [
   {
@@ -111,6 +116,35 @@ const label =
         <div class={`rx-line ${l.cls ?? ''}`} data-stage={l.stage}>{l.prompt && <span class="rx-prompt">{l.prompt} </span>}<span class="rx-t">{l.text}</span>{'\n'}</div>
       ))}</pre>
     </div>
+
+    <div class="rx-scrub" data-frames={JSON.stringify(runFrames)}>
+      <div class="rx-scrub-head">
+        <span class="rx-lbl">timeline</span>
+        <span class="rx-kv">clock <b data-clock>{last.clock}</b></span>
+        <span class="rx-kv">active <b data-active>{hms(last.active)}</b></span>
+        <span class="rx-kv down">not counted <b data-down>{hms(last.down)}</b></span>
+        <span class="rx-kv rx-pos"><b data-pos>{n}</b>/{n}</span>
+      </div>
+      <div class="rx-track" role="slider" tabindex="0" aria-label="Run timeline: arrow keys step through the log"
+        aria-valuemin="1" aria-valuemax={n} aria-valuenow={n} aria-valuetext={last.clock} data-track>
+        <span class="rx-rail"></span>
+        <span class="rx-fill" data-fill></span>
+        {simLines.map((l, i) => (
+          <span class={`rx-tick s${l.stage}${l.text.includes('was asleep') ? ' down' : ''}`} style={`left:${(i / (n - 1)) * 100}%`}></span>
+        ))}
+        <span class="rx-knob" data-knob style="left:100%"></span>
+      </div>
+      <div class="rx-legend"><span>01 plan</span><span>02 go</span><span>03 run</span><span class="down">asleep 14:22→16:11, not counted</span><span>04 PR</span><span class="rx-keys">← → step · Home End</span></div>
+      <div class="rx-panes">
+        {paneIds.map((p) => (
+          <div class="rx-pane" data-pane={p}>
+            <span class="rx-pn">{p}</span>
+            <span class={`rx-ps st-${last.panes[p][0]}`} data-ps>{last.panes[p][0]}</span>
+            <span class="rx-pl" data-pl>{last.panes[p][1] || '—'}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   </div>
 </div>
 
@@ -126,6 +160,73 @@ const label =
     let playing = false;
     let timer = 0;
     let stage = -1;
+
+    // ---- timeline scrubber: pane states, counters, and the branch diagram follow the newest line shown ----
+    type F = { panes: Record<string, [string, string]>; ms: Record<string, [string, string?] | null>; clock: string; active: number; down: number };
+    const scrub = root.querySelector<HTMLElement>('.rx-scrub')!;
+    const fr = JSON.parse(scrub.dataset.frames!) as F[];
+    const track = scrub.querySelector<HTMLElement>('[data-track]')!;
+    const fill = scrub.querySelector<HTMLElement>('[data-fill]')!;
+    const knob = scrub.querySelector<HTMLElement>('[data-knob]')!;
+    const ticks = [...scrub.querySelectorAll<HTMLElement>('.rx-tick')];
+    const txt = (sel: string, v: string) => { scrub.querySelector<HTMLElement>(sel)!.textContent = v; };
+    const hms = (s: number) => `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    const sync = () => {
+      const i = Math.max(0, pos - 1);
+      const f = fr[i];
+      const pct = lines.length > 1 ? (i / (lines.length - 1)) * 100 : 0;
+      fill.style.width = `${pct}%`;
+      knob.style.left = `${pct}%`;
+      ticks.forEach((t, j) => t.classList.toggle('past', j <= i));
+      track.setAttribute('aria-valuenow', String(i + 1));
+      track.setAttribute('aria-valuetext', `${f.clock || 'before the run'}: ${full[i]}`);
+      txt('[data-clock]', f.clock || '--:--:--');
+      txt('[data-active]', hms(f.active));
+      txt('[data-down]', hms(f.down));
+      txt('[data-pos]', String(pos));
+      scrub.classList.toggle('has-down', f.down > 0);
+      scrub.querySelectorAll<HTMLElement>('[data-pane]').forEach((el) => {
+        const [st, line] = f.panes[el.dataset.pane!];
+        const ps = el.querySelector<HTMLElement>('[data-ps]')!;
+        ps.textContent = st;
+        ps.classList.remove(...[...ps.classList].filter((c) => c.startsWith('st-')));
+        ps.classList.add(`st-${st}`);
+        el.querySelector<HTMLElement>('[data-pl]')!.textContent = line || '—';
+      });
+      document.dispatchEvent(new CustomEvent('orch:run-frame', { detail: { ms: f.ms, clock: f.clock } }));
+    };
+    let touched = false;   // the visitor took over: no autoplay after that
+    const scrubTo = (i: number) => {
+      touched = true;
+      const to = Math.max(0, Math.min(lines.length - 1, i));
+      setPlaying(false);
+      reset(to + 1);
+      lines[to].classList.add('cursor');
+      setStage(Number(lines[to].dataset.stage));
+      screen.scrollTop = Math.max(0, lines[to].offsetTop - screen.clientHeight + lines[to].offsetHeight + 16);
+      sync();
+    };
+    track.addEventListener('keydown', (e) => {
+      const i = pos - 1;
+      const j = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? i + 1 : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? i - 1
+        : e.key === 'PageUp' ? i + 5 : e.key === 'PageDown' ? i - 5 : e.key === 'Home' ? 0 : e.key === 'End' ? lines.length - 1 : null;
+      if (j === null) return;
+      e.preventDefault();
+      scrubTo(j);
+    });
+    const fromX = (x: number) => {
+      const r = track.getBoundingClientRect();
+      return Math.round(((x - r.left) / r.width) * (lines.length - 1));
+    };
+    track.addEventListener('pointerdown', (e) => {
+      track.setPointerCapture(e.pointerId);
+      track.focus();
+      scrubTo(fromX(e.clientX));
+      const move = (ev: PointerEvent) => { const j = fromX(ev.clientX); if (j !== pos - 1) scrubTo(j); };
+      const up = () => { track.removeEventListener('pointermove', move); track.removeEventListener('pointerup', up); };
+      track.addEventListener('pointermove', move);
+      track.addEventListener('pointerup', up);
+    });
 
     root.classList.add('live');
     const setStage = (s: number) => {
@@ -147,6 +248,7 @@ const label =
       l.classList.add('shown', 'cursor');
       setStage(Number(l.dataset.stage));
       screen.scrollTop = screen.scrollHeight;
+      sync();
       if (!typed || !l.querySelector('.rx-prompt')) { t.textContent = full[i]; return 0; }
       // Type commands a few characters at a time, like a fast typist.
       let n = 0;
@@ -169,6 +271,7 @@ const label =
         l.querySelector<HTMLElement>('.rx-t')!.textContent = full[i];
       });
       pos = to;
+      sync();
     };
     function next() {
       if (pos >= lines.length) { setPlaying(false); return; }
@@ -194,6 +297,7 @@ const label =
       play();
     };
 
+    root.querySelectorAll('.rx-ctrl button, [data-goto]').forEach((b) => b.addEventListener('click', () => { touched = true; }));
     root.querySelector('[data-act="play"]')!.addEventListener('click', play);
     root.querySelector('[data-act="pause"]')!.addEventListener('click', () => setPlaying(false));
     root.querySelector('[data-act="step"]')!.addEventListener('click', () => {
@@ -209,7 +313,7 @@ const label =
     if (reduce) { reset(lines.length); screen.scrollTop = 0; return; }
     // Start playing the first time the explainer scrolls into view.
     const io = new IntersectionObserver((es) => {
-      if (es.some((e) => e.isIntersecting)) { io.disconnect(); play(); }
+      if (es.some((e) => e.isIntersecting)) { io.disconnect(); if (!touched) play(); }
     }, { threshold: 0.3 });
     io.observe(root);
   });
@@ -217,12 +321,12 @@ const label =
 
 <style>
   /* Steps and diagram side by side, the terminal full width under both. */
-  .rx { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: 'steps flow' 'term term'; gap: 16px; align-items: stretch; }
+  .rx { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: 'steps flow' 'term term' 'scrub scrub'; gap: 16px; align-items: stretch; }
   .rx-steps { grid-area: steps; }
   .rx-flow { grid-area: flow; display: flex; flex-direction: column; }
   .rx-flow svg { margin: auto; max-width: 640px; }
   .rx-term { grid-area: term; min-width: 0; }
-  @media (max-width: 1100px) { .rx { grid-template-columns: 1fr; grid-template-areas: 'steps' 'flow' 'term'; } }
+  @media (max-width: 1100px) { .rx { grid-template-columns: 1fr; grid-template-areas: 'steps' 'flow' 'term' 'scrub'; } }
 
   /* Numbered steps */
   .rx-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--line); background: var(--bg); }
@@ -270,12 +374,46 @@ const label =
   .rx[data-active='2'] .rx-node.s2 .nm, .rx[data-active='3'] .rx-node.s3 .nm { fill: var(--accent); }
   .rx[data-active='0'] .rx-edge.s0 path, .rx[data-active='1'] .rx-edge.s1 path,
   .rx[data-active='2'] .rx-edge.s2 path, .rx[data-active='3'] .rx-edge.s3 path {
-    stroke: var(--accent); stroke-dasharray: 5 4; animation: rx-flow 0.6s linear infinite;
+    stroke: var(--accent); stroke-dasharray: 5 4;
   }
   .rx[data-active='0'] .rx-edge.s0 text, .rx[data-active='1'] .rx-edge.s1 text,
   .rx[data-active='2'] .rx-edge.s2 text, .rx[data-active='3'] .rx-edge.s3 text { fill: var(--text); }
-  @keyframes rx-flow { to { stroke-dashoffset: -9; } }
-  @media (prefers-reduced-motion: reduce) { .rx-edge path { animation: none !important; } }
+
+  /* Timeline scrubber */
+  .rx-scrub { grid-area: scrub; border: 1px solid var(--line); background: var(--surface); padding: 14px 16px 16px; font-variant-numeric: tabular-nums; }
+  .rx-scrub-head { display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: baseline; font: 12px var(--font-mono); color: var(--muted); }
+  .rx-lbl { text-transform: uppercase; letter-spacing: 0.04em; margin-right: auto; }
+  .rx-kv b { color: var(--text); font-weight: 600; margin-left: 4px; }
+  .rx-kv.down b { color: var(--faint); }
+  .rx-scrub.has-down .rx-kv.down b { color: var(--accent); }
+  .rx-track { position: relative; height: 28px; margin: 12px 9px 0; cursor: pointer; touch-action: none; outline: none; }
+  .rx-track:focus-visible { outline: 1px solid var(--accent); outline-offset: 4px; }
+  .rx-rail, .rx-fill { position: absolute; left: 0; top: 13px; height: 2px; background: var(--line-strong); }
+  .rx-rail { right: 0; }
+  .rx-fill { background: var(--accent); width: 100%; }
+  .rx-tick { position: absolute; top: 8px; width: 1px; height: 12px; background: var(--line-strong); transform: translateX(-0.5px); }
+  .rx-tick.past { background: var(--muted); }
+  .rx-tick.s3.past { background: var(--good); }
+  .rx-tick.down { top: 2px; height: 24px; width: 2px; background: var(--faint); }
+  .rx-tick.down.past { background: var(--accent); }
+  .rx-knob { position: absolute; top: 7px; width: 10px; height: 14px; margin-left: -5px; background: var(--bg); border: 1px solid var(--accent); }
+  .rx-legend { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 8px; font: 11.5px var(--font-mono); color: var(--faint); }
+  .rx-legend .down { color: var(--muted); }
+  .rx-keys { margin-left: auto; }
+  .rx-panes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 14px; border-top: 1px solid var(--line); }
+  .rx-pane { display: grid; grid-template-columns: auto auto; grid-template-rows: auto auto; justify-content: start; gap: 4px 10px; padding: 10px 12px 0; border-left: 1px solid var(--line); min-width: 0; }
+  .rx-pane:first-child { border-left: 0; padding-left: 0; }
+  .rx-pn { font: 600 12.5px var(--font-mono); color: var(--text); }
+  .rx-ps { font: 11px var(--font-mono); padding: 0 6px; border: 1px solid var(--line-strong); color: var(--muted); }
+  .rx-ps.st-working { color: var(--text); border-color: var(--coder); }
+  .rx-ps.st-paused { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+  .rx-pl { grid-column: 1 / -1; font: 12px var(--font-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 760px) {
+    .rx-panes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .rx-pane:nth-child(3) { border-left: 0; padding-left: 0; }
+    .rx-pane:nth-child(n + 3) { border-top: 1px solid var(--line); margin-top: 10px; }
+    .rx-keys { display: none; }
+  }
 
   /* Terminal simulation */
   .rx-term .bar { flex-wrap: wrap; row-gap: 6px; }
@@ -292,7 +430,7 @@ const label =
   .rx.live .rx-line.shown { display: block; animation: rx-in 0.15s linear; }
   @keyframes rx-in { from { opacity: 0; } }
   .rx-prompt { color: #e5a93b; }
-  .rx-line.cursor .rx-t::after { content: ''; display: inline-block; width: 0.6em; height: 1.1em; vertical-align: -0.2em; margin-left: 2px; background: #e5a93b; animation: blink 1.1s steps(1) infinite; }
+  .rx-line.cursor .rx-t::after { content: ''; display: inline-block; width: 0.6em; height: 1.1em; vertical-align: -0.2em; margin-left: 2px; background: #e5a93b; }
   @media (max-width: 560px) {
     /* Phone: the whole diagram fits; names get bigger and the small second lines step aside. */
     .rx-flow svg { padding: 6px 4px 2px; }

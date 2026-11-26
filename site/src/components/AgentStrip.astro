@@ -1,17 +1,183 @@
 ---
 // Agent tiles with each agent's mark, read from agents.default.toml.
-import { agents } from '../lib/repo';
+// With `mapper`, the tiles become a role mapper: pick the lead, the coders and the reviewer, and the matching
+// agents.toml roles and plan.md team lines are written below (models from models.default.toml: the kind's
+// high-tier model for the lead and the reviewer, its medium-tier model for coders).
+import { agents, models } from '../lib/repo';
 import AgentIcon from './AgentIcon.astro';
+interface Props { mapper?: boolean }
+const { mapper = false } = Astro.props;
+const list = agents();
+const cat = models();
+const pick = (kind: string, tier: string) => cat.find((m) => m.kinds.includes(kind) && m.tier === tier)?.id ?? '';
+const kinds = list.map((a) => ({
+  kind: a.kind, roles: a.roles, high: pick(a.kind, 'high'), medium: pick(a.kind, 'medium'),
+}));
+const roles = ['lead', 'coder', 'reviewer'] as const;
+// Starting team: the plan-file example (claude leads, claude and codex code, agy reviews).
+const start: Record<string, string[]> = { claude: ['lead', 'coder'], codex: ['coder'], agy: ['reviewer'] };
+// The same text the script writes, for the starting team (shown before JavaScript runs).
+const withModel = (kind: string, model: string) => (model ? `${kind}: ${model}` : kind);
+const k = (kind: string) => kinds.find((x) => x.kind === kind)!;
+const startToml = ['# Merged key by key over agents.default.toml.', '# roles: what each kind may do in a run (`orch team` reads it).',
+  ...kinds.filter((x) => start[x.kind]).flatMap((x) => ['', `[${x.kind}]`, `roles = [${start[x.kind].map((r) => `"${r}"`).join(', ')}]`])].join('\n');
+const startPlan = [`Lead: lead (${withModel('claude', k('claude').high)})`,
+  `Workers: claude-1 (${withModel('claude', k('claude').medium)}), codex-1 (${withModel('codex', k('codex').medium)})`,
+  `Reviewer: reviewer (${withModel('agy', k('agy').high)})`].join('\n');
 ---
-<div class="agents">
-  {agents().map((a) => (
-    <a class="agent" href={`/agents#${a.kind}`}>
-      <span class="logo"><AgentIcon kind={a.kind} /></span>
-      <span><span class="name">{a.name}</span><span class="bin">{a.binary}</span></span>
+{!mapper && (
+  <div class="agents">
+    {list.map((a) => (
+      <a class="agent" href={`/agents#${a.kind}`}>
+        <span class="logo"><AgentIcon kind={a.kind} /></span>
+        <span><span class="name">{a.name}</span><span class="bin">{a.binary}</span></span>
+      </a>
+    ))}
+    <a class="agent yours" href="/docs/agents#add-your-own-agent">
+      <span class="logo" aria-hidden="true">+</span>
+      <span><span class="name">Your agent</span><span class="bin">agents.toml</span></span>
     </a>
-  ))}
-  <a class="agent yours" href="/docs/agents#add-your-own-agent">
-    <span class="logo" aria-hidden="true">+</span>
-    <span><span class="name">Your agent</span><span class="bin">agents.toml</span></span>
-  </a>
-</div>
+  </div>
+)}
+{mapper && (
+  <div class="rm" data-rm data-kinds={JSON.stringify(kinds)}>
+    <div class="rm-table" role="group" aria-label="Assign agents to roles">
+      <div class="rm-row rm-head" aria-hidden="true"><span>agent</span><span>lead</span><span>coder</span><span>reviewer</span></div>
+      {list.map((a) => (
+        <div class="rm-row" data-kind={a.kind}>
+          <span class="rm-agent">
+            <span class="logo"><AgentIcon kind={a.kind} /></span>
+            <span><span class="name">{a.name}</span><span class="bin">{a.binary}</span></span>
+          </span>
+          {roles.map((r) => (
+            <button type="button" class="rm-toggle" data-role={r} disabled={!a.roles.includes(r)}
+              aria-pressed={(start[a.kind] ?? []).includes(r) ? 'true' : 'false'} aria-label={`${a.name} as ${r}`}>
+              <span class="rm-box" aria-hidden="true"></span><span class="rm-rl">{r}</span>
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
+    <p class="rm-rule">One lead. One reviewer or none. At least one coder; each coder kind gets one pane, <code>&lt;kind&gt;-1</code>.</p>
+    <div class="rm-out">
+      <div class="rm-file">
+        <div class="rm-file-head"><span>~/.config/herdr-orchestra/agents.toml</span><button type="button" class="copy" data-copy="toml">copy</button></div>
+        <pre data-out="toml">{startToml}</pre>
+      </div>
+      <div class="rm-file">
+        <div class="rm-file-head"><span>.orchestrate/plan.md · team lines</span><button type="button" class="copy" data-copy="plan">copy</button></div>
+        <pre data-out="plan">{startPlan}</pre>
+      </div>
+    </div>
+    <p class="rm-note" aria-live="polite" data-rm-note></p>
+  </div>
+)}
+
+<script>
+  type K = { kind: string; roles: string[]; high: string; medium: string };
+  document.querySelectorAll<HTMLElement>('[data-rm]').forEach((rm) => {
+    const kinds = JSON.parse(rm.dataset.kinds!) as K[];
+    const btns = [...rm.querySelectorAll<HTMLButtonElement>('.rm-toggle')];
+    const note = rm.querySelector<HTMLElement>('[data-rm-note]')!;
+    const on = (b: HTMLButtonElement) => b.getAttribute('aria-pressed') === 'true';
+    const set = (b: HTMLButtonElement, v: boolean) => b.setAttribute('aria-pressed', String(v));
+    const kindOf = (b: HTMLButtonElement) => b.closest<HTMLElement>('[data-kind]')!.dataset.kind!;
+    const of = (role: string) => btns.filter((b) => b.dataset.role === role && on(b)).map(kindOf);
+
+    const agent = (k: K, model: string) => (model ? `${k.kind}: ${model}` : k.kind);
+    const render = () => {
+      const byKind = new Map(kinds.map((k) => [k.kind, k]));
+      const lead = of('lead')[0];
+      const coders = of('coder');
+      const reviewer = of('reviewer')[0];
+      const used = kinds.filter((k) => btns.some((b) => kindOf(b) === k.kind && on(b)));
+      const toml = [
+        '# Merged key by key over agents.default.toml.',
+        '# roles: what each kind may do in a run (`orch team` reads it).',
+        ...used.flatMap((k) => {
+          const r = btns.filter((b) => kindOf(b) === k.kind && on(b)).map((b) => `"${b.dataset.role}"`);
+          return ['', `[${k.kind}]`, `roles = [${r.join(', ')}]`];
+        }),
+      ].join('\n');
+      const lk = lead ? byKind.get(lead)! : null;
+      const rk = reviewer ? byKind.get(reviewer)! : null;
+      const plan = [
+        `Lead: ${lk ? `lead (${agent(lk, lk.high)})` : '—'}`,
+        `Workers: ${coders.map((c) => { const k = byKind.get(c)!; return `${c}-1 (${agent(k, k.medium)})`; }).join(', ')}`,
+        `Reviewer: ${rk ? `reviewer (${agent(rk, rk.high)})` : 'none'}`,
+      ].join('\n');
+      rm.querySelector<HTMLElement>('[data-out="toml"]')!.textContent = toml;
+      rm.querySelector<HTMLElement>('[data-out="plan"]')!.textContent = plan;
+    };
+
+    btns.forEach((b) => b.addEventListener('click', () => {
+      const role = b.dataset.role!;
+      note.textContent = '';
+      if (role === 'coder') {
+        if (on(b) && of('coder').length === 1) { note.textContent = 'A run needs at least one coder.'; return; }
+        set(b, !on(b));
+      } else if (role === 'lead') {
+        btns.filter((x) => x.dataset.role === 'lead').forEach((x) => set(x, x === b));
+      } else {
+        const was = on(b);
+        btns.filter((x) => x.dataset.role === 'reviewer').forEach((x) => set(x, false));
+        set(b, !was);
+      }
+      render();
+    }));
+
+    rm.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((c) => c.addEventListener('click', async () => {
+      const text = rm.querySelector<HTMLElement>(`[data-out="${c.dataset.copy}"]`)!.textContent ?? '';
+      try {
+        await navigator.clipboard.writeText(text);
+        c.textContent = 'copied';
+      } catch {
+        c.textContent = 'select + copy';
+      }
+      window.setTimeout(() => (c.textContent = 'copy'), 1500);
+    }));
+    render();
+  });
+</script>
+
+<style>
+  .rm-table { border: 1px solid var(--line); }
+  .rm-row { display: grid; grid-template-columns: minmax(180px, 1.6fr) repeat(3, minmax(0, 1fr)); align-items: stretch; border-top: 1px solid var(--line); }
+  .rm-row:first-child { border-top: 0; }
+  .rm-head { font: 600 12px var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); background: var(--surface); }
+  .rm-head span { padding: 10px 14px; }
+  .rm-agent { display: flex; align-items: center; gap: 10px; padding: 8px 14px; min-width: 0; }
+  .rm-agent .logo {
+    width: 32px; height: 32px; display: grid; place-items: center; flex: none;
+    background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--radius);
+  }
+  .rm-agent .name { display: block; font: 600 13.5px var(--font-mono); }
+  .rm-agent .bin { display: block; font: 12px var(--font-mono); color: var(--faint); line-height: 1.2; }
+  .rm-toggle {
+    all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 0 14px;
+    border-left: 1px solid var(--line); font: 12.5px var(--font-mono); color: var(--faint);
+    transition: color var(--fast) linear, background var(--fast) linear;
+  }
+  .rm-toggle:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+  .rm-toggle:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+  .rm-toggle:disabled { cursor: not-allowed; opacity: 0.35; }
+  .rm-box { width: 12px; height: 12px; border: 1px solid var(--line-strong); flex: none; transition: background var(--fast) linear, border-color var(--fast) linear; }
+  .rm-toggle[aria-pressed='true'] { color: var(--text); }
+  .rm-toggle[aria-pressed='true'] .rm-box { background: var(--accent); border-color: var(--accent); }
+  .rm-toggle[data-role='lead'][aria-pressed='true'] { color: var(--lead); }
+  .rm-rule { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+  .rm-out { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 20px; }
+  .rm-file { border: 1px solid var(--line); background: var(--surface); min-width: 0; }
+  .rm-file-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px 8px 14px; border-bottom: 1px solid var(--line); font: 12px var(--font-mono); color: var(--muted); }
+  .rm-file-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rm-file pre { margin: 0; padding: 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; min-height: 9.6em; color: var(--text); }
+  .rm-note { min-height: 1.4em; margin: 8px 0 0; font: 12.5px var(--font-mono); color: var(--bad); }
+  @media (max-width: 860px) { .rm-out { grid-template-columns: 1fr; } }
+  @media (max-width: 600px) {
+    .rm-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .rm-head { display: none; }
+    .rm-agent { grid-column: 1 / -1; border-bottom: 1px solid var(--line); }
+    .rm-toggle { padding: 10px 12px; }
+    .rm-toggle:nth-child(2) { border-left: 0; }
+  }
+</style>

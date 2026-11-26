@@ -1,0 +1,121 @@
+---
+// The six states of one milestone as a row of tabs, and a panel with what runs, who is woken with which text,
+// and the line `orch story` gets. Any element inside the same [data-inspect] wrapper with data-stage="<ID>"
+// (a node in the diagram above) selects that state when clicked or focused.
+import { stages } from '../lib/stages';
+interface Props { id: string; initial?: string }
+const { id, initial = 'CODING' } = Astro.props;
+const start = Math.max(0, stages.findIndex((s) => s.id === initial));
+---
+<div class="si" data-si>
+  <div class="si-rail" role="tablist" aria-label="Milestone states">
+    {stages.map((s, i) => (
+      <button type="button" role="tab" id={`${id}-tab-${i}`} class="si-tab" data-si-tab={s.id}
+        aria-selected={i === start ? 'true' : 'false'} aria-controls={`${id}-panel`} tabindex={i === start ? 0 : -1}>
+        <span class="si-n">{String(i + 1).padStart(2, '0')}</span>{s.id}
+      </button>
+    ))}
+  </div>
+  <div class="si-panel" id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-tab-${start}`} aria-live="polite">
+    {stages.map((s, i) => (
+      <dl class="si-body" data-si-body={s.id} hidden={i !== start}>
+        <div class="si-what"><dt>state</dt><dd>{s.what}</dd></div>
+        <div><dt>run</dt><dd>{s.cmds.map((c) => <code class="si-cmd">$ {c}</code>)}<code class="si-out">{s.out}</code></dd></div>
+        <div><dt>wakes</dt><dd><span class={`si-role r-${s.wakes}`}>{s.wakes}</span></dd></div>
+        <div><dt>context</dt><dd><code class="si-ctx">{s.context}</code></dd></div>
+        <div><dt>orch story</dt><dd><code class="si-story">{s.story}</code></dd></div>
+      </dl>
+    ))}
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll<HTMLElement>('[data-si]').forEach((si) => {
+    const scope = si.closest<HTMLElement>('[data-inspect]') ?? si;
+    const tabs = [...si.querySelectorAll<HTMLButtonElement>('[data-si-tab]')];
+    const bodies = [...si.querySelectorAll<HTMLElement>('[data-si-body]')];
+    const panel = si.querySelector<HTMLElement>('[role="tabpanel"]')!;
+    const nodes = [...scope.querySelectorAll<SVGElement | HTMLElement>('[data-stage]')].filter((n) => !si.contains(n));
+
+    const select = (id: string, focusTab = false) => {
+      tabs.forEach((t) => {
+        const on = t.dataset.siTab === id;
+        t.setAttribute('aria-selected', String(on));
+        t.tabIndex = on ? 0 : -1;
+        if (on) {
+          panel.setAttribute('aria-labelledby', t.id);
+          if (focusTab) t.focus();
+        }
+      });
+      bodies.forEach((b) => (b.hidden = b.dataset.siBody !== id));
+      nodes.forEach((n) => n.classList.toggle('si-on', n.dataset.stage === id));
+    };
+
+    tabs.forEach((t, i) => {
+      t.addEventListener('click', () => select(t.dataset.siTab!));
+      t.addEventListener('keydown', (e) => {
+        const k = e.key;
+        const j = k === 'ArrowRight' ? i + 1 : k === 'ArrowLeft' ? i - 1 : k === 'Home' ? 0 : k === 'End' ? tabs.length - 1 : -2;
+        if (j === -2) return;
+        e.preventDefault();
+        select(tabs[(j + tabs.length) % tabs.length].dataset.siTab!, true);
+      });
+    });
+    nodes.forEach((n) => {
+      const go = () => select(n.dataset.stage!);
+      n.addEventListener('click', go);
+      n.addEventListener('focus', go);
+      n.addEventListener('keydown', (e) => {
+        if ((e as KeyboardEvent).key === 'Enter' || (e as KeyboardEvent).key === ' ') { e.preventDefault(); go(); }
+      });
+    });
+    const first = tabs.find((t) => t.getAttribute('aria-selected') === 'true');
+    if (first) select(first.dataset.siTab!);
+  });
+</script>
+
+<style>
+  .si { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 20px; }
+  .si-rail { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--line); }
+  .si-tab {
+    all: unset; box-sizing: border-box; cursor: pointer; padding: 10px 12px; font: 600 12px var(--font-mono); letter-spacing: 0.02em;
+    color: var(--muted); border-left: 1px solid var(--line); border-bottom: 2px solid transparent; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: color var(--fast) linear, border-color var(--fast) linear, background var(--fast) linear;
+  }
+  .si-tab:first-child { border-left: 0; }
+  .si-tab:hover { color: var(--text); background: var(--surface-2); }
+  .si-tab:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+  .si-tab[aria-selected='true'] { color: var(--accent); border-bottom-color: var(--accent); background: var(--surface-2); }
+  .si-n { display: block; font-weight: 500; color: var(--faint); font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+  .si-tab[aria-selected='true'] .si-n { color: var(--accent); }
+
+  .si-panel { padding: 4px 0 0; }
+  .si-body { margin: 0; }
+  .si-body > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .si-body > div:last-child { border-bottom: 0; }
+  .si-body dt { font: 500 12px var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint); padding-top: 2px; }
+  .si-body dd { margin: 0; font-size: 15px; color: var(--text); min-width: 0; }
+  .si-what dd { color: var(--muted); }
+  .si-body code { all: unset; display: block; font: 13px/1.6 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .si-cmd { color: var(--text); }
+  .si-out { color: var(--muted); }
+  .si-ctx { color: var(--muted); }
+  .si-story { color: var(--text); font-variant-numeric: tabular-nums; }
+  .si-role { font: 600 12.5px var(--font-mono); padding: 1px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius); }
+  .si-role.r-lead { color: var(--lead); border-color: color-mix(in srgb, var(--lead) 50%, var(--line)); }
+  .si-role.r-coder { color: var(--coder); }
+  .si-role.r-reviewer { color: var(--reviewer); }
+
+  @media (max-width: 860px) {
+    .si-rail { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .si-tab:nth-child(4) { border-left: 0; }
+    .si-tab:nth-child(n + 4) { border-top: 1px solid var(--line); }
+  }
+  @media (max-width: 560px) {
+    .si-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .si-tab:nth-child(4) { border-left: 1px solid var(--line); }
+    .si-tab:nth-child(odd) { border-left: 0; }
+    .si-tab:nth-child(n + 3) { border-top: 1px solid var(--line); }
+    .si-body > div { grid-template-columns: 1fr; gap: 4px; }
+  }
+</style>

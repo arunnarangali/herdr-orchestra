@@ -2,6 +2,22 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.12.0] - 2026-11-26
+
+The website's run diagrams are now interactive. Nothing in `orch` changed.
+
+Example: on the home page, pick the `orch resume` tab in the Herdr window and press step. The computer goes off for 1h49m in the middle of M2; the timers stop at 0:18:04, the coders' worktrees keep their files, and `orch resume` names the panes again and re-sends the work. Without that, M2 would read 2:07:04 against a 40-minute budget.
+
+### Added
+- **Herdr window, two modes.** `orch autopilot` plays one run: the lead plans and dispatches M1 and M2, two coders build in their own worktrees, the reviewer reads each diff without editing, and the event manager merges. `orch resume` plays a restart mid-milestone. Play/Pause, Step and Replay; nothing loops.
+- **Stage inspector** under the run loop and the event loop diagram: `PLAN_READY`, `DISPATCHED`, `CODING`, `REVIEW_AUDIT`, `GATE_HOLD`, `MERGED`. Click or tab to a state, or to a node in the diagram, to see the command (`orch plan show`, `orch dispatch`, `orch answer`, `--defer`, `orch approve`), the role it wakes, the exact text that role gets, and the line it adds to `orch story`.
+- **Role mapper** on the Agents page: pick the lead, the coders and the reviewer from the kinds in `agents.default.toml`, and copy the matching `agents.toml` roles and `plan.md` team lines (models from `models.default.toml`).
+- **Timeline scrubber** in "How it works": drag it or use ← → to step through the run log. The pane states, the active and not-counted time, and the milestones on the branch diagram follow it. The example run now has a laptop sleep in the middle (14:22 to 16:11), logged as orch logs it.
+
+### Changed
+- Site motion: state changes take 150 ms or less, no blinking cursors or endlessly moving lines.
+- `astro check` passes with no errors (the run loop diagram had 23 type errors).
+
 ## [6.11.0] - 2026-11-25
 
 You can now watch a run as a picture: in your browser, in a Herdr pane, and in Herdr's own sidebar. Every view shows each milestone with a one-line description of what it is for, not only its id.
@@ -21,7 +37,6 @@ Example: run `orch view` and your browser shows the milestones as a graph. `M6 D
 
 ### Not yet tried
 - The sidebar names, the plugin popup and the Enter-to-jump key with a real Herdr. They follow Herdr 0.9.5's documented commands (`pane report-metadata`, `workspace report-metadata`, `plugin link`, `agent focus`) and were tested with the simulated Herdr. The browser page was checked in Chromium (desktop and phone size).
-
 
 ## [6.10.0] - 2026-11-25
 
