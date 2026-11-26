@@ -4,12 +4,12 @@ All notable changes. Versions follow [semantic versioning](https://semver.org).
 
 ## [6.20.0] - 2026-11-26
 
-The tests run in about 3 minutes instead of about 20. Nothing in orch changed, and no check was removed, skipped or made easier.
+The tests run in about 5 minutes instead of about 21. Nothing in orch changed, and no check was removed, skipped or made easier.
 
-Example: `bash tests/parallel.sh` runs the 66 sections of `tests/run.sh` side by side, about 8 at a time, each in its own temp folder with its own fake herdr and fake agents. It finished in 188s with 764 checks passed, the same 764 checks by name as `bash tests/run.sh` gives one after another (1265s on the same machine).
+Example: `bash tests/parallel.sh` runs the 66 sections of `tests/run.sh` side by side, about 8 at a time, each in its own temp folder with its own fake herdr and fake agents. It finished in 300s with 764 checks passed, the same 764 checks by name as `bash tests/run.sh` gives one after another (1265s on the same machine).
 
 ### Changed
-- **`tests/parallel.sh`** runs the sections of `tests/run.sh` side by side. Every section runs as written, with the same waits and timeouts, so a timing bug that shows only with slow agents is still caught. Sections that use what the section before them left behind run together in one group (the `JOINS` list). The run fails if a check fails, if a group stops early, or if any section did not print its title. `-j N` sets how many groups run at once, `--list` shows the groups, and `bash tests/parallel.sh 45` runs only the group of section 45, for quick runs while you work.
+- **`tests/parallel.sh`** runs the sections of `tests/run.sh` side by side. Every section runs as written, with the same waits and timeouts, so a timing bug that shows only with slow agents is still caught. Sections that use what the section before them left behind run together in one group (the `JOINS` list). Three sections whose checks compare how long things take (7, 45, 58) run after the others, one at a time, on a quiet machine as in `tests/run.sh` (the `SOLO` list), so the load of the others cannot fail them. The run fails if a check fails, if a group stops early, or if any section did not print its title. `-j N` sets how many groups run at once, `--list` shows the groups, and `bash tests/parallel.sh 45` runs only the group of section 45, for quick runs while you work.
 - **CI and the Release workflow** run `tests/parallel.sh`. `bash tests/run.sh` still runs everything one after another, as before.
 
 ### Fixed (tests only)
