@@ -2170,6 +2170,19 @@ m=tomllib.load(open(\"$ROOT/view/herdr-plugin/herdr-plugin.toml\",\"rb\"))
 sys.exit(not (m[\"id\"]==\"herdr-orchestra.board\" and m[\"min_herdr_version\"]==\"0.7.4\" and m[\"panes\"][0][\"placement\"]==\"popup\" and m[\"actions\"][0][\"id\"]==\"open\"))"'
 "$ORCH" view plugin unlink >/dev/null 2>&1
 check "…and unlinks it" 'grep -q "^plugin unlink herdr-orchestra.board$" "$FH/team.log"'
+# the popup must start in the repo of the pane you were in (herdr starts it in the plugin's own folder otherwise)
+OPEN="$ROOT/view/herdr-plugin/open.sh"; mkdir -p "$APP/sub" "$WORK/elsewhere"
+popen(){ : > "$FH/team.log"; HERDR_BIN_PATH="$HERDR" HERDR_PLUGIN_CONTEXT_JSON="$1" sh "$OPEN" >/dev/null 2>&1; grep "^plugin pane open" "$FH/team.log"; }
+check "board key: the popup opens in the focused pane's folder (herdr's own context field names)" '[[ "$(popen "{\"focused_pane_cwd\":\"$APP\",\"workspace_cwd\":\"$WORK/elsewhere\"}")" == *"--placement popup --cwd $APP" ]]'
+check "…a pane in a folder inside the repo keeps that folder" '[[ "$(popen "{\"focused_pane_cwd\":\"$APP/sub\"}")" == *"--cwd $APP/sub" ]]'
+check "…a pane outside any repo falls back to the space's folder" '[[ "$(popen "{\"focused_pane_cwd\":\"$WORK/elsewhere\",\"workspace_cwd\":\"$APP\"}")" == *"--cwd $APP" ]]'
+check "…a pane outside any repo and a space with a worktree: the worktree's folder" '[[ "$(popen "{\"focused_pane_cwd\":\"$WORK/elsewhere\",\"worktree\":{\"path\":\"$APP\"}}")" == *"--cwd $APP" ]]'
+git -C "$APP" worktree add -q --detach "$WORK/wt-board" 2>/dev/null
+check "…a coder's worktree pane finds the run in the main repo and keeps the worktree folder" '[[ "$(popen "{\"focused_pane_cwd\":\"$WORK/wt-board\",\"workspace_cwd\":\"$WORK/elsewhere\"}")" == *"--cwd $WORK/wt-board" ]]'
+git -C "$APP" worktree remove --force "$WORK/wt-board" 2>/dev/null
+check "…the repo with the run is chosen over another repo (the pane's folder is not the run's repo)" '[[ "$(popen "{\"focused_pane_cwd\":\"$ROOT\",\"workspace_cwd\":\"$APP\"}")" == *"--cwd $APP" ]]'
+check "…no folder in the context: it still opens, without --cwd" 'o=$(popen "{}"); [[ "$o" == *"--placement popup" && "$o" != *"--cwd"* ]]'
+check "the popup program names the folder it is in when that is not a repo" 'o=$(cd "$WORK/elsewhere" && PATH="$ROOT/bin:$PATH" sh "$ROOT/view/herdr-plugin/board.sh" 2>&1 | head -1); [[ "$o" == "This folder ($WORK/elsewhere) is not a git repo"* ]]'
 python3 - <<'PY'
 import json; p=".orchestrate/state.json"; s=json.load(open(p)); s["orch_mode"]="subagent"; json.dump(s,open(p,"w"))
 PY

@@ -2,6 +2,15 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.22.0] - 2026-11-26
+
+The board popup (`prefix+a`) now opens in the repo of the pane you were in. Before, it could answer "This folder is not a git repo with an orch run" even while a run was going.
+
+Example: you are in the `rupee-flow` space with a run going and press `ctrl+b`, then `a`. The popup used to start in a folder that was not your repo. Now it starts in your pane's folder and shows the run.
+
+### Fixed
+- **The popup started in the wrong folder.** Herdr starts a popup in the plugin's own folder unless it is told otherwise. orch looked for the pane's folder under field names Herdr does not use, found none, and told Herdr nothing. It now reads Herdr's real fields: the focused pane's folder, else the space's folder, else its worktree. It prefers the folder whose repo has an orch run (also from a coder's worktree pane), and always passes the folder to Herdr with `--cwd`.
+- When the popup still is not in a repo, it now says which folder it is in.
 ## [6.20.0] - 2026-11-26
 
 The tests run in about 5 minutes instead of about 21. Nothing in orch changed, and no check was removed, skipped or made easier.
