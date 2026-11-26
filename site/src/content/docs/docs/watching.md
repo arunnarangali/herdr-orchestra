@@ -57,6 +57,18 @@ orch view plugin link          # undo: orch view plugin unlink
 orch view herdr-config         # prints the key binding (and the sidebar rows below) for herdr's config
 ```
 
+To press one key for the popup, add this to Herdr's `config.toml` and restart Herdr:
+
+```toml
+[[keys.command]]
+key = "prefix+o"
+type = "plugin_action"
+command = "herdr-orchestra.board.open"
+description = "orch run board"
+```
+
+`prefix+o` means press your Herdr prefix (default `ctrl+b`), let go, then press `o`. It is not used by Herdr's default keys. If you already use it, Herdr keeps your existing key and ignores this one, so pick another letter; `prefix+?` lists every key in use. The `orch board` command in a pane keeps working either way.
+
 ## Agent names in Herdr's sidebar
 
 During a run the event manager tells Herdr what each agent is doing, so Herdr's normal sidebar reads like this:

@@ -7274,8 +7274,12 @@ def cmd_view(args):
             r = subprocess.run([HERDR, "plugin", "link", str(d)], text=True, capture_output=True)
             print((r.stdout + r.stderr).strip() or f"linked {d}")
             if r.returncode == 0:
-                print("Bind a key to open the board as a popup: `orch view herdr-config` prints the lines "
-                      "(the [[keys.command]] part). Undo with `orch view plugin unlink`.")
+                print("To open the board with a key, add this to herdr's config.toml and restart herdr "
+                      "(`orch view herdr-config` prints it too). prefix+o is free in herdr's defaults; "
+                      "`prefix+?` shows every key in use. If the key is taken, herdr keeps its own and ignores this one.\n\n"
+                      "[[keys.command]]\nkey = \"prefix+o\"\ntype = \"plugin_action\"\n"
+                      "command = \"herdr-orchestra.board.open\"\ndescription = \"orch run board\"\n\n"
+                      "Undo with `orch view plugin unlink`.")
             sys.exit(r.returncode)
         if act == "unlink":
             r = subprocess.run([HERDR, "plugin", "unlink", VIEW_PLUGIN_ID], text=True, capture_output=True)
