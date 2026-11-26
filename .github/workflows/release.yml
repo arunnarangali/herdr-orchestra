@@ -46,7 +46,7 @@ jobs:
         run: |
           git config --global user.email ci@example.com
           git config --global user.name ci
-          bash tests/run.sh
+          bash tests/parallel.sh   # the tests of tests/run.sh, sections side by side
       - name: Tag and publish the GitHub Release
         if: steps.v.outputs.skip == 'false'
         env:

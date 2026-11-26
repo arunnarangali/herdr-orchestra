@@ -27,6 +27,9 @@ pass=0 fail=0
 ok()   { echo "  ok   $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $*"; fail=$((fail+1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+# qgrep: grep that reads all of its input. `cmd | grep -q x` stops reading at the first match, so a busy machine can
+# make cmd fail with "Broken pipe" while it is still writing, and pipefail then fails the check for nothing
+qgrep(){ grep "$@"; local r=$?; cat >/dev/null; return $r; }
 
 newrepo() {  # newrepo <name> ; sets APP and FH
   APP="$WORK/$1/app"; export FH="$WORK/$1/fh"; mkdir -p "$APP" "$FH"
@@ -36,6 +39,18 @@ newrepo() {  # newrepo <name> ; sets APP and FH
   echo "$APP" > "$FH/reviewer.dir"
 }
 status_of(){ python3 -c "import json;print(json.load(open('$APP/.orchestrate/state.json'))['tasks']['$1']['status'])"; }
+
+# shared by several sections (kept up here so tests/parallel.sh can run any section on its own)
+P1='# Plan: t\nBranch: feature/x\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n'
+MPLAN='# Plan: t\nBranch: feature/md\nCheck command: test ! -f broken.txt\nIsolation: worktree\nMax parallel: 2\nLEADLINE\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna@high)\nReviewer: none\n\n## [x] M1: Model\nDepends on: none\nTier: medium\nNeeds: coding\nModel why: one module, a pattern to copy.\nOpen questions:\n- none\n\n## [x] M4: Totals\nDepends on: none\nTier: small\nModel why: one small function.\nOpen questions:\n- none\n'
+FAKEBIN="$WORK/fakebin"; IH="$WORK/home"; mkdir -p "$FAKEBIN" "$IH"
+for b in claude codex hermes agy; do printf '#!/bin/sh\n' > "$FAKEBIN/$b"; chmod +x "$FAKEBIN/$b"; done
+# stpy '<python>': change the run's state.json directly (st = the state, now = the time)
+stpy(){ python3 -c "
+import json, time; p = '$APP/.orchestrate/state.json'; st = json.load(open(p)); now = int(time.time())
+$1
+json.dump(st, open(p, 'w'))"; }
+PRS='# Plan: t\nBranch: feature/rs\nCheck command: true\nIsolation: ISO\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M9: Stalls\nDepends on: none\nPrefer: codex\nOpen questions:\n- none\n\n## [x] M5: e\nDepends on: none\nPrefer: claude\nOpen questions:\n- none\n'
 
 PLAN5='# Plan: Categories
 Branch: feature/cat
@@ -86,10 +101,10 @@ check "M3 saw both dependencies" 'grep -q deps-ok c.txt'
 check "review blocker was fixed" 'grep -q validated b.txt'
 check "conflict resolved, both lines kept" 'grep -q "M1 line" shared.txt && grep -q "M2 line" shared.txt'
 check "one commit per merged task" '[ "$(git log --format=%B | grep -c "^Milestone: M")" -eq 3 ]'
-check "commit subject is the coder's COMMIT line" 'git log --format=%s | grep -qx "feat(api): add the categories endpoint"'
-check "no milestone-named commits on the branch" '! git log --format=%s | grep -qE "^(orch|wip)[( ]"'
+check "commit subject is the coder's COMMIT line" 'git log --format=%s | qgrep -qx "feat(api): add the categories endpoint"'
+check "no milestone-named commits on the branch" '! git log --format=%s | qgrep -qE "^(orch|wip)[( ]"'
 check "the run made one branch, no milestone branches" '[ "$(git branch --format="%(refname:short)" | sort | tr "\n" " ")" = "feature/cat main " ]'
-check "parked M4 keeps its work in a hidden ref only" '! git branch -a | grep -q M4'
+check "parked M4 keeps its work in a hidden ref only" '! git branch -a | qgrep -q M4'
 check "a conflict fix on an approved milestone is reviewed again, with the resolution" '[ -s .orchestrate/review/M2/resolution.patch ] && grep -q "MERGE-CONFLICT RESOLUTION" .orchestrate/review/M2/review-task-3.md'
 
 out=$("$ORCH" finish --no-push 2>&1); code=$?
@@ -114,7 +129,7 @@ out=$("$ORCH" finish 2>&1); code=$?
 check "finish pushes the feature branch" '[ $code -eq 0 ] && git --git-dir="$WORK/remote.git" rev-parse -q --verify feature/cat >/dev/null'
 check "finish removes hidden refs and worktrees" '[ -z "$(git for-each-ref refs/orch)" ] && [ ! -d "$APP/../app-wt/claude-1" ]'
 check "finish removes a coder folder that holds only an agent's settings file" 'grep -q "REMOVED .*app-wt/claude-1 (only agent files: .claude/)" <<<"$out"'
-check "finish removes the folder of a coder no longer in the plan" '[ ! -d "$APP/../app-wt/gone-1" ] && ! git worktree list | grep -q gone-1'
+check "finish removes the folder of a coder no longer in the plan" '[ ! -d "$APP/../app-wt/gone-1" ] && ! git worktree list | qgrep -q gone-1'
 check "finish removes the empty app-wt folder" '[ ! -e "$APP/../app-wt" ] && grep -q "REMOVED .*/app-wt$" <<<"$out" && [ "$(git worktree list | wc -l)" -eq 1 ]'
 check "finish says how to open the PR" 'grep -q "OPEN A PR from feature/cat into main" <<<"$out"'
 check "finish with no lead and no checklist says the manual tests are not written, and wakes nobody" 'grep -q "^MANUAL TESTS: not written yet" <<<"$out" && ! grep -q "LEAD" <<<"$out"'
@@ -130,8 +145,8 @@ printf '# Plan: t\nBranch: orch/rl\nCheck command: true\nIsolation: worktree\nMa
 touch "$FH/ratelimit-codex-1-M1"
 timeout 120 "$ORCH" autopilot > "$WORK/rl.log" 2>&1; code=$?
 check "finished (exit 0)" '[ $code -eq 0 ]'
-check "codex benched" '"$ORCH" status | grep -q "codex-1 .*cooldown"'
-check "claude finished it" '"$ORCH" status | grep -q "M1 .*merged .*claude-1"'
+check "codex benched" '"$ORCH" status | qgrep -q "codex-1 .*cooldown"'
+check "claude finished it" '"$ORCH" status | qgrep -q "M1 .*merged .*claude-1"'
 check "partial work kept" '[ -f partial-M1.txt ]'
 
 echo "4. shared mode"
@@ -172,11 +187,11 @@ check "dependency cycle rejected" '[ $code -eq 2 ] && grep -q cycle <<<"$out"'
 out=$("$ORCH" sync 2>&1)
 check "the number of milestones alone is not a warning" '! grep -q "enabled milestones" <<<"$out"'
 check "a split without a reason warns, per milestone" '[ "$(grep -c "has no .Why separate:" <<<"$out")" -eq 5 ]'
-check "ORCH_MAX_TASKS still warns when you set it" 'ORCH_MAX_TASKS=4 "$ORCH" sync | grep -q "5 enabled milestones"'
+check "ORCH_MAX_TASKS still warns when you set it" 'ORCH_MAX_TASKS=4 "$ORCH" sync | qgrep -q "5 enabled milestones"'
 { printf '# Plan: t\nBranch: orch/v\nCheck command: true\nWorkers: claude-1 (claude)\nReviewer: none\n\n## Feature breakdown\n- api and ui\n'; for i in 1 2; do printf '\n## [x] M%s: t\nDepends on: none\nWhy separate: built in parallel by another coder\nOpen questions:\n- none\n' $i; done; } > .orchestrate/plan.md
-check "milestones that say why they are separate do not warn" '! "$ORCH" sync 2>&1 | grep -q "Why separate"'
+check "milestones that say why they are separate do not warn" '! "$ORCH" sync 2>&1 | qgrep -q "Why separate"'
 printf '# Plan: t\nBranch: orch/v\nCheck command: true\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M1: t\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
-check "a one-milestone plan needs no reason" '! "$ORCH" sync 2>&1 | grep -q "Why separate"'
+check "a one-milestone plan needs no reason" '! "$ORCH" sync 2>&1 | qgrep -q "Why separate"'
 cat > .orchestrate/plan.md <<'PLAN'
 # Plan: Insights
 Branch: orch/ins
@@ -221,7 +236,7 @@ check "backend and frontend in parallel: no idle-coder warning" '! grep -q "ever
 sed -i 's/^Workers: .*/Workers: claude-1 (claude)/' .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1)
 check "1 coder with parallel milestones suggests shared" 'grep -q "1 coder: independent milestones" <<<"$out"'
-check "orch version prints" '"$ORCH" version | grep -q "herdr-orchestra"'
+check "orch version prints" '"$ORCH" version | qgrep -q "herdr-orchestra"'
 
 echo "8. any agent can lead: playbooks, Lead header, agent registry"
 out=$("$ORCH" lead plan)
@@ -239,16 +254,16 @@ src=[l for l in open(\"$ROOT/playbooks/plan.md\").read().splitlines() if not re.
 got=collections.Counter(sys.argv[1].splitlines()+sys.argv[2].splitlines())
 sys.exit(any(got[l]<n for l,n in collections.Counter(src).items() if l.strip()))" "$st" "$fu"'
 check "lead plan refuses an unknown part" '! "$ORCH" lead plan fast >/dev/null 2>&1'
-check "lead run --section prints one part of the run playbook" '"$ORCH" lead run --section FAILED | grep -q "^| \`FAILED Mn\`: checks" && "$ORCH" lead run --section ALL_DONE | grep -q "^## 3. ALL_DONE" && "$ORCH" lead run --section rules | grep -q "^## Hard rules"'
+check "lead run --section prints one part of the run playbook" '"$ORCH" lead run --section FAILED | qgrep -q "^| \`FAILED Mn\`: checks" && "$ORCH" lead run --section ALL_DONE | qgrep -q "^## 3. ALL_DONE" && "$ORCH" lead run --section rules | qgrep -q "^## Hard rules"'
 check "a wake-up runs only orch events, not the whole run playbook again" 'for f in "$ROOT/skills/orch-run/SKILL.md" "$ROOT/claude-commands/orch-run.md" "$ROOT/opencode-commands/orch-run.md"; do grep -q "run only \`orch events\`" "$f" && grep -q "do not run \`orch lead run\` again" "$f" || exit 1; done'
 check "the plan playbook spells out the herdr commands instead of loading the herdr skill first" 'grep -q "herdr agent rename <pane id> <name>" "$ROOT/playbooks/plan.md" && grep -q "Load the \`herdr\` skill (or run \`herdr --skill\`) only if one of these fails" "$ROOT/playbooks/plan.md" && ! grep -q "skill for exact CLI syntax if you have it" "$ROOT/playbooks/plan.md"'
-check "lead whoami names the pane" 'env -u HERDR_PANE_ID "$ORCH" lead whoami | grep -q "herdr agent rename w1:p1 lead"'
-check "lead check passes on HERDR_ENV=1" 'HERDR_ENV=1 "$ORCH" lead check | grep -q "^OK inside a Herdr pane"'
+check "lead whoami names the pane" 'env -u HERDR_PANE_ID "$ORCH" lead whoami | qgrep -q "herdr agent rename w1:p1 lead"'
+check "lead check passes on HERDR_ENV=1" 'HERDR_ENV=1 "$ORCH" lead check | qgrep -q "^OK inside a Herdr pane"'
 out=$(env -u HERDR_ENV "$ORCH" lead check 2>&1); code=$?
 check "lead check passes when herdr answers but HERDR_ENV is unset (Hermes gateway)" '[ $code -eq 0 ] && grep -q "^OK herdr is reachable" <<<"$out" && grep -q "client_env_passthrough" <<<"$out"'
 out=$(env -u HERDR_ENV HERDR=/nonexistent/herdr "$ORCH" lead check 2>&1); code=$?
 check "lead check fails clearly when herdr is unreachable" '[ $code -ne 0 ] && grep -q "Herdr not detected" <<<"$out" && grep -q "Start this agent from a Herdr pane" <<<"$out"'
-check "lead whoami warns when HERDR_PANE_ID is unset" 'env -u HERDR_PANE_ID "$ORCH" lead whoami | grep -q "FOCUSED pane"'
+check "lead whoami warns when HERDR_PANE_ID is unset" 'env -u HERDR_PANE_ID "$ORCH" lead whoami | qgrep -q "FOCUSED pane"'
 check "plan playbook preflight uses lead check, not \$HERDR_ENV" 'grep -q "orch lead check" "$ROOT/playbooks/plan.md" && ! grep -q "echo \$HERDR_ENV" "$ROOT/playbooks/plan.md"'
 newrepo ld
 printf '# Plan: t\nBranch: orch/ld\nCheck command: true\nLead: lead (claude)\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M1: a\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
@@ -276,7 +291,7 @@ check "unknown kind warns, not an error" 'grep -q "WARN: Workers kind .oddagent.
 timeout 120 "$ORCH" autopilot > "$WORK/nd.log" 2>&1; code=$?
 check "detect=false worker finished via its done file" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ]'
 check "never parked as GONE" '! grep -qi "gone" "$WORK/nd.log" && grep -q "can.t watch odd-1" "$WORK/nd.log"'
-check "status shows detect:off" '"$ORCH" status | grep -q "odd-1 .*detect:off"'
+check "status shows detect:off" '"$ORCH" status | qgrep -q "odd-1 .*detect:off"'
 
 echo "10. @pane: workers get prompts typed into their pane"
 newrepo pn; echo "$APP/../app-wt/hermes-1" > "$FH/hermes-1.dir"; echo hermes-1 > "$FH/pane-w9:p2.name"
@@ -286,15 +301,15 @@ check "pane worker finished" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ]'
 check "prompt went through pane send-text + enter" 'grep -q "pane w9:p2 (hermes-1) <- Read .orch-task/M6/task.md" "$FH/pane-prompts.log" && grep -q "pane w9:p2 keys enter" "$FH/pane-prompts.log"'
 check "agent prompt was not used for it" '! grep -q "^hermes-1 <-" "$FH/prompts.log" 2>/dev/null'
 sed -i 's/@pane:w9:p2/@pane:w9:p7/' .orchestrate/plan.md; "$ORCH" sync >/dev/null
-check "stale pane id reported by start" '"$ORCH" start | grep -q "STALE pane w9:p7"'
+check "stale pane id reported by start" '"$ORCH" start | qgrep -q "STALE pane w9:p7"'
 
 echo "12. recovery: an error in one task never crashes or hangs the run"
 newrepo srl; echo "$APP" > "$FH/claude-1.dir"; echo "$APP" > "$FH/codex-1.dir"
 printf '# Plan: t\nBranch: feature/srl\nCheck command: true\nIsolation: shared\nMax parallel: 1\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M1: Model\nDepends on: none\nPrefer: codex\nOpen questions:\n- none\n' > .orchestrate/plan.md
 touch "$FH/ratelimit-codex-1-M1"
 timeout 120 "$ORCH" autopilot > "$WORK/srl.log" 2>&1; code=$?
-check "shared mode: rate-limited task moves to the other coder" '[ $code -eq 0 ] && "$ORCH" status | grep -q "M1 .*merged .*claude-1"'
-check "shared mode: partial work came along" 'git show --stat HEAD | grep -q partial-M1.txt && ! grep -q Traceback "$WORK/srl.log"'
+check "shared mode: rate-limited task moves to the other coder" '[ $code -eq 0 ] && "$ORCH" status | qgrep -q "M1 .*merged .*claude-1"'
+check "shared mode: partial work came along" 'git show --stat HEAD | qgrep -q partial-M1.txt && ! grep -q Traceback "$WORK/srl.log"'
 
 newrepo rg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; touch "$FH/slow-review"
 printf '# Plan: t\nBranch: feature/rg\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: reviewer (agy)\n\n## [x] M5: E\nDepends on: none\nReview: yes\nOpen questions:\n- none\n' > .orchestrate/plan.md
@@ -321,14 +336,14 @@ printf '# Plan: t\nBranch: feature/orp\nCheck command: true\nIsolation: worktree
 out=$("$ORCH" poll 2 2>&1)
 check "poll reports a task whose prompt never went out" 'grep -q "^ORPHAN M5" <<<"$out"'
 "$ORCH" set M5 pending >/dev/null
-check "set pending frees the coder" '"$ORCH" status | grep -q "claude-1 .*task=- "'
+check "set pending frees the coder" '"$ORCH" status | qgrep -q "claude-1 .*task=- "'
 "$ORCH" prepare M5 claude-1 >/dev/null
 python3 - .orchestrate/plan.md <<'PY'
 import re, sys; p = sys.argv[1]; s = open(p).read()
 open(p, "w").write(re.sub(r"## \[x\] M5: E\n(.*\n)*?(?=## )", "", s))
 PY
 out=$("$ORCH" sync 2>&1)
-check "sync frees a coder whose milestone left the plan" 'grep -q "claude-1 was holding M5" <<<"$out" && "$ORCH" status | grep -q "claude-1 .*task=- "'
+check "sync frees a coder whose milestone left the plan" 'grep -q "claude-1 was holding M5" <<<"$out" && "$ORCH" status | qgrep -q "claude-1 .*task=- "'
 out=$("$ORCH" send M99 task.md 2>&1); code=$?
 check "unknown task id is a clean error" '[ $code -eq 2 ] && grep -q "unknown task .M99" <<<"$out" && ! grep -q Traceback <<<"$out"'
 out=$("$ORCH" cooldown reviewer 5 2>&1); code=$?
@@ -356,10 +371,10 @@ echo "13. git flow: feature branch, plan header rules, legacy runs"
 newrepo sg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; echo "$APP/../app-wt/codex-1" > "$FH/codex-1.dir"
 printf '# Plan: Two things\nBranch: feature/sg\nCommits: single\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## Global instructions\nBranch: never-use-this\nKeep it small.\n\n## [x] M5: E\nDepends on: none\nOpen questions:\n- none\n\n## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1)
-check "Key: value lines in Global instructions don't override the header" 'grep -q "^OK" <<<"$out" && "$ORCH" status | grep -q "^branch=feature/sg "'
+check "Key: value lines in Global instructions don't override the header" 'grep -q "^OK" <<<"$out" && "$ORCH" status | qgrep -q "^branch=feature/sg "'
 timeout 60 "$ORCH" autopilot > "$WORK/sg.log" 2>&1; code=$?
 out=$("$ORCH" finish --no-push 2>&1); fcode=$?
-check "Commits: single squashes the run into one commit" '[ $code -eq 0 ] && [ $fcode -eq 0 ] && [ "$(git rev-list --count main..feature/sg)" -eq 1 ] && git log -1 --format=%B | grep -q "Milestones: M5, M6"'
+check "Commits: single squashes the run into one commit" '[ $code -eq 0 ] && [ $fcode -eq 0 ] && [ "$(git rev-list --count main..feature/sg)" -eq 1 ] && git log -1 --format=%B | qgrep -q "Milestones: M5, M6"'
 check "finish --no-push does not push" 'grep -q "NOT PUSHED" <<<"$out"'
 
 newrepo lg; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
@@ -375,22 +390,21 @@ check "finish deletes the old milestone branch" '! git rev-parse -q --verify orc
 newrepo ob; git switch -qc feature/ob
 printf '# Plan: t\nBranch: feature/ob\nCheck command: true\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 "$ORCH" sync >/dev/null; "$ORCH" start >/dev/null 2>&1
-check "starting on the branch itself still records the real base" '"$ORCH" status | grep -q "base=main "'
+check "starting on the branch itself still records the real base" '"$ORCH" status | qgrep -q "base=main "'
 
 echo "14. one driver per run"
-P1='# Plan: t\nBranch: feature/x\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n'
 newrepo ls; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; touch "$FH/slow-review"
 printf '# Plan: t\nBranch: feature/ls\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: reviewer (agy)\n\n## [x] M5: E\nDepends on: none\nReview: yes\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 120 "$ORCH" autopilot > "$WORK/ls.log" 2>&1 & first=$!
-for _ in $(seq 100); do "$ORCH" status 2>/dev/null | grep -q "^driven by" && break; sleep 0.2; done
+for _ in $(seq 100); do "$ORCH" status 2>/dev/null | qgrep -q "^driven by" && break; sleep 0.2; done
 out=$(timeout 30 "$ORCH" autopilot 2>&1); code=$?
 check "a second autopilot is refused" '[ $code -eq 2 ] && grep -q "already driven by orch autopilot (pid" <<<"$out"'
 out=$("$ORCH" set M5 paused 2>&1); code=$?
 check "changing the run by hand is refused while autopilot drives" '[ $code -eq 2 ] && grep -q "driven by" <<<"$out"'
-check "status still works and shows the driver" '"$ORCH" status | grep -q "^driven by orch autopilot (pid"'
+check "status still works and shows the driver" '"$ORCH" status | qgrep -q "^driven by orch autopilot (pid"'
 wait $first; code=$?
 check "the first autopilot was not disturbed" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && ! grep -q "orch error" "$WORK/ls.log"'
-check "the lease is free again afterwards" '! "$ORCH" status | grep -q "^driven by" && "$ORCH" set M5 merged --force >/dev/null'
+check "the lease is free again afterwards" '! "$ORCH" status | qgrep -q "^driven by" && "$ORCH" set M5 merged --force >/dev/null'
 
 newrepo lk; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"
 { printf '%b' "$P1"; printf '## [x] M8: Slow\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
@@ -459,7 +473,7 @@ import json; c=json.load(open(\"$APP/../app-wt/claude-1/.orch-task/M17/task.json
 assert [a[\"id\"] for a in c[\"acceptance_criteria\"]] == [\"AC1\", \"AC2\"], c
 assert c[\"depends_on\"][0][\"task\"] == \"M14\" and len(c[\"depends_on\"][0][\"commit\"]) == 40, c
 assert \"status\" in c[\"result_format\"]"'
-check "the commit subject comes from result.json" 'git log --format=%s | grep -qx "feat: p"'
+check "the commit subject comes from result.json" 'git log --format=%s | qgrep -qx "feat: p"'
 
 newrepo nr; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; touch "$FH/noresult"
 { printf '%b' "$P1"; printf '## [x] M6: G\nDepends on: none\nOpen questions:\n- none\n'; } > .orchestrate/plan.md
@@ -494,7 +508,7 @@ newrepo rs; echo "$APP" > "$FH/claude-1.dir"
 printf '# Plan: t\nBranch: feature/rs\nCheck command: true\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M16: Remove a file\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 60 "$ORCH" autopilot > "$WORK/rs.log" 2>&1; code=$?
 "$ORCH" approve M16 >/dev/null 2>&1; timeout 60 "$ORCH" autopilot > "$WORK/rs2.log" 2>&1; code2=$?
-check "shared mode: held, then lands after approve" '[ $code -eq 3 ] && grep -q "M16 is HELD" "$WORK/rs.log" && [ $code2 -eq 0 ] && [ "$(status_of M16)" = merged ] && git show --stat HEAD | grep -q shared.txt'
+check "shared mode: held, then lands after approve" '[ $code -eq 3 ] && grep -q "M16 is HELD" "$WORK/rs.log" && [ $code2 -eq 0 ] && [ "$(status_of M16)" = merged ] && git show --stat HEAD | qgrep -q shared.txt'
 
 echo "19. state: transitions, migration, events, report, budget"
 out=$("$ORCH" set M16 coding 2>&1); code=$?
@@ -572,16 +586,15 @@ check "orch models lists the three tiers" 'grep -qE "^opus +high" <<<"$out" && g
 check "ultra-premium models are not listed, and the policy says so" '! grep -qiE "^[a-z0-9.-]*(fable|astra)" <<<"$out" && grep -q "Not allowed in runs: .*fable.*astra" <<<"$out"'
 "$ORCH" models check fable >/dev/null 2>&1; code=$?
 check "models check refuses a denied model" '[ $code -eq 1 ] && grep -q DENIED <<<"$("$ORCH" models check gpt-6-astra-medium 2>&1)"'
-check "models show prints the evidence" '"$ORCH" models show opus | grep -q "evidence"'
+check "models show prints the evidence" '"$ORCH" models show opus | qgrep -q "evidence"'
 check "launch --model builds the command" '[ "$("$ORCH" agents launch claude --model haiku)" = "claude --permission-mode acceptEdits --model haiku" ]'
 check "launch --model refuses a denied model" '! "$ORCH" agents launch claude --model fable >/dev/null 2>&1'
 check "launch --model says when a kind has no model flag" 'grep -q "no \`model_flag\`" <<<"$("$ORCH" agents launch amp --model x 2>&1)"'
 printf '[models.my-local]\nkinds = ["opencode"]\ntier = "high"\nreasoning = 2\n[policy]\ndeny = ["*fable*", "sonnet"]\n' > "$ORCH_MODELS_FILE"
-check "user models.toml adds a model; a high tier needs the reasoning for it" '"$ORCH" models check my-local | grep -q "tier small"'
-check "user models.toml can change the policy" 'grep -q DENIED <<<"$("$ORCH" models check sonnet 2>&1)" && "$ORCH" models check gpt-6-astra-light | grep -q UNRATED'
+check "user models.toml adds a model; a high tier needs the reasoning for it" '"$ORCH" models check my-local | qgrep -q "tier small"'
+check "user models.toml can change the policy" 'grep -q DENIED <<<"$("$ORCH" models check sonnet 2>&1)" && "$ORCH" models check gpt-6-astra-light | qgrep -q UNRATED'
 rm -f "$ORCH_MODELS_FILE"
 newrepo md
-MPLAN='# Plan: t\nBranch: feature/md\nCheck command: test ! -f broken.txt\nIsolation: worktree\nMax parallel: 2\nLEADLINE\nWorkers: claude-1 (claude: sonnet), codex-1 (codex: gpt-6-luna@high)\nReviewer: none\n\n## [x] M1: Model\nDepends on: none\nTier: medium\nNeeds: coding\nModel why: one module, a pattern to copy.\nOpen questions:\n- none\n\n## [x] M4: Totals\nDepends on: none\nTier: small\nModel why: one small function.\nOpen questions:\n- none\n'
 printf "${MPLAN/LEADLINE/Lead mode: off}" > .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1); code=$?
 check "a plan with models and tiers syncs clean" '[ $code -eq 0 ] && ! grep -qiE "WARN.*(tier|model)" <<<"$out"'
@@ -606,30 +619,30 @@ printf '# Plan: t\nBranch: feature/es\nCheck command: test ! -f broken.txt\nIsol
 timeout 180 "$ORCH" autopilot > "$WORK/es.log" 2>&1; code=$?
 check "finished (exit 0)" '[ $code -eq 0 ]'
 check "the small model ran out of rounds and the milestone moved up" 'grep -q "medium-tier model gets one fresh round" "$WORK/es.log"'
-check "the stronger coder finished it" '"$ORCH" status | grep -q "M18 .*merged .*claude-1" && [ -f r.txt ]'
-check "report shows each model and the escalation" '"$ORCH" report --json | python3 -c "import json,sys; m={x[\"model\"]:x for x in json.load(sys.stdin)[\"models\"]}; sys.exit(not (m[\"gpt-6-luna@high\"][\"escalated_away\"]==1 and m[\"sonnet\"][\"merged\"]==1))" && "$ORCH" report | grep -q "moved up"'
+check "the stronger coder finished it" '"$ORCH" status | qgrep -q "M18 .*merged .*claude-1" && [ -f r.txt ]'
+check "report shows each model and the escalation" '"$ORCH" report --json | python3 -c "import json,sys; m={x[\"model\"]:x for x in json.load(sys.stdin)[\"models\"]}; sys.exit(not (m[\"gpt-6-luna@high\"][\"escalated_away\"]==1 and m[\"sonnet\"][\"merged\"]==1))" && "$ORCH" report | qgrep -q "moved up"'
 check "summary has the planned-vs-actual model table" 'grep -q "Models: planned and actual" .orchestrate/summary.md && grep -q "| M18 | small | gpt-6-luna@high (small), sonnet (medium) | yes |" .orchestrate/summary.md'
 
 echo "23. the lead's event queue (no event manager running)"
 newrepo ev; echo "$APP" > "$FH/lead.dir"
 printf "${MPLAN/LEADLINE/Lead: lead (claude: opus)}" > .orchestrate/plan.md
 "$ORCH" sync >/dev/null
-check "ready milestones wait for the lead's dispatch" '"$ORCH" ready | grep -q "HOLD M1" && ! "$ORCH" ready | grep -q "^READY"'
+check "ready milestones wait for the lead's dispatch" '"$ORCH" ready | qgrep -q "HOLD M1" && ! "$ORCH" ready | qgrep -q "^READY"'
 out=$("$ORCH" dispatch M1 2>&1)
-check "dispatch releases a milestone and names who can take it" 'grep -q "DISPATCH M1 -> claude-1 (tier medium)" <<<"$out" && "$ORCH" ready | grep -q "^READY M1"'
+check "dispatch releases a milestone and names who can take it" 'grep -q "DISPATCH M1 -> claude-1 (tier medium)" <<<"$out" && "$ORCH" ready | qgrep -q "^READY M1"'
 check "dispatch says the event manager is not running (autostart off in tests)" 'grep -q "event manager is NOT running" <<<"$out"'
 "$ORCH" set M4 paused "which currency should totals use?" >/dev/null
-check "a pause is queued for the lead with nobody listening" '"$ORCH" events --peek | grep -q "PAUSED M4 .*which currency"'
-check "peek does not acknowledge" '"$ORCH" events --peek | grep -q "1 new"'
+check "a pause is queued for the lead with nobody listening" '"$ORCH" events --peek | qgrep -q "PAUSED M4 .*which currency"'
+check "peek does not acknowledge" '"$ORCH" events --peek | qgrep -q "1 new"'
 out=$("$ORCH" events --peek)
 check "a wake-up prints the hard rules and the playbook rows for its events, word for word" 'grep -q "^WHAT TO DO" <<<"$out" && grep -q "Never answer a worker.s permission prompt yourself" <<<"$out" && grep -q "orch answer Mn --defer AC<n>" <<<"$out" && grep -qF "$(grep "^| \`PAUSED Mn\` with a coder" "$ROOT/playbooks/run.md")" <<<"$out" && ! grep -q "^| \`HELD" <<<"$out"'
 "$ORCH" events >/dev/null
-check "reading acknowledges; the event stays open until the milestone moves on" '"$ORCH" events | grep -q "0 new, 1 still open"'
+check "reading acknowledges; the event stays open until the milestone moves on" '"$ORCH" events | qgrep -q "0 new, 1 still open"'
 out=$("$ORCH" answer M4 "INR only" 2>&1)
-check "answer writes the note into plan.md and requeues the milestone" 'grep -q "^- INR only" .orchestrate/plan.md && [ "$(status_of M4)" = pending ] && "$ORCH" ready | grep -q "^READY M4"'
-check "the answered event is closed" '"$ORCH" events | grep -q "0 new, 0 still open"'
+check "answer writes the note into plan.md and requeues the milestone" 'grep -q "^- INR only" .orchestrate/plan.md && [ "$(status_of M4)" = pending ] && "$ORCH" ready | qgrep -q "^READY M4"'
+check "the answered event is closed" '"$ORCH" events | qgrep -q "0 new, 0 still open"'
 check "answer refuses a milestone that is not paused" '! "$ORCH" answer M1 "x" >/dev/null 2>&1'
-check "sync keeps the queue and the dispatch" '"$ORCH" sync >/dev/null && "$ORCH" ready | grep -q "^READY M1"'
+check "sync keeps the queue and the dispatch" '"$ORCH" sync >/dev/null && "$ORCH" ready | qgrep -q "^READY M1"'
 
 echo "24. event-driven run: the lead dispatches, pauses, is woken, answers, and the same coder carries on"
 newrepo lr; echo "$APP" > "$FH/lead.dir"; echo "INR only" > "$FH/lead-answer"
@@ -650,9 +663,9 @@ check "every event was delivered and read" 'python3 -c "import json,sys;s=json.l
 echo "27. orch fix: a change after ALL_DONE goes straight to the coder who built it"
 out=$("$ORCH" fix M1 "the model must also say hello" 2>&1); code=$?
 check "fix adds a small follow-up milestone for the coder who built M1" '[ $code -eq 0 ] && grep -q "^FIX M5 .*-> claude-1" <<<"$out" && grep -q "^## \[x\] M5: Fix for M1: the model must also say hello" .orchestrate/plan.md'
-check "the fix milestone says why it is separate, so sync does not warn about it" 'grep -q "^Why separate: a change the developer asked for after M1 landed" .orchestrate/plan.md && ! "$ORCH" sync 2>&1 | grep -q "M5 has no .Why separate"'
-check "it is dispatched already and tied to that coder, with no new plan round" 'python3 -c "import json,sys;t=json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M5\"];sys.exit(not (t[\"go\"] and t[\"assign\"]==\"claude-1\" and t[\"fix_of\"]==\"M1\" and t[\"deps\"]==[\"M1\"] and t[\"tier\"]==\"medium\"))" && "$ORCH" ready | grep -q "^READY M5"'
-check "the plan with the fix in it still syncs, and keeps the dispatch" '"$ORCH" sync >/dev/null 2>&1 && "$ORCH" ready | grep -q "^READY M5"'
+check "the fix milestone says why it is separate, so sync does not warn about it" 'grep -q "^Why separate: a change the developer asked for after M1 landed" .orchestrate/plan.md && ! "$ORCH" sync 2>&1 | qgrep -q "M5 has no .Why separate"'
+check "it is dispatched already and tied to that coder, with no new plan round" 'python3 -c "import json,sys;t=json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M5\"];sys.exit(not (t[\"go\"] and t[\"assign\"]==\"claude-1\" and t[\"fix_of\"]==\"M1\" and t[\"deps\"]==[\"M1\"] and t[\"tier\"]==\"medium\"))" && "$ORCH" ready | qgrep -q "^READY M5"'
+check "the plan with the fix in it still syncs, and keeps the dispatch" '"$ORCH" sync >/dev/null 2>&1 && "$ORCH" ready | qgrep -q "^READY M5"'
 out=$("$ORCH" fix M5 "x" 2>&1); code=$?
 check "fix refuses a milestone that has not landed" '[ $code -eq 2 ] && grep -q "not landed yet" <<<"$out"'
 timeout 180 "$ORCH" autopilot > "$WORK/lr2.log" 2>&1; code=$?
@@ -672,17 +685,17 @@ newrepo lsil; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead-deaf"
 printf '# Plan: t\nBranch: feature/ls\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 ORCH_LEAD_WAIT_MIN=0 ORCH_LEAD_REWAKE_S=2 timeout 120 "$ORCH" autopilot > "$WORK/lsil.log" 2>&1; code=$?
 check "a lead that never answers: ready work starts by itself" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && grep -q "M5: the lead did not dispatch it" "$WORK/lsil.log"'
-check "its events are still in the queue, unread" '"$ORCH" events --peek | grep -q "AUTO-DISPATCHED M5" && "$ORCH" events --peek | grep -q "ALL_DONE"'
+check "its events are still in the queue, unread" '"$ORCH" events --peek | qgrep -q "AUTO-DISPATCHED M5" && "$ORCH" events --peek | qgrep -q "ALL_DONE"'
 check "ALL_DONE in orch events carries the whole summary step, so the lead needs no playbook reload" 'out=$("$ORCH" events --peek); grep -q "^## 3. ALL_DONE" <<<"$out" && grep -q "Checked by the lead" <<<"$out" && grep -q "Manual verification checklist" <<<"$out" && grep -q "Run \`orch finish\` yourself only when the developer says so" <<<"$out"'
 check "a wake-up nobody picked up is sent again, then the developer is told" 'grep -q "did not pick up its wake-up .*-> sent it again (2 of 3)" "$WORK/lsil.log" && grep -q "has not read its events after 3 wake-ups" "$WORK/lsil.log"'
-check "status says the wake-up was not picked up" '"$ORCH" status | grep -q "wake-up sent 3x .*not picked up yet"'
+check "status says the wake-up was not picked up" '"$ORCH" status | qgrep -q "wake-up sent 3x .*not picked up yet"'
 # the bug report: the last wake-up of a run is lost in the lead's pane, and the event manager used to exit right after
 newrepo llost; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead-deaf-once"
 printf '# Plan: t\nBranch: feature/ll\nCheck command: true\nIsolation: worktree\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nRole: senior backend engineer who cares about clear error messages\nAcceptance criteria:\n- e.txt exists\nOpen questions:\n- none\n' > .orchestrate/plan.md
 "$ORCH" sync >/dev/null && "$ORCH" dispatch M5 >/dev/null
 timeout 120 "$ORCH" autopilot > "$WORK/llost.log" 2>&1; code=$?
 check "a lost wake-up at the end of a run is noticed and sent again before the event manager leaves" '[ $code -eq 0 ] && grep -q "did not pick up its wake-up" "$WORK/llost.log" && [ "$(wc -l < "$FH/lead-wakes.log")" -eq 2 ]'
-check "the second wake-up became a turn: ALL_DONE was read and the log says so" 'grep -q "ALL_DONE" "$FH/lead-events.log" && grep -q "the lead (lead) picked up its events" "$WORK/llost.log" && "$ORCH" events --peek | grep -q "0 new"'
+check "the second wake-up became a turn: ALL_DONE was read and the log says so" 'grep -q "ALL_DONE" "$FH/lead-events.log" && grep -q "the lead (lead) picked up its events" "$WORK/llost.log" && "$ORCH" events --peek | qgrep -q "0 new"'
 check "the summary lists what the run already checked, per acceptance criterion" 'grep -q "^## Checked automatically" .orchestrate/summary.md && grep -q "Check command \`true\` on the finished branch: PASS" .orchestrate/summary.md && grep -q "AC1 e.txt exists" .orchestrate/summary.md'
 check "the summary asks for a manual checklist of only what a person must see or do" 'grep -q "Manual verification checklist: only what a person must see or do" .orchestrate/summary.md && grep -q "Checked by the lead" .orchestrate/summary.md'
 check "the coder is given the role the lead wrote, in task.md and task.json" 'grep -q "For this task you are: \*\*senior backend engineer who cares about clear error messages\*\*" ../app-wt/claude-1/.orch-task/M5/task.md && grep -q "\"role\": \"senior backend engineer" ../app-wt/claude-1/.orch-task/M5/task.json'
@@ -692,10 +705,10 @@ echo "25b. orch finish: the manual tests go to the developer and to the lead's c
 out=$("$ORCH" finish --no-push 2>&1); code=$?
 check "finish prints the summary's manual tests, numbered, a wrapped line kept with its item" '[ $code -eq 0 ] && grep -q "^MANUAL TESTS: 2 to try by hand before you merge" <<<"$out" && grep -q "^  1. check totals by hand$" <<<"$out" && grep -q "^  2. open /totals on a phone -> the table fits the screen$" <<<"$out"'
 check "...and saves them in manual-tests.md" 'grep -q "^2. open /totals on a phone" .orchestrate/manual-tests.md'
-check "finish queues FINISHED for the lead and wakes it" 'grep -q "^TOLD THE LEAD (lead)" <<<"$out" && tail -1 "$FH/lead-wakes.log" | grep -q "orch finish. ran on feature/ll"'
+check "finish queues FINISHED for the lead and wakes it" 'grep -q "^TOLD THE LEAD (lead)" <<<"$out" && tail -1 "$FH/lead-wakes.log" | qgrep -q "orch finish. ran on feature/ll"'
 for _ in $(seq 20); do grep -q "^#[0-9]* FINISHED" "$FH/lead-events.log" && break; sleep 0.5; done
 check "the woken lead reads FINISHED with the list and the playbook row to post it in chat" 'grep -q "^#[0-9]* FINISHED: cleaned up, not pushed (--no-push).*2 manual test" "$FH/lead-events.log" && grep -q "^    MANUAL TESTS: 2 to try" "$FH/lead-events.log" && grep -q "^    SAY: The run is finished" "$FH/lead-events.log" && grep -q "^| \`FINISHED\` | .*Try these by hand before you merge" "$FH/lead-events.log"'
-check "orch manual prints the same list again" '"$ORCH" manual | grep -q "^  2. open /totals on a phone"'
+check "orch manual prints the same list again" '"$ORCH" manual | qgrep -q "^  2. open /totals on a phone"'
 HERDR_PANE_ID=w9:p1; echo w9:p1 > "$FH/lead.paneid"; export HERDR_PANE_ID
 nw=$(wc -l < "$FH/lead-wakes.log"); out=$("$ORCH" finish --no-push 2>&1)
 check "the lead running finish itself is told to post the list, and not woken" 'grep -q "^LEAD: you ran .orch finish. yourself: post the MANUAL TESTS list" <<<"$out" && [ "$(wc -l < "$FH/lead-wakes.log")" -eq "$nw" ]'
@@ -705,9 +718,9 @@ import re,sys; p=sys.argv[1]; s=open(p).read()
 s=s[:s.index("## Manual verification checklist")]+"**Manual verification checklist**\nNothing to check by hand: a CLI change, its tests cover it.\n"
 open(p,"w").write(s)
 PY
-check "a checklist with nothing by hand says so (bold heading too)" '"$ORCH" manual | grep -q "^MANUAL TESTS: none. Nothing to check by hand: a CLI change"'
+check "a checklist with nothing by hand says so (bold heading too)" '"$ORCH" manual | qgrep -q "^MANUAL TESTS: none. Nothing to check by hand: a CLI change"'
 sed -i "/Manual verification checklist\*\*/,\$d" .orchestrate/summary.md
-check "no checklist yet: orch manual says the lead has not written it (the Still-to-write line is not a list)" '"$ORCH" manual | grep -q "^MANUAL TESTS: not written yet"'
+check "no checklist yet: orch manual says the lead has not written it (the Still-to-write line is not a list)" '"$ORCH" manual | qgrep -q "^MANUAL TESTS: not written yet"'
 cp "$WORK/sum.bak" .orchestrate/summary.md
 newrepo lgone; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead.gone"
 printf '# Plan: t\nBranch: feature/lg\nCheck command: true\nIsolation: worktree\nLead: lead (claude: opus)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
@@ -736,7 +749,7 @@ touch "$FH/reviewer.missing" "$FH/reviewer.deaf"
 out=$("$ORCH" review M1 2>&1); code=$?
 check "an unreachable reviewer is reported with the rename fix (exit 5)" '[ $code -eq 5 ] && grep -q "REVIEWER_LOST reviewer (try 1)" <<<"$out" && grep -q "herdr agent rename <pane> reviewer" <<<"$out"'
 check "the milestone keeps waiting for review" '[ "$(status_of M1)" = awaiting-review ]'
-check "the lead gets an event on the first failure" '"$ORCH" events --peek | grep -qi "reviewer-lost M1 .*herdr agent rename <pane> reviewer"'
+check "the lead gets an event on the first failure" '"$ORCH" events --peek | qgrep -qi "reviewer-lost M1 .*herdr agent rename <pane> reviewer"'
 out=$("$ORCH" review M1 2>&1); code=$?
 check "no new send while herdr still can't find the reviewer" '[ $code -eq 3 ] && grep -q "benched" <<<"$out"'
 rm -f "$FH/reviewer.missing" "$FH/reviewer.deaf"
@@ -744,8 +757,6 @@ out=$("$ORCH" review M1 2>&1); code=$?
 check "once the reviewer is found again the review goes out at once, no 2-minute wait" '[ $code -eq 0 ] && grep -q "SENT review M1 -> reviewer" <<<"$out"'
 
 echo "11. installer puts the thin skills in every installed agent's folders"
-FAKEBIN="$WORK/fakebin"; IH="$WORK/home"; mkdir -p "$FAKEBIN" "$IH"
-for b in claude codex hermes agy; do printf '#!/bin/sh\n' > "$FAKEBIN/$b"; chmod +x "$FAKEBIN/$b"; done
 SAFE_PATH="$FAKEBIN:/usr/local/bin:/usr/bin:/bin"
 HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --no-herdr-skill > "$WORK/install.log" 2>&1; code=$?
 check "installer ran" '[ $code -eq 0 ]'
@@ -768,7 +779,7 @@ check "agents check passes after sync" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" age
 out=$(HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents sync 2>&1)
 check "second sync is idempotent (ok, nothing NEW)" '[ -z "$(grep NEW <<<"$out")" ] && grep -qE "^ +ok +amp" <<<"$out"'
 rm -rf "$IH/.agents/skills"
-check "orch agents hints to sync when skills go missing" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents 2>&1 | grep -q "orch agents sync"'
+check "orch agents hints to sync when skills go missing" 'HOME="$IH" PATH="$SAFE_PATH" "$ORCH" agents 2>&1 | qgrep -q "orch agents sync"'
 HOME="$IH" PATH="$SAFE_PATH" bash "$ROOT/install.sh" --uninstall > /dev/null 2>&1
 check "uninstall removes them all" '[ -z "$(find "$IH" -name "orch-*")" ] && [ ! -e "$IH/.local/bin/orch" ]'
 
@@ -840,7 +851,7 @@ Open questions:
 - none
 PLAN
 "$ORCH" sync >/dev/null 2>&1
-check "a plan with only codex panes (lead, 2 coders, reviewer) passes sync" '"$ORCH" sync 2>&1 | grep -q "^OK: 1 tasks"'
+check "a plan with only codex panes (lead, 2 coders, reviewer) passes sync" '"$ORCH" sync 2>&1 | qgrep -q "^OK: 1 tasks"'
 out=$("$ORCH" team up 2>&1); code=$?
 check "team up before orch start asks for orch start (worktrees first)" '[ $code -ne 0 ] && grep -q "run \`orch start\` first" <<<"$out"'
 touch "$FH/codex-2.missing" "$FH/reviewer.missing"
@@ -914,11 +925,6 @@ check "report --json carries the time account" '"$ORCH" report --json | python3 
 check "the plan playbook asks for estimates and the summary has the time section" 'grep -q "^Estimate:" "$ROOT/playbooks/plan.md" && grep -q "Time: estimate vs actual" "$ROOT/bin/orch"'
 
 echo "30. after a restart: time orch was down is not agent time"
-stpy(){ python3 -c "
-import json, time; p = '$APP/.orchestrate/state.json'; st = json.load(open(p)); now = int(time.time())
-$1
-json.dump(st, open(p, 'w'))"; }
-PRS='# Plan: t\nBranch: feature/rs\nCheck command: true\nIsolation: ISO\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M9: Stalls\nDepends on: none\nPrefer: codex\nOpen questions:\n- none\n\n## [x] M5: e\nDepends on: none\nPrefer: claude\nOpen questions:\n- none\n'
 newrepo dn; WT="$APP/../app-wt"
 printf '%b' "${PRS/ISO/worktree}" > .orchestrate/plan.md
 "$ORCH" sync >/dev/null && "$ORCH" start >/dev/null && "$ORCH" prepare M9 codex-1 >/dev/null && "$ORCH" write-task M9 >/dev/null && "$ORCH" send M9 task.md >/dev/null
@@ -929,7 +935,7 @@ w = st['tasks']['M9']['wait']; w['since'] -= 7500; w['started'] -= 7500
 st['tasks']['M5']['go'] = True
 st['run'].update(started=now - 8000, beat=now - 7200)"
 out=$("$ORCH" status 2>&1)
-check "status says loudly that the event manager is not running, since when, and what to run" 'head -1 <<<"$out" | grep -q "^!! EVENT MANAGER NOT RUNNING since .* (2h00m ago)" && grep -q "^!! Run \`orch resume\`" <<<"$out"'
+check "status says loudly that the event manager is not running, since when, and what to run" 'head -1 <<<"$out" | qgrep -q "^!! EVENT MANAGER NOT RUNNING since .* (2h00m ago)" && grep -q "^!! Run \`orch resume\`" <<<"$out"'
 "$ORCH" set M5 paused "kept out of this test" >/dev/null
 timeout 12 "$ORCH" autopilot > "$WORK/dn.log" 2>&1
 check "the 2 hours orch was down do not put the coder over its time budget" '! grep -q "over its time budget" "$WORK/dn.log" && [ "$(status_of M9)" = coding ]'
@@ -938,7 +944,7 @@ check "a coder that is already working again is left alone (no second prompt)" '
 check "the gap is kept on the wait and in the run" 'python3 -c "
 import json; st = json.load(open(\".orchestrate/state.json\")); w = st[\"tasks\"][\"M9\"][\"wait\"]
 assert 7190 <= w[\"down_s\"] <= 7260, w; d = st[\"run\"][\"downs\"]; assert len(d) == 1 and 7190 <= d[0][\"to\"] - d[0][\"from\"] <= 7260, d"'
-check "status has no warning for a run nobody has driven yet" '(newrepo dn0 && printf "%b" "${PRS/ISO/worktree}" > .orchestrate/plan.md && "$ORCH" sync >/dev/null && ! "$ORCH" status | grep -q "EVENT MANAGER")'
+check "status has no warning for a run nobody has driven yet" '(newrepo dn0 && printf "%b" "${PRS/ISO/worktree}" > .orchestrate/plan.md && "$ORCH" sync >/dev/null && ! "$ORCH" status | qgrep -q "EVENT MANAGER")'
 cd "$APP" && export FH="$WORK/dn/fh"
 stpy "
 w = st['tasks']['M9']['wait']; w['since'] -= 7200; w['started'] -= 7200     # 2 more hours went by, asleep
@@ -969,17 +975,17 @@ check "a milestone no coder is working on gets no stop note" '! grep -q STOP_NOT
 echo "31. unsaved work is always saved first: park, dispatch and prepare never refuse"
 echo late > "$WT/codex-1/late.txt"                      # the paused coder kept writing after M9 was parked
 out=$("$ORCH" dispatch M9 2>&1); code=$?
-check "dispatch saves what the paused coder wrote meanwhile into the milestone's saved work" '[ $code -eq 0 ] && grep -q "^SAVED codex-1.s unsaved files into M9.s saved work (refs/orch/feature-rs/M9)" <<<"$out" && git show --stat refs/orch/feature-rs/M9 | grep -q late.txt && [ -z "$(git -C "$WT/codex-1" status --porcelain)" ]'
+check "dispatch saves what the paused coder wrote meanwhile into the milestone's saved work" '[ $code -eq 0 ] && grep -q "^SAVED codex-1.s unsaved files into M9.s saved work (refs/orch/feature-rs/M9)" <<<"$out" && git show --stat refs/orch/feature-rs/M9 | qgrep -q late.txt && [ -z "$(git -C "$WT/codex-1" status --porcelain)" ]'
 echo later > "$WT/codex-1/later.txt"; echo more >> "$WT/codex-1/late.txt"
 out=$("$ORCH" park M9 pending "again" 2>&1)
-check "orch park on an already parked milestone saves too (it used to print PARKED and save nothing)" 'grep -q "^SAVED codex-1" <<<"$out" && git show refs/orch/feature-rs/M9:late.txt | grep -q more && git show --stat refs/orch/feature-rs/M9 | grep -q later.txt'
+check "orch park on an already parked milestone saves too (it used to print PARKED and save nothing)" 'grep -q "^SAVED codex-1" <<<"$out" && git show refs/orch/feature-rs/M9:late.txt | qgrep -q more && git show --stat refs/orch/feature-rs/M9 | qgrep -q later.txt'
 echo last > "$WT/codex-1/last.txt"
 out=$("$ORCH" prepare M9 codex-1 2>&1); code=$?
 check "prepare with unsaved files in the folder saves them and goes on (no \"park or clean that worker first\")" '[ $code -eq 0 ] && grep -q "^SAVED codex-1" <<<"$out" && ! grep -q "park or clean" <<<"$out" && [ "$(status_of M9)" = coding ] && [ -f "$WT/codex-1/late.txt" ] && [ -f "$WT/codex-1/later.txt" ] && [ -f "$WT/codex-1/last.txt" ]'
 echo whose > "$WT/claude-1/whose.txt"                   # files in a folder whose coder never had a milestone
 "$ORCH" set M5 pending >/dev/null
 out=$("$ORCH" prepare M5 claude-1 2>&1); code=$?
-check "files orch can't give to a milestone go to a rescue ref, and the task still starts" '[ $code -eq 0 ] && grep -q "^RESCUED claude-1.s unsaved files: .* kept in refs/orch/feature-rs/rescue-claude-1-" <<<"$out" && [ "$(status_of M5)" = coding ] && [ ! -f "$WT/claude-1/whose.txt" ] && git show --stat "$(git for-each-ref --format="%(refname)" "refs/orch/feature-rs/rescue-claude-1-*")" | grep -q whose.txt'
+check "files orch can't give to a milestone go to a rescue ref, and the task still starts" '[ $code -eq 0 ] && grep -q "^RESCUED claude-1.s unsaved files: .* kept in refs/orch/feature-rs/rescue-claude-1-" <<<"$out" && [ "$(status_of M5)" = coding ] && [ ! -f "$WT/claude-1/whose.txt" ] && git show --stat "$(git for-each-ref --format="%(refname)" "refs/orch/feature-rs/rescue-claude-1-*")" | qgrep -q whose.txt'
 # a milestone in review is never changed behind the reviewer's back: stray files there are rescued, not added
 "$ORCH" park M5 pending >/dev/null; "$ORCH" prepare M5 claude-1 >/dev/null; echo e > "$WT/claude-1/e.txt"
 "$ORCH" handoff M5 >/dev/null; stpy "st['tasks']['M5']['status'] = 'reviewing'"
@@ -1029,7 +1035,7 @@ check "resume says how long orch was down and what was in progress" '[ $code -eq
 check "resume gives a coder's pane its name back, found by its folder" 'grep -q "^NAMED   codex-1: pane w1:p7 " <<<"$out" && grep -q "^rename w1:p7 codex-1" "$FH/team.log" && [ ! -f "$FH/codex-1.missing" ]'
 check "a pane with no agent in it: resume says how to start it and prints the rename command" 'grep -q "^LOST    claude-1: pane w1:p8 is in its folder .*orch team up.* starts it there.*herdr agent rename w1:p8 claude-1" <<<"$out"'
 check "in the main folder a pane is only renamed when it shows the right kind; otherwise the command is printed" 'grep -q "^LOST    reviewer: can.t tell which pane is reviewer (w1:p20, w1:p21 are in .*herdr agent rename <pane> reviewer" <<<"$out" && ! grep -q "rename w1:p2[01]" "$FH/team.log"'
-check "resume saves the unsaved files a coder left behind" 'grep -q "^SAVED claude-1.s unsaved files into M5" <<<"$out" && git show --stat refs/orch/feature-rs/M5 | grep -q more.txt'
+check "resume saves the unsaved files a coder left behind" 'grep -q "^SAVED claude-1.s unsaved files into M5" <<<"$out" && git show --stat refs/orch/feature-rs/M5 | qgrep -q more.txt'
 check "resume sends the task in progress to its coder again, as a carry-on" 'grep -q "^RESENT  M9 -> codex-1" <<<"$out" && grep -q "^codex-1 <- orch was restarted .*carry on from there. Do not start over. Read .orch-task/M9/task.md .*done-1" "$FH/prompts.log"'
 check "resume ends by starting the event manager (here: says it could not, autostart is off in tests)" 'grep -q "the event manager is NOT running" <<<"$out"'
 check "the 2 hours are not on the coder's clock after resume" 'python3 -c "
@@ -1082,7 +1088,7 @@ out=$("$ORCH" sync 2>&1); code=$?
 check "quick plan that lists auth code warns" '[ $code -eq 0 ] && grep -q "WARN: M6 lists src/auth/login.ts, which looks like auth, payment or schema code" <<<"$out"'
 printf "$QK" > .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1); code=$?
-check "quick plan: shared folder by default, mode shown" '[ $code -eq 0 ] && grep -q "^OK: 1 tasks, mode=quick, isolation=shared" <<<"$out" && "$ORCH" status | grep -q "^QUICK RUN because: g.txt already exists"'
+check "quick plan: shared folder by default, mode shown" '[ $code -eq 0 ] && grep -q "^OK: 1 tasks, mode=quick, isolation=shared" <<<"$out" && "$ORCH" status | qgrep -q "^QUICK RUN because: g.txt already exists"'
 rm -f "$WORK/qk-checks"
 timeout 90 "$ORCH" autopilot > "$WORK/qk.log" 2>&1; code=$?
 check "quick run lands" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ] && [ -f g.txt ] && [ ! -d "$APP/../app-wt" ]'
@@ -1109,7 +1115,7 @@ check "…state: full mode, review on, role, tier and estimate kept per mileston
 import json,sys; st=json.load(open(\".orchestrate/state.json\")); t=st[\"tasks\"]
 sys.exit(0 if st[\"mode\"]==\"full\" and st.get(\"quick_because\") is None and all(t[m][\"review\"] for m in (\"M1\",\"M2\",\"M3\"))
  and t[\"M1\"][\"role\"].startswith(\"database\") and t[\"M2\"][\"tier\"]==\"high\" and t[\"M2\"][\"deps\"]==[\"M1\"] and t[\"M3\"][\"estimate_s\"]==1800 else 1)"'
-check "…status does not call it a quick run" '! "$ORCH" status | grep -q "QUICK RUN"'
+check "…status does not call it a quick run" '! "$ORCH" status | qgrep -q "QUICK RUN"'
 printf "$FULL" | sed '/^Why separate:/d; /^Estimate: 30m/d' > .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1)
 check "…a full plan still warns about a missing Why separate and Estimate" '[ "$(grep -c "has no .Why separate:" <<<"$out")" -eq 3 ] && grep -q "M1 has no .Estimate:" <<<"$out"'
@@ -1153,27 +1159,27 @@ check "once the agents are back, status says ok and free" 'grep -q "worker codex
 out=$("$ORCH" status 2>&1)
 check "a milestone coding on a worker that vanished says nothing is working on it" 'grep -q "M9 .*coding .*!! but codex-1 has no agent in herdr (NO AGENT): nothing is working on it" <<<"$out"'
 rm -f "$FH/codex-1.missing"; "$ORCH" park M9 pending "codex-1 hit a usage/rate limit" >/dev/null
-check "the parked note shows while it waits" '"$ORCH" status | grep -q "M9 .*pending .*\[codex-1 hit a usage/rate limit\]"'
+check "the parked note shows while it waits" '"$ORCH" status | qgrep -q "M9 .*pending .*\[codex-1 hit a usage/rate limit\]"'
 "$ORCH" prepare M9 claude-1 >/dev/null
-check "a stale note is cleared once another coder works on it" '"$ORCH" status | grep "M9 " | grep -q coding && ! "$ORCH" status | grep -q "M9 .*hit a usage/rate limit"'
+check "a stale note is cleared once another coder works on it" '"$ORCH" status | grep "M9 " | qgrep -q coding && ! "$ORCH" status | qgrep -q "M9 .*hit a usage/rate limit"'
 "$ORCH" park M9 pending "kept" >/dev/null
 
 echo "34. orch bench <worker> off: a coder stays out until the developer says so"
 "$ORCH" dispatch M5 --to claude-1 >/dev/null 2>&1
 out=$("$ORCH" bench claude-1 off "developer: no Claude today" 2>&1)
 check "bench off says what it does and frees milestones assigned to it" 'grep -q "^OFF     claude-1: gets no new work until \`orch bench claude-1 on\` (developer: no Claude today)" <<<"$out" && grep -q "M5 no longer wait for claude-1" <<<"$out"'
-check "status shows the coder as OFF" '"$ORCH" status | grep -q "worker claude-1 .*state=OFF (developer: no Claude today)"'
+check "status shows the coder as OFF" '"$ORCH" status | qgrep -q "worker claude-1 .*state=OFF (developer: no Claude today)"'
 check "pick skips it, even for a milestone that prefers it" '[ "$("$ORCH" pick M5)" = codex-1 ]'
 out=$("$ORCH" dispatch M5 --to claude-1 2>&1); code=$?
 check "dispatch --to an off coder is refused" '[ $code -ne 0 ] && grep -q "claude-1 is off (developer: no Claude today): \`orch bench claude-1 on\` first" <<<"$out"'
 "$ORCH" sync >/dev/null
 stpy "st['workers']['claude-1']['cooldown_until'] = 0"
-check "off survives orch sync, resume and the end of any bench" '"$ORCH" status | grep -q "worker claude-1 .*state=OFF" && [ "$("$ORCH" pick M5)" = codex-1 ]'
+check "off survives orch sync, resume and the end of any bench" '"$ORCH" status | qgrep -q "worker claude-1 .*state=OFF" && [ "$("$ORCH" pick M5)" = codex-1 ]'
 "$ORCH" bench codex-1 off >/dev/null
 out=$("$ORCH" pick M5 2>&1); code=$?
 check "with every coder off, nothing is picked" '[ $code -eq 3 ] && grep -q NONE <<<"$out"'
 out=$("$ORCH" bench claude-1 on 2>&1); "$ORCH" bench codex-1 on >/dev/null
-check "bench on brings it back" 'grep -q "^ON      claude-1 takes work again" <<<"$out" && "$ORCH" status | grep -q "worker claude-1 .*state=free"'
+check "bench on brings it back" 'grep -q "^ON      claude-1 takes work again" <<<"$out" && "$ORCH" status | qgrep -q "worker claude-1 .*state=free"'
 out=$("$ORCH" bench reviewer off 2>&1); code=$?
 check "the reviewer is not benched this way" '[ $code -ne 0 ] && grep -q "change \`Reviewer:\` in plan.md" <<<"$out"'
 
@@ -1196,7 +1202,7 @@ timeout 90 "$ORCH" autopilot > "$WORK/wl.log" 2>&1; code=$?
 check "the run still finishes once the coder is back" '[ $code -eq 0 ] && [ "$(status_of M7)" = merged ]'
 check "the lead got a WORKER-LOST event with the exact fix" 'grep -q "WORKER-LOST M7 .*claude-1 is gone: herdr can.t find it .*Fix: run \`orch resume\` if herdr restarted" "$FH/lead-events.log" && grep -q "This is NOT routine" "$FH/lead-events.log"'
 check "the log line names the project and run" 'grep -q "\[app feature/wl\] LOST claude-1" .orchestrate/autopilot.log'
-check "the manager wrote its last line when it finished" 'tail -1 .orchestrate/autopilot.log | grep -q "\[app feature/wl\] STOPPED: the event manager finished the run (exit 0)"'
+check "the manager wrote its last line when it finished" 'tail -1 .orchestrate/autopilot.log | qgrep -q "\[app feature/wl\] STOPPED: the event manager finished the run (exit 0)"'
 
 newrepo hr; echo "$APP/../app-wt/claude-1" > "$FH/claude-1.dir"; echo "$APP/../app-wt/codex-1" > "$FH/codex-1.dir"
 printf '# Plan: t\nBranch: feature/hr\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M19: S\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
@@ -1215,7 +1221,7 @@ out=$("$ORCH" stop 2>&1); code=$?; wait $ap
 check "orch stop stops the manager cleanly and says how to go on" '[ $code -eq 0 ] && grep -q "^STOPPED the event manager (pid [0-9]*). Nothing is lost.*orch resume" <<<"$out"'
 check "its last line says it was orch stop, with the project and run" 'grep -q "\[app feature/x\] STOPPED: orch stop — nothing is lost" .orchestrate/autopilot.log'
 check "after orch stop, sync works" '"$ORCH" sync >/dev/null 2>&1'
-check "a stop is not mistaken for a crash later" '! "$ORCH" status | grep -q CRASHED'
+check "a stop is not mistaken for a crash later" '! "$ORCH" status | qgrep -q CRASHED'
 out=$("$ORCH" stop 2>&1)
 check "orch stop with nothing running says so" 'grep -q "the event manager is not running" <<<"$out"'
 # a manager killed without a word (memory guard): the next look finds it and says why, for this run only
@@ -1244,7 +1250,7 @@ out=$(ORCH_BOOT_TIME=1 "$ORCH" doctor --crash 2>&1)
 check "when the system log can't be read, it says so" 'grep -q "Reason: unknown — the system log could not be read" <<<"$out"'
 ORCH_FAULT=autopilot-error timeout 30 "$ORCH" autopilot > "$WORK/cr2.log" 2>&1; code=$?
 check "a Python error in the manager is logged with its traceback, then raised" '[ $code -ne 0 ] && grep -q "\[app feature/x\] CRASHED: ValueError: test crash" .orchestrate/autopilot.log && grep -q "\[app feature/x\]   Traceback" .orchestrate/autopilot.log'
-check "…and is not reported as a silent death later" '! "$ORCH" status | grep -q "stopped without a word"'
+check "…and is not reported as a silent death later" '! "$ORCH" status | qgrep -q "stopped without a word"'
 
 echo "38. logs stay small"
 head -c 300000 /dev/zero | tr '\0' 'x' > .orchestrate/autopilot.log
@@ -1276,7 +1282,7 @@ out=$(PATH="$WORK/sdbin:$PATH" ORCH_NO_SCOPE=0 ORCH_NO_AUTOSTART=0 "$ORCH" dispa
 check "it tries systemd-run --user --scope first, then starts it the plain way" 'grep -q "^--user --scope --quiet --collect --unit=orch-app-[0-9]* .*orch autopilot" "$WORK/systemd-run.log" && grep -q "started the event manager" <<<"$out"'
 for _ in $(seq 60); do grep -q "ALL_DONE" .orchestrate/autopilot.log 2>/dev/null && break; sleep 1; done
 check "…and that run finishes" '[ "$(status_of M6)" = merged ]'
-check "the playbook, README and usage explain bench, stop, crash notes and logs" 'grep -q "orch bench" "$ROOT/playbooks/run.md" && grep -q "orch stop" "$ROOT/playbooks/run.md" && grep -q "WORKER-LOST" "$ROOT/playbooks/run.md" && grep -q "orch doctor --crash" "$ROOT/README.md" && "$ORCH" 2>&1 | grep -q "bench <worker> off"'
+check "the playbook, README and usage explain bench, stop, crash notes and logs" 'grep -q "orch bench" "$ROOT/playbooks/run.md" && grep -q "orch stop" "$ROOT/playbooks/run.md" && grep -q "WORKER-LOST" "$ROOT/playbooks/run.md" && grep -q "orch doctor --crash" "$ROOT/README.md" && "$ORCH" 2>&1 | qgrep -q "bench <worker> off"'
 
 echo "40. installer asks about auto-update once (default on) and keeps the answer"
 UH="$WORK/uhome"; USHARE="$UH/.local/share/herdr-orchestra"; UO="$UH/.local/bin/orch"; mkdir -p "$UH"
@@ -1320,7 +1326,7 @@ out=$(uo config auto-update off 2>&1)
 check "orch config auto-update off saves it" 'grep -q "^auto-update: off" <<<"$out" && [ "$(uset auto_update)" = False ]'
 out=$(uo config 2>&1)
 check "orch config shows the setting, the version and the settings file" 'grep -q "^auto-update: off" <<<"$out" && grep -q "^installed: $V$" <<<"$out" && grep -q "settings.json" <<<"$out"'
-check "ORCH_AUTO_UPDATE overrides the saved setting for that shell" 'ORCH_AUTO_UPDATE=1 uo config | grep -q "^auto-update: on (ORCH_AUTO_UPDATE=1 overrides"'
+check "ORCH_AUTO_UPDATE overrides the saved setting for that shell" 'ORCH_AUTO_UPDATE=1 uo config | qgrep -q "^auto-update: on (ORCH_AUTO_UPDATE=1 overrides"'
 check "an unknown config is refused" '! uo config auto-update maybe >/dev/null 2>&1'
 out=$(uo update --check 2>&1)
 check "orch update --check: already the latest" 'grep -q "herdr-orchestra $V is the latest version" <<<"$out"'
@@ -1406,11 +1412,11 @@ check "the next plan has nothing to install" '! grep -q "^UPDATED\|^WARN\|^herdr
 # ...finishes on the new one
 export FH="$WORK/ufh"; mkdir -p "$FH"; echo "$WORK/urepo-wt/claude-1" > "$FH/claude-1.dir"
 (cd "$WORK/urepo" && HOME="$UH" ORCH_SHARE="$USHARE" ORCH_BIN="$UO" timeout 120 "$UO" autopilot > "$WORK/urepo.log" 2>&1); code=$?
-check "a run started on the old version finishes on the new one" '[ $code -eq 0 ] && grep -q "ALL_DONE" "$WORK/urepo.log" && (cd "$WORK/urepo" && HOME="$UH" ORCH_SHARE="$USHARE" "$UO" status | grep -q "M6 .*merged")'
+check "a run started on the old version finishes on the new one" '[ $code -eq 0 ] && grep -q "ALL_DONE" "$WORK/urepo.log" && (cd "$WORK/urepo" && HOME="$UH" ORCH_SHARE="$USHARE" "$UO" status | qgrep -q "M6 .*merged")'
 check "the event manager signs out of the active list when it stops" '[ -z "$(ls "$USHARE/active" 2>/dev/null)" ]'
 HOME="$UH" PATH="$UPATH" bash "$ROOT/install.sh" --uninstall >/dev/null 2>&1
 check "uninstall removes the settings too" '[ ! -e "$USHARE" ]'
-check "README, usage and the plan playbook explain updating" 'grep -q "orch update" "$ROOT/README.md" && grep -q "orch config auto-update off" "$ROOT/README.md" && "$ORCH" 2>&1 | grep -q "update \[--check\]" && grep -q "orch update" "$ROOT/playbooks/plan.md"'
+check "README, usage and the plan playbook explain updating" 'grep -q "orch update" "$ROOT/README.md" && grep -q "orch config auto-update off" "$ROOT/README.md" && "$ORCH" 2>&1 | qgrep -q "update \[--check\]" && grep -q "orch update" "$ROOT/playbooks/plan.md"'
 
 echo "43. a criterion the developer approved deferring costs no fix rounds and no escalation"
 newrepo df; echo "$APP" > "$FH/lead.dir"
@@ -1444,7 +1450,7 @@ timeout 120 "$ORCH" autopilot > "$WORK/dg2.log" 2>&1; code=$?
 check "sent on again, the same honest result lands with no more fix rounds" '[ $code -eq 0 ] && [ "$(status_of M22)" = merged ] && grep -q "M22: AC1 not met, deferred" "$WORK/dg2.log" && ! grep -q "M22: the coder reports" "$WORK/dg2.log"'
 out=$("$ORCH" defer M22 AC1 "x" 2>&1); code=$?
 check "defer refuses a milestone that already landed" '[ $code -eq 2 ] && grep -q "is merged" <<<"$out"'
-check "usage and the run playbook explain defer" '"$ORCH" 2>&1 | grep -q "defer <Mn> <AC2,AC3> <reason>" && grep -q "orch defer" "$ROOT/playbooks/run.md" && grep -q -- "--defer" "$ROOT/playbooks/run.md"'
+check "usage and the run playbook explain defer" '"$ORCH" 2>&1 | qgrep -q "defer <Mn> <AC2,AC3> <reason>" && grep -q "orch defer" "$ROOT/playbooks/run.md" && grep -q -- "--defer" "$ROOT/playbooks/run.md"'
 
 echo "44. the lead is named automatically, or the run refuses to start without it (bug: lead never named, never woken)"
 LNPLAN='# Plan: t\nBranch: feature/ln\nCheck command: true\nIsolation: worktree\nLead: lead (claude: sonnet)\nWorkers: claude-1 (claude: sonnet)\nReviewer: none\n\n## [x] M1: e\nDepends on: none\nOpen questions:\n- none\n'
@@ -1455,11 +1461,11 @@ check "dispatch refuses when herdr has no agent named lead, with the exact renam
 check "…and changed nothing: M1 is not dispatched" 'python3 -c "import json,sys;sys.exit(bool(json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M1\"].get(\"go\")))"'
 out=$(env -u HERDR_PANE_ID "$ORCH" start 2>&1); code=$?
 check "orch start refuses too, before it makes the branch" '[ $code -eq 2 ] && grep -q "orch start was refused" <<<"$out" && ! git rev-parse -q --verify feature/ln >/dev/null'
-check "orch status shows LEAD NOT FOUND with the fix" '"$ORCH" status | grep -q "^!! LEAD NOT FOUND: .*herdr agent rename <its pane id> lead" && "$ORCH" status | grep -q "lead lead: .*!! LEAD NOT FOUND"'
+check "orch status shows LEAD NOT FOUND with the fix" '"$ORCH" status | qgrep -q "^!! LEAD NOT FOUND: .*herdr agent rename <its pane id> lead" && "$ORCH" status | qgrep -q "lead lead: .*!! LEAD NOT FOUND"'
 echo "$APP" > "$FH/pane-w1:p9.cwd"; echo claude > "$FH/pane-w1:p9.cmd"        # the lead's own pane, an agent runs in it
 out=$(HERDR_PANE_ID=w1:p9 "$ORCH" start 2>&1); code=$?
 check "run from the lead's own pane, orch start names it lead and goes on" '[ $code -eq 0 ] && grep -q "^NAMED   this pane (w1:p9) is now .lead." <<<"$out" && grep -q "^rename w1:p9 lead" "$FH/team.log" && grep -q "^LEAD lead kind=claude herdr=found" <<<"$out" && git rev-parse -q --verify feature/ln >/dev/null'
-check "status no longer warns" '! "$ORCH" status | grep -q "LEAD NOT FOUND"'
+check "status no longer warns" '! "$ORCH" status | qgrep -q "LEAD NOT FOUND"'
 out=$(HERDR_PANE_ID=w1:p9 "$ORCH" dispatch M1 2>&1); code=$?
 check "once named, dispatch goes ahead without renaming again" '[ $code -eq 0 ] && grep -q "^DISPATCH M1" <<<"$out" && [ "$(grep -c "^rename w1:p9 lead" "$FH/team.log")" -eq 1 ]'
 rm -f "$FH/lead.paneid"; touch "$FH/lead.missing"; echo "$APP" > "$FH/pane-w1:p8.cwd"   # a plain shell pane: no agent
@@ -1489,7 +1495,7 @@ newrepo lnv; echo "$APP" > "$FH/lead.dir"; touch "$FH/lead.missing"; printf "$LN
 ORCH_LEAD_WAIT_MIN=0 timeout 120 "$ORCH" autopilot > "$WORK/lnv.log" 2>&1; code=$?
 check "the event manager warns at its start that the lead can't be woken" '[ $code -eq 0 ] && grep -q "!! LEAD NOT FOUND: the lead (lead) can.t be woken (herdr has no agent with this name)" "$WORK/lnv.log"'
 check "ALL_DONE says loudly the lead was never woken" 'grep -q "ALL_DONE, but the lead (lead) was NEVER WOKEN" "$WORK/lnv.log"'
-check "the last line no longer reads like a normal finish: the lead was never woken" 'tail -1 .orchestrate/autopilot.log | grep -q "STOPPED: the event manager finished the run (exit 0) — but the lead .lead. was never woken (herdr has no agent with this name): [0-9] event(s) wait for it (.*ALL_DONE"'
+check "the last line no longer reads like a normal finish: the lead was never woken" 'tail -1 .orchestrate/autopilot.log | qgrep -q "STOPPED: the event manager finished the run (exit 0) — but the lead .lead. was never woken (herdr has no agent with this name): [0-9] event(s) wait for it (.*ALL_DONE"'
 rm -f "$FH/lead.missing"
 
 echo "45. faster handoffs: checks in the background, no double check, early review, auto dispatch, wait times"
@@ -1548,19 +1554,19 @@ check "each wake-up tells the lead to say them before it stops" '[ "$(grep -c "^
 out=$("$ORCH" story 2>&1)
 check "orch story: what happened and what the lead did, in time order" 'grep -q "what happened: Ready to start: M5 (e)\." <<<"$out" && grep -q "the lead did: M5 (e) was sent to start$" <<<"$out" && grep -qE "the lead did: M4 \(Totals\) got the answer \"INR only\" and goes back to (claude-1|codex-1)" <<<"$out" && [ "$(grep -n "is paused" <<<"$out" | cut -d: -f1)" -lt "$(grep -n "got the answer" <<<"$out" | cut -d: -f1)" ]'
 "$ORCH" sync >/dev/null 2>&1
-check "orch sync keeps the diary (the plan is synced again after every answer)" '"$ORCH" story | grep -q "the lead did: M5 (e) was sent to start$"'
+check "orch sync keeps the diary (the plan is synced again after every answer)" '"$ORCH" story | qgrep -q "the lead did: M5 (e) was sent to start$"'
 check "the diary is saved in .orchestrate/story.md" 'grep -q "^# Run diary: Totals (feature/pw)" .orchestrate/story.md && grep -q "^- .*what happened: Every milestone is done" .orchestrate/story.md'
 out=$("$ORCH" plan show 2>&1)
 check "after the run, the cards say each milestone is done" '[ "$(grep -c "^   Now: done, on the branch$" <<<"$out")" -eq 2 ]'
 "$ORCH" fix M5 "the list shows newest first" >/dev/null 2>&1
-check "orch fix is in the diary too" '"$ORCH" story | grep -q "the lead did: M6 added: a follow-up to M5 (\"the list shows newest first\")"'
+check "orch fix is in the diary too" '"$ORCH" story | qgrep -q "the lead did: M6 added: a follow-up to M5 (\"the list shows newest first\")"'
 pkill -f -- "$APP" 2>/dev/null; sleep 1
 
 echo "47. the run's PR carries no AI tool's credit"
 newrepo prc
 printf '# Plan: t\nBranch: feature/prc\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M5: e\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 120 "$ORCH" autopilot > "$WORK/prc.log" 2>&1; code=$?
-check "orch's own commits credit nobody but the developer" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && ! git log main..feature/prc --format="%an%n%B" | grep -qi "claude\|co-authored-by\|generated with"'
+check "orch's own commits credit nobody but the developer" '[ $code -eq 0 ] && [ "$(status_of M5)" = merged ] && ! git log main..feature/prc --format="%an%n%B" | qgrep -qi "claude\|co-authored-by\|generated with"'
 printf '\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\nhttps://claude.ai/code/session_01XYZ\nCo-authored-by: Jane <1+jane@users.noreply.github.com>\n' >> .orchestrate/summary.md
 echo x > by-agent.txt; git add by-agent.txt
 git -c user.name=Claude -c user.email=noreply@anthropic.com commit -qm "chore: by an agent" -m "Co-Authored-By: Claude <noreply@anthropic.com>"
@@ -1597,9 +1603,9 @@ out=$(cd "$WORK" && "$ORCH" setup --mode subagent 2>&1); code=$?
 check "setup --mode subagent saves the mode and keeps the rest of the config" '[ $code -eq 0 ] && python3 -c "import json,sys;d=json.load(open(sys.argv[1]));assert d[\"mode\"]==\"subagent\" and d[\"subagent\"][\"coder\"][\"thinking\"]==\"medium\"" "$ORCH_CONFIG_FILE"'
 check "it writes coder.md with the config model, and reviewer.md that cannot edit" 'grep -qx "model: anthropic/claude-sonnet-4-5" "$PI_CODING_AGENT_DIR/agents/coder.md" && grep -qx "thinking: medium" "$PI_CODING_AGENT_DIR/agents/coder.md" && grep -qx "name: reviewer" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && grep -qx "tools: read, bash, grep, find, ls" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && ! grep -q "^model:" "$PI_CODING_AGENT_DIR/agents/reviewer.md"'
 check "both agents say they are only for orch runs; the reviewer denies edit and write; max_turns only where set" 'grep -q "^description: Only for a herdr-orchestra run" "$PI_CODING_AGENT_DIR/agents/coder.md" && grep -q "^description: Only for a herdr-orchestra run" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && grep -qx "disallowed_tools: edit, write" "$PI_CODING_AGENT_DIR/agents/reviewer.md" && grep -qx "max_turns: 80" "$PI_CODING_AGENT_DIR/agents/coder.md" && ! grep -q "^max_turns" "$PI_CODING_AGENT_DIR/agents/reviewer.md"'
-check "it installs pi-subagents with pi, once" 'grep -qx "install npm:@tintinweb/pi-subagents" "$WORK/pibin/pi.log" && (cd "$WORK" && "$ORCH" setup --mode subagent | grep -q "^ok      npm:@tintinweb/pi-subagents is installed") && [ "$(grep -c "^install" "$WORK/pibin/pi.log")" -eq 1 ]'
+check "it installs pi-subagents with pi, once" 'grep -qx "install npm:@tintinweb/pi-subagents" "$WORK/pibin/pi.log" && (cd "$WORK" && "$ORCH" setup --mode subagent | qgrep -q "^ok      npm:@tintinweb/pi-subagents is installed") && [ "$(grep -c "^install" "$WORK/pibin/pi.log")" -eq 1 ]'
 printf -- '---\nname: coder\n---\nmy own coder\n' > "$PI_CODING_AGENT_DIR/agents/coder.md"
-check "a coder.md the developer wrote is never overwritten" '(cd "$WORK" && "$ORCH" setup | grep -q "^KEPT .*coder.md: you edited it") && grep -qx "my own coder" "$PI_CODING_AGENT_DIR/agents/coder.md"'
+check "a coder.md the developer wrote is never overwritten" '(cd "$WORK" && "$ORCH" setup | qgrep -q "^KEPT .*coder.md: you edited it") && grep -qx "my own coder" "$PI_CODING_AGENT_DIR/agents/coder.md"'
 rm "$PI_CODING_AGENT_DIR/agents/coder.md"
 printf '{"mode": "subagent", "subagent": {"reviewer": {"model": "claude-fable-5"}}}\n' > "$ORCH_CONFIG_FILE"
 out=$(cd "$WORK" && "$ORCH" setup 2>&1); code=$?
@@ -1620,17 +1626,17 @@ check "subagent: orch lead plan starts with the subagent team note, then the usu
 check "subagent: dispatch is refused (no event manager)" '! "$ORCH" dispatch M1 >/dev/null 2>&1 && [ "$(status_of M1)" = pending ]'
 out=$("$ORCH" sub next 2>&1)
 check "orch sub next starts M1 and prints its task file" 'grep -q "^NEXT M1: one" <<<"$out" && grep -q "^REVIEW yes" <<<"$out" && [ -f "$(sed -n "s/^TASK //p" <<<"$out")" ] && [ "$(status_of M1)" = coding ]'
-check "orch sub next again names the same milestone, unsaved" '"$ORCH" sub next | grep -q "^CURRENT M1"'
+check "orch sub next again names the same milestone, unsaved" '"$ORCH" sub next | qgrep -q "^CURRENT M1"'
 echo 1 > one.txt; touch broken.txt
 out=$("$ORCH" check M1 2>&1); code=$?
 check "orch check fails with exit 1 when the check fails" '[ $code -eq 1 ] && grep -q "^CHECK FAIL M1" <<<"$out"'
 rm broken.txt
-check "orch check passes" '"$ORCH" check M1 | grep -q "^CHECK PASS M1"'
+check "orch check passes" '"$ORCH" check M1 | qgrep -q "^CHECK PASS M1"'
 out=$("$ORCH" sub "done" M1 2>&1)
-check "orch sub done commits M1 on the branch" 'grep -q "^MERGED M1" <<<"$out" && [ "$(status_of M1)" = merged ] && git log -1 --format=%s | grep -q . && git show --stat HEAD | grep -q one.txt && [ -z "$(git status --porcelain)" ]'
+check "orch sub done commits M1 on the branch" 'grep -q "^MERGED M1" <<<"$out" && [ "$(status_of M1)" = merged ] && git log -1 --format=%s | qgrep -q . && git show --stat HEAD | qgrep -q one.txt && [ -z "$(git status --porcelain)" ]'
 "$ORCH" sub next >/dev/null 2>&1; echo 2 > two.txt
 out=$("$ORCH" sub "done" M2 2>&1)
-check "the last one prints ALL_DONE" 'grep -q "^ALL_DONE" <<<"$out" && "$ORCH" sub next | grep -q "^ALL_DONE"'
+check "the last one prints ALL_DONE" 'grep -q "^ALL_DONE" <<<"$out" && "$ORCH" sub next | qgrep -q "^ALL_DONE"'
 out=$("$ORCH" finish --no-push 2>&1); code=$?
 check "orch finish works on a subagent run, reusing the passing check" '[ $code -eq 0 ] && grep -q "^CLEAN feature/pis" <<<"$out"'
 check "subagent finish tells the lead to post the manual tests in its chat" 'grep -q "^LEAD: post the MANUAL TESTS list above in your chat" <<<"$out"'
@@ -1669,7 +1675,7 @@ if node -e 'process.exit(process.features && process.features.typescript ? 0 : 1
   check "/orch-mode panes is unchanged: it only switches the mode" 'grep -q "^NOTIFY info mode: panes" <<<"$out" && ! grep -q "WROTE\|RELOAD" <<<"$out" && grep -q "\"mode\": \"panes\"" "$ORCH_CONFIG_FILE"'
   out=$(PX orch-setup --mode tabs)
   check "/orch-setup refuses an unknown mode" 'grep -q "^NOTIFY error Usage: /orch-setup \[--mode panes|subagent\]" <<<"$out"'
-  check "the terminal NEXT hint names the Pi slash command too" '(cd "$WORK" && rm -rf "$PI_CODING_AGENT_DIR" && "$ORCH" mode subagent | grep -q "^NEXT .*orch setup --mode subagent. (in Pi, ./orch-mode subagent. does it for you)")'
+  check "the terminal NEXT hint names the Pi slash command too" '(cd "$WORK" && rm -rf "$PI_CODING_AGENT_DIR" && "$ORCH" mode subagent | qgrep -q "^NEXT .*orch setup --mode subagent. (in Pi, ./orch-mode subagent. does it for you)")'
 else
   echo "  skip: this node cannot run TypeScript (needs 22.6+)"
 fi
@@ -1681,7 +1687,7 @@ check "…answers go to questions.md under ## Answers, and planning goes straigh
 check "…a closed picker pauses planning instead of guessing" 'grep -q "closed the picker without answering.*don.t guess and don.t plan" <<<"$out"'
 check "…no picker: the chat questions as before, all in one message, and grill: is still one at a time" 'grep -q "No picker, or it can.t show here" <<<"$out" && grep -q "all in one message" <<<"$out" && grep -q "Answer by number" <<<"$out" && grep -q "one picker call per question" <<<"$out"'
 newrepo nq
-check "a Codex lead starts with its question picker on; coders and the reviewer never get it (unattended panes)" '"$ORCH" agents launch codex --role lead | grep -q " -c features.default_mode_request_user_input=true$" && ! "$ORCH" agents launch codex | grep -q request_user_input && ! "$ORCH" agents launch codex --role reviewer | grep -q request_user_input && [ "$("$ORCH" agents launch claude --role lead)" = "claude --permission-mode acceptEdits" ]'
+check "a Codex lead starts with its question picker on; coders and the reviewer never get it (unattended panes)" '"$ORCH" agents launch codex --role lead | qgrep -q " -c features.default_mode_request_user_input=true$" && ! "$ORCH" agents launch codex | qgrep -q request_user_input && ! "$ORCH" agents launch codex --role reviewer | qgrep -q request_user_input && [ "$("$ORCH" agents launch claude --role lead)" = "claude --permission-mode acceptEdits" ]'
 check "a lead started on a model keeps the picker after the model and thinking options" '[ "$("$ORCH" agents launch codex --role lead --model gpt-6.2-sol@high)" = "$("$ORCH" agents launch codex --model gpt-6.2-sol@high) -c features.default_mode_request_user_input=true" ]'
 if node -e 'process.exit(process.features && process.features.typescript ? 0 : 1)' 2>/dev/null; then
   PT(){ NODE_NO_WARNINGS=1 node "$ROOT/tests/pi-extension.mjs" "$@" 2>&1; }
@@ -1724,7 +1730,7 @@ sed -i 's/^- it works$/- it works\n- it is fast/' .orchestrate/plan.md
 out=$("$ORCH" sync 2>&1)
 check "sync warns when a running milestone changed in plan.md, and says how to send the new text" 'grep -q "^WARN: M20 changed in plan.md, but codex-1 is already working from its old task.md" <<<"$out" && grep -q "orch set M20 paused., then .orch dispatch M20" <<<"$out"'
 sed -i 's/^## \[x\] M8: next job$/## [x] M8: next job, renamed/' .orchestrate/plan.md
-check "a change to a milestone nobody works on gives no warning" '! "$ORCH" sync 2>&1 | grep -q "M8 changed"'
+check "a change to a milestone nobody works on gives no warning" '! "$ORCH" sync 2>&1 | qgrep -q "M8 changed"'
 out=$(ORCH_HALT_WAIT_S=1 ORCH_HALT_SETTLE_S=3 "$ORCH" set M20 paused "moving it to claude-1" 2>&1); code=$?
 check "pausing a milestone whose coder still works presses its interrupt key (Esc) before the STOP note" '[ $code -eq 0 ] && grep -q "^codex-1 keys esc$" "$FH/keys.log" && grep -q "^STOP_NOTE M20 -> codex-1: interrupted (esc) and told to stop" <<<"$out" && grep -q "^codex-1 <- STOP: M20 is paused (moving it to claude-1). orch interrupted you" "$FH/prompts.log"'
 check "…and it is not marked free: it stays busy (stopping) while herdr shows it working" 'grep -q "^STOPPING codex-1: herdr still shows it working; it stays busy" <<<"$out"'
@@ -1768,7 +1774,7 @@ echo 1 > "$FH/pane-seq"; touch "$FH/rs-reviewer.missing"
 out=$(env -u HERDR_PANE_ID ORCH_TEAM_WAIT_S=2 "$ORCH" team up 2>&1); code=$?
 check "team up does not give the lead's pane (same kind, same folder) the reviewer's name" '! grep -q "rename w1:p1 rs-reviewer" "$FH/team.log" && grep -q "^OPENED  rs-reviewer: pane w1:p2 in " <<<"$out"'
 check "the reviewer is started inside the repo folder, whatever folder the split starts in" "grep -q \"^run w1:p2 cd $APP && claude\" \"\$FH/team.log\""
-check "orch start still finds the lead afterwards" 'HERDR_PANE_ID=w1:p1 "$ORCH" start 2>&1 | grep -q "^LEAD rs-lead kind=claude herdr=found"'
+check "orch start still finds the lead afterwards" 'HERDR_PANE_ID=w1:p1 "$ORCH" start 2>&1 | qgrep -q "^LEAD rs-lead kind=claude herdr=found"'
 newrepo tl2; printf "$TPLAN" | grep -v "^Lead:" > .orchestrate/plan.md
 echo "$APP" > "$FH/pane-w1:p1.cwd"; echo claude > "$FH/pane-w1:p1.kind"; echo claude > "$FH/pane-w1:p1.cmd"
 echo 1 > "$FH/pane-seq"; touch "$FH/rs-reviewer.missing"
@@ -1880,12 +1886,12 @@ check "Risk hold: off with a one-way milestone is named" 'grep -q "^WARN: M24 is
 printf '# Plan: t\nMode: quick\nQuick because: one file\nBranch: feature/dq\nCheck command: true\nSetup command: none\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M24: x\nDepends on: none\nDoor: one-way (drops a table)\nLikely files: col.txt\nOpen questions:\n- none\n' > .orchestrate/plan.md; out=$("$ORCH" sync 2>&1); code=$?
 check "a quick run is never hard to undo" '[ $code -ne 0 ] && grep -q "^ERROR: M24 is .Door: one-way. (hard to undo) — a quick run never is" <<<"$out"'
 printf "$DRPLAN" | sed 's/DOOR/Door: one-way (adds a column to orders, 2M rows)/' > .orchestrate/plan.md; out=$("$ORCH" sync 2>&1)
-check "the plan syncs; the card says it is hard to undo and waits for your OK" '! grep -q "^ERROR\|Door" <<<"$out" && "$ORCH" plan show | grep -q "^   Hard to undo: adds a column to orders, 2M rows. It waits for your OK (.orch approve M24.) before it lands"'
+check "the plan syncs; the card says it is hard to undo and waits for your OK" '! grep -q "^ERROR\|Door" <<<"$out" && "$ORCH" plan show | qgrep -q "^   Hard to undo: adds a column to orders, 2M rows. It waits for your OK (.orch approve M24.) before it lands"'
 timeout 120 "$ORCH" autopilot > "$WORK/door1.log" 2>&1; code=$?
 T=$(ls "$APP"/../app-wt/claude-1/.orch-task/M24/task.md 2>/dev/null)
 check "the coder is asked for proof, and does not see the Door line" '[ -n "$T" ] && grep -q "^## Hard to undo: show proof" "$T" && grep -q "hard to undo once it runs (adds a column to orders, 2M rows)" "$T" && ! grep -q "^Door:" "$T" && python3 -c "import json,sys; assert json.load(open(sys.argv[1]))[\"door\"][\"kind\"]==\"one-way\"" "$(dirname "$T")/task.json"'
 check "a hard-to-undo milestone is held although no file looks risky, with how much it could break and the proof" '[ $code -eq 3 ] && [ "$(status_of M24)" = held ] && grep -q "M24 is HELD for your approval: hard to undo: adds a column to orders, 2M rows\. Could break: medium (M25 builds on it)\. Proof from the coder: migration ran on a copy: 2M rows in 14s, no lock\." "$WORK/door1.log"'
-check "orch status shows the proof with the hold" '"$ORCH" status | grep -q "M24.*held.*could break: medium · proof: migration ran on a copy"'
+check "orch status shows the proof with the hold" '"$ORCH" status | qgrep -q "M24.*held.*could break: medium · proof: migration ran on a copy"'
 "$ORCH" approve M24 >/dev/null 2>&1; timeout 120 "$ORCH" autopilot > "$WORK/door1b.log" 2>&1; code=$?
 S=.orchestrate/summary.md
 check "after orch approve, both land" '[ $code -eq 0 ] && [ "$(status_of M24)$(status_of M25)" = mergedmerged ]'
@@ -1985,7 +1991,7 @@ out=$(CODEX_SANDBOX_NETWORK_DISABLED=1 "$ORCH" lead check 2>&1)
 check "a lead in Codex's sandbox with the network off is warned, with the command to restart it" 'grep -q "^WARN this pane runs in Codex.s sandbox with the network off" <<<"$out" && grep -q "^    codex --approve-for-me -c sandbox_workspace_write.network_access=true" <<<"$out"'
 out=$(CODEX_SANDBOX_NETWORK_DISABLED=1 "$ORCH" lead plan 2>&1 | head -5)
 check "…orch lead plan says it at the top too" 'grep -q "^WARN this pane runs in Codex.s sandbox" <<<"$out"'
-check "a normal pane gets no sandbox warning" '! "$ORCH" lead check 2>&1 | grep -q "Codex.s sandbox"'
+check "a normal pane gets no sandbox warning" '! "$ORCH" lead check 2>&1 | qgrep -q "Codex.s sandbox"'
 out=$(PATH="$CX:$PATH" "$ORCH" doctor codex 2>&1)
 check "doctor: the shipped Codex launch keeps both settings and its flags are in --help" '! grep -q "BAD launch" <<<"$out" && [ "$(grep -c "launch flag -c is listed" <<<"$out")" -eq 1 ] && grep -q "launch flag -c is listed" <<<"$out"'
 printf '[codex]\nlaunch = "codex --approve-for-me"\n' > "$WORK/cx-agents.toml"
@@ -2068,9 +2074,9 @@ check "…while a push to main is still refused" '! git push origin HEAD:main >/
 out=$("$ORCH" doctor 2>&1)
 check "plain orch doctor: guard ok" 'grep -q "^ok      main guard" <<<"$out"'
 sed -i 's/main guard v1/main guard v0/' .git/hooks/pre-push
-check "a guard from an older orch is updated by orch guard" '"$ORCH" guard status >/dev/null 2>&1; [ $? -ne 0 ] && "$ORCH" guard 2>&1 | grep -q "^GUARD updated" && grep -q "main guard v1" .git/hooks/pre-push'
-check "orch guard --print gives the hook script" '"$ORCH" guard --print | head -1 | grep -q "^#!/bin/sh" && "$ORCH" guard --print | grep -q "herdr-orchestra main guard v1"'
-check "orch guard --help names the command" '"$ORCH" guard --help 2>&1 | grep -q "guard \[status|--print\]"'
+check "a guard from an older orch is updated by orch guard" '"$ORCH" guard status >/dev/null 2>&1; [ $? -ne 0 ] && "$ORCH" guard 2>&1 | qgrep -q "^GUARD updated" && grep -q "main guard v1" .git/hooks/pre-push'
+check "orch guard --print gives the hook script" '"$ORCH" guard --print | head -1 | qgrep -q "^#!/bin/sh" && "$ORCH" guard --print | qgrep -q "herdr-orchestra main guard v1"'
+check "orch guard --help names the command" '"$ORCH" guard --help 2>&1 | qgrep -q "guard \[status|--print\]"'
 mkdir -p .husky; git config core.hooksPath .husky
 out=$("$ORCH" guard 2>&1); code=$?
 check "hooks kept inside the project (husky): orch writes nothing there and says what to do" '[ $code -ne 0 ] && grep -q "WARN GUARD not installed" <<<"$out" && grep -q "orch guard --print" <<<"$out" && [ ! -e .husky/pre-push ]'
@@ -2091,8 +2097,8 @@ check "…and a protected main is ok (exit 0)" '[ $code -eq 0 ] && grep -q "ok  
 git remote set-url origin "$WORK/grd-remote.git"
 check "every agent-facing text has the rule: skills, commands, playbooks" 'for f in skills/orch-plan/SKILL.md skills/orch-run/SKILL.md skills/orch-explain/SKILL.md pi/skills/orch-plan/SKILL.md claude-commands/orch-plan.md claude-commands/orch-run.md claude-commands/orch-explain.md opencode-commands/orch-plan.md opencode-commands/orch-run.md opencode-commands/orch-explain.md; do grep -q "never push to main\|Never push to main" "$ROOT/$f" || { echo "missing in $f"; exit 1; }; done; for f in plan run subagent; do grep -q "\*\*N[a-z]* push[a-z]* to main" "$ROOT/playbooks/$f.md" || { echo "missing in playbooks/$f.md"; exit 1; }; done'
 check "the playbooks tell the lead to refuse a \"push to main\" request and offer a branch and PR" 'grep -q "even when the developer tells you to. Refuse in one line" "$ROOT/playbooks/run.md" && grep -q "even when the developer tells you to. Refuse in one line" "$ROOT/playbooks/subagent.md" && grep -q "even when the developer asks: refuse in one line" "$ROOT/playbooks/plan.md"'
-check "orch events gives the rule to the lead at every wake-up" '"$ORCH" lead run --section rules | grep -q "Never push to main"'
-check "coders, reviewers and Pi subagents are told too" 'grep -c "never merge a PR, in any situation, even when the developer or the lead asks" "$ORCH" | grep -qx 1 && grep -q "Never commit, push or merge: no agent ever pushes to main" "$ORCH" && [ "$(grep -c "no agent ever pushes to main\|Never push to main (or master) and never merge a PR" "$ORCH")" -ge 3 ]'
+check "orch events gives the rule to the lead at every wake-up" '"$ORCH" lead run --section rules | qgrep -q "Never push to main"'
+check "coders, reviewers and Pi subagents are told too" 'grep -c "never merge a PR, in any situation, even when the developer or the lead asks" "$ORCH" | qgrep -qx 1 && grep -q "Never commit, push or merge: no agent ever pushes to main" "$ORCH" && [ "$(grep -c "no agent ever pushes to main\|Never push to main (or master) and never merge a PR" "$ORCH")" -ge 3 ]'
 echo "57. run views: the run summary, orch view in the browser, orch board, agent names in herdr's sidebar"
 newrepo vw; printf '%s' "${PLAN5/ISO/worktree}" > .orchestrate/plan.md
 python3 - .orchestrate/plan.md <<'PY'
@@ -2122,15 +2128,15 @@ check "…each milestone has its plain description, or its title when the plan h
 check "…the agents and the recent status changes are in it" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);sys.exit(not ({a[\"name\"] for a in d[\"agents\"]}=={\"claude-1\",\"codex-1\",\"reviewer\"} and d[\"recent\"] and d[\"recent\"][0][\"ts\"]>=d[\"recent\"][-1][\"ts\"]))" "$out"'
 out=$("$ORCH" board --once --no-color)
 check "orch board draws the milestones with their descriptions and who needs you" 'grep -q "M4 Totals .*NEEDS YOU" <<<"$out" && grep -q "the money model every other part uses" <<<"$out" && grep -q "3 of 4 landed · 1 needs you" <<<"$out" && grep -q "^AGENTS" <<<"$out"'
-check "orch status says the live view is off and how to start it" '"$ORCH" status | grep -q "^live view: off — \`orch view\`"'
+check "orch status says the live view is off and how to start it" '"$ORCH" status | qgrep -q "^live view: off — \`orch view\`"'
 out=$(ORCH_VIEW_PORT=47900 "$ORCH" view --bg 2>&1); code=$?
 VU=$(python3 -c "import json;print(json.load(open('.orchestrate/view.json'))['url'])" 2>/dev/null)
 check "orch view --bg starts the page on this computer only and prints its link" '[ $code -eq 0 ] && grep -q "^orch view: http://127.0.0.1:479" <<<"$out" && [ -n "$VU" ]'
-check "…the page, the summary and the history are served" 'curl -sf "$VU" | grep -q "<title>orch view</title>" && curl -sf "${VU}api/state" | python3 -c "import json,sys;sys.exit(json.load(sys.stdin)[\"counts\"][\"landed\"]!=3)" && curl -sf "${VU}api/history" | python3 -c "import json,sys;sys.exit(len(json.load(sys.stdin)[\"events\"])<4)"'
+check "…the page, the summary and the history are served" 'curl -sf "$VU" | qgrep -q "<title>orch view</title>" && curl -sf "${VU}api/state" | python3 -c "import json,sys;sys.exit(json.load(sys.stdin)[\"counts\"][\"landed\"]!=3)" && curl -sf "${VU}api/history" | python3 -c "import json,sys;sys.exit(len(json.load(sys.stdin)[\"events\"])<4)"'
 sse=$(timeout 3 curl -sN "${VU}api/stream" 2>/dev/null)
 check "…the live stream sends the run at once" 'grep -q "^event: state" <<<"$sse" && grep -q "^data: {\"view\": 1" <<<"$sse"'
-check "…orch status and orch view status show its link" '"$ORCH" status | grep -q "^live view: http://127.0.0.1:" && "$ORCH" view status | grep -q "orch view is running: http://127.0.0.1:"'
-check "…a second orch view does not start another server" '"$ORCH" view --bg | grep -q "already running"'
+check "…orch status and orch view status show its link" '"$ORCH" status | qgrep -q "^live view: http://127.0.0.1:" && "$ORCH" view status | qgrep -q "orch view is running: http://127.0.0.1:"'
+check "…a second orch view does not start another server" '"$ORCH" view --bg | qgrep -q "already running"'
 check "…another site can't reach it through a name it controls (only 127.0.0.1 or localhost)" '[ "$(curl -s -o /dev/null -w "%{http_code}" -H "Host: evil.example:80" "${VU}api/state")" = 403 ] && curl -sf -H "Host: localhost" "${VU}api/state" >/dev/null'
 check "…it never changes the run: state.json is the same after a page load" 'a=$(md5sum < .orchestrate/state.json); curl -sf "${VU}api/state" >/dev/null; [ "$(md5sum < .orchestrate/state.json)" = "$a" ]'
 python3 - <<'PY'
@@ -2142,8 +2148,8 @@ PY
 out=$("$ORCH" events --peek 2>&1)
 check "the lead's \"needs you\" event carries the page link to that milestone" 'grep -q "SEE: http://127.0.0.1:[0-9]*/#M4" <<<"$out"'
 "$ORCH" view stop >/dev/null
-check "orch view stop stops it, and status says so" '"$ORCH" view status | grep -q "not running" && ! curl -sf "$VU" >/dev/null'
-check "…and the lead's line has no link when the page is off" '! "$ORCH" events --peek 2>&1 | grep -q "SEE:"'
+check "orch view stop stops it, and status says so" '"$ORCH" view status | qgrep -q "not running" && ! curl -sf "$VU" >/dev/null'
+check "…and the lead's line has no link when the page is off" '! "$ORCH" events --peek 2>&1 | qgrep -q "SEE:"'
 python3 - <<'PY'
 import json; p=".orchestrate/state.json"; s=json.load(open(p)); s.pop("lead"); s["lead_mode"]="off"; s["lead_events"]=[]; json.dump(s,open(p,"w"))
 PY
@@ -2167,7 +2173,7 @@ check "…and unlinks it" 'grep -q "^plugin unlink herdr-orchestra.board$" "$FH/
 python3 - <<'PY'
 import json; p=".orchestrate/state.json"; s=json.load(open(p)); s["orch_mode"]="subagent"; json.dump(s,open(p,"w"))
 PY
-check "subagent mode: the summary says there is no event manager, and the board still draws the run" '"$ORCH" status --json | python3 -c "import json,sys;m=json.load(sys.stdin)[\"manager\"];sys.exit(m[\"applies\"] is not False)" && "$ORCH" board --once --no-color | grep -q "M4 Totals"'
+check "subagent mode: the summary says there is no event manager, and the board still draws the run" '"$ORCH" status --json | python3 -c "import json,sys;m=json.load(sys.stdin)[\"manager\"];sys.exit(m[\"applies\"] is not False)" && "$ORCH" board --once --no-color | qgrep -q "M4 Totals"'
 python3 - <<'PY'
 import json; p=".orchestrate/state.json"; s=json.load(open(p)); s["orch_mode"]="panes"; json.dump(s,open(p,"w"))
 PY
@@ -2185,7 +2191,7 @@ PY
 "$ORCH" set M4 pending >/dev/null
 timeout 120 "$ORCH" autopilot > "$WORK/vw2.log" 2>&1; code=$?
 check "the run finishes as before (ALL_DONE)" '[ $code -eq 0 ] && [ "$(status_of M4)" = merged ]'
-check "…the board says all done" '"$ORCH" board --once --no-color | grep -q "ALL DONE"'
+check "…the board says all done" '"$ORCH" board --once --no-color | qgrep -q "ALL DONE"'
 : > "$FH/meta.log"
 out=$("$ORCH" finish --no-push 2>&1); code=$?
 check "orch finish works as before and gives every agent its own name back in herdr" '[ $code -eq 0 ] && grep -q "pane report-metadata p-claude-1 --source orch --clear-display-agent --clear-token orch_task --clear-token orch_desc" "$FH/meta.log" && grep -q "workspace report-metadata w1 --source orch --clear-token orch" "$FH/meta.log" && ! grep -q -- "--display-agent" "$FH/meta.log"'
@@ -2221,13 +2227,13 @@ check "ORCH_SIDEBAR=0 turns the sidebar names off" '[ $c3 -eq 0 ] && [ ! -s "$FH
 echo "59. old runs are labelled, and a plan orch does not read is pointed out"
 cd "$APP" || exit        # the finished 'off' run: all merged, no event manager
 vm=$("$ORCH" status --json)
-check "a finished run with nothing going says it is the last run, in the summary, the board and orch status" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);k=[n[\"kind\"] for n in d[\"notices\"]];sys.exit(0 if k==[\"old_run\"] else 1)" "$vm" && "$ORCH" board --once --no-color | grep -q "^! This is the last run" && "$ORCH" status | grep -q "^note: This is the last run"'
+check "a finished run with nothing going says it is the last run, in the summary, the board and orch status" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);k=[n[\"kind\"] for n in d[\"notices\"]];sys.exit(0 if k==[\"old_run\"] else 1)" "$vm" && "$ORCH" board --once --no-color | qgrep -q "^! This is the last run" && "$ORCH" status | qgrep -q "^note: This is the last run"'
 printf '# Plan: other\n' > .orchestrate/csv-import.md
 vm=$("$ORCH" status --json)
-check "a plan file with another name is pointed out: orch reads plan.md only" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);k=[n[\"kind\"] for n in d[\"notices\"]];sys.exit(0 if k==[\"old_run\",\"other_plan\"] else 1)" "$vm" && "$ORCH" board --once --no-color | grep -q "csv-import.md is not used: orch only reads .orchestrate/plan.md"'
-check "…the files orch writes itself (summary, story, pr-body...) and the lead's questions.md are never mistaken for a plan" 'for f in summary.md summary.prev.md story.md pr-body.md manual-tests.md questions.md; do printf x > .orchestrate/$f; done; ! "$ORCH" status --json | grep -q "summary.md is not used"; ! "$ORCH" status --json | grep -q "story.md is not used" && ! "$ORCH" status --json | grep -q "questions\.md"'
+check "a plan file with another name is pointed out: orch reads plan.md only" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);k=[n[\"kind\"] for n in d[\"notices\"]];sys.exit(0 if k==[\"old_run\",\"other_plan\"] else 1)" "$vm" && "$ORCH" board --once --no-color | qgrep -q "csv-import.md is not used: orch only reads .orchestrate/plan.md"'
+check "…the files orch writes itself (summary, story, pr-body...) and the lead's questions.md are never mistaken for a plan" 'for f in summary.md summary.prev.md story.md pr-body.md manual-tests.md questions.md; do printf x > .orchestrate/$f; done; ! "$ORCH" status --json | qgrep -q "summary.md is not used"; ! "$ORCH" status --json | qgrep -q "story.md is not used" && ! "$ORCH" status --json | qgrep -q "questions\.md"'
 sleep 1; touch .orchestrate/plan.md
-check "a plan.md changed after the run says to run orch sync" '"$ORCH" status --json | grep -q "\"plan_unsynced\""'
+check "a plan.md changed after the run says to run orch sync" '"$ORCH" status --json | qgrep -q "\"plan_unsynced\""'
 cp .orchestrate/state.json "$WORK/state.keep"
 python3 - <<'PY'
 import json
@@ -2247,7 +2253,7 @@ sleep 1; printf '# Plan: other\n' > .orchestrate/csv-import.md
 out=$("$ORCH" sync 2>&1)
 check "orch sync warns when another plan file is newer than plan.md" 'grep -q "csv-import.md is newer than plan.md, but orch only reads plan.md" <<<"$out"'
 check "…and still loads plan.md as before" '[ "$(status_of M1)" = pending ]'
-check "the empty summary (no run yet) also points out the unread plan" 'rm -f .orchestrate/state.json; "$ORCH" status --json | grep -q "\"other_plan\""'
+check "the empty summary (no run yet) also points out the unread plan" 'rm -f .orchestrate/state.json; "$ORCH" status --json | qgrep -q "\"other_plan\""'
 
 echo "60. a coder's and the reviewer's chat is compacted (/compact) between milestones, never mid-work, never the lead"
 CPLAN='# Plan: c

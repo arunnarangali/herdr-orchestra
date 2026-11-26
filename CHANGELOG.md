@@ -2,6 +2,20 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.20.0] - 2026-11-26
+
+The tests run in about 3 minutes instead of about 20. Nothing in orch changed, and no check was removed, skipped or made easier.
+
+Example: `bash tests/parallel.sh` runs the 66 sections of `tests/run.sh` side by side, about 8 at a time, each in its own temp folder with its own fake herdr and fake agents. It finished in 188s with 764 checks passed, the same 764 checks by name as `bash tests/run.sh` gives one after another (1265s on the same machine).
+
+### Changed
+- **`tests/parallel.sh`** runs the sections of `tests/run.sh` side by side. Every section runs as written, with the same waits and timeouts, so a timing bug that shows only with slow agents is still caught. Sections that use what the section before them left behind run together in one group (the `JOINS` list). The run fails if a check fails, if a group stops early, or if any section did not print its title. `-j N` sets how many groups run at once, `--list` shows the groups, and `bash tests/parallel.sh 45` runs only the group of section 45, for quick runs while you work.
+- **CI and the Release workflow** run `tests/parallel.sh`. `bash tests/run.sh` still runs everything one after another, as before.
+
+### Fixed (tests only)
+- **A check could fail for nothing on a busy machine.** `cmd | grep -q text` stops reading at the first match, so `orch` could hit "Broken pipe" while still printing its help, and `pipefail` then failed the check. All 127 such checks now use `qgrep`, a grep that reads everything. What each check tests is unchanged.
+- Five things several sections use (`P1`, `MPLAN`, `PRS`, `stpy` and the fake agent programs in `$FAKEBIN`) are defined once at the top of `tests/run.sh` instead of inside the first section that used them, so any section can run on its own.
+
 ## [6.17.0] - 2026-11-26
 
 A compact that ended quickly always gets its line in `orch story` now. Nothing else about compacting changed.
