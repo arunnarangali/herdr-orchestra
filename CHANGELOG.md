@@ -2,6 +2,30 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.23.0] - 2026-11-27
+
+Subagent mode now belongs to Pi only. Before, `orch setup --mode subagent` saved one machine-wide `"mode": "subagent"`, so every lead got Pi's subagent steps, even Antigravity, Claude Code or Codex.
+
+Example: you turn on subagent mode in Pi, then plan a feature with Antigravity. Before, `orch lead plan` in Antigravity printed `SUBAGENT MODE (Pi, one window)` and told it to skip herdr and use Pi subagents. Now Antigravity gets the normal panes playbook, and Pi still gets subagent mode.
+
+### Fixed
+- **The mode is saved per agent**: `~/.config/herdr-orchestra/config.json` holds `"modes": {"pi": "subagent"}`. Any agent not listed uses panes mode.
+- **Subagent mode is refused for agents that have none.** Only Pi has it today (through pi-subagents), so orch never gives another agent subagent instructions. `orch mode subagent --agent claude` says no. `orch setup --mode subagent` from a plain terminal saves it for Pi.
+- **orch knows which agent is asking**: from `AI_AGENT` (Pi sets `pi`, Claude Code sets `claude-code_...`), then `PI_CODING_AGENT`, `CLAUDECODE`, `CODEX_*` or `OPENCODE`. When it can't tell (for example Antigravity), the agent gets panes. `--agent <kind>` or `ORCH_AGENT=<kind>` says it by hand.
+- **An old Pi run no longer leaks into the next plan.** If the repo's last run was a Pi subagent run, another agent's `orch lead plan` / `orch lead run` still gets panes. `orch sync` gives a new plan subagent mode only when its `Lead:` is Pi and Pi's saved mode is subagent.
+- `orch mode` shows this agent's mode, and the modes saved for other agents (`saved per agent: pi=subagent`).
+- **herdr's sidebar could miss a short review.** The sidebar name (`reviewer · reviewing M2`) was only sent once per event-manager round, so a review that finished quickly never showed up there. Now it is sent as soon as a coder's job or a review starts. This also fixes a test that failed now and then in CI.
+
+### Added
+- `ORCH_MODE=panes|subagent` changes the mode for one command, for example `ORCH_MODE=panes orch lead plan` in Pi. `subagent` works only in Pi.
+- `--agent <kind>` on `orch mode`, `orch setup` and `orch lead plan|run`.
+
+### Changed
+- An old config with `"mode": "subagent"` keeps working: orch reads it as Pi's only. The next `orch mode` or `orch setup --mode` saves it as `"modes": {"pi": "subagent"}` and prints `MOVED`. The Pi extension (`/orch-mode`) reads and writes the new format too.
+
+### Not yet tried
+- With real Pi and Antigravity windows. Tested with orch's simulated agents and the Pi extension test harness. Pi sets `AI_AGENT=pi` and `PI_CODING_AGENT=true` (checked in `@earendil-works/pi-coding-agent`); Antigravity sets no known mark, so it is treated as "not Pi" (panes).
+
 ## [6.22.0] - 2026-11-26
 
 The board popup (`prefix+a`) now opens in the repo of the pane you were in. Before, it could answer "This folder is not a git repo with an orch run" even while a run was going.

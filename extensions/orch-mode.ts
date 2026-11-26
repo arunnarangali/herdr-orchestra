@@ -7,7 +7,11 @@
 // read it, and `npx herdr-orchestra` ignores it.
 //
 // Where the mode comes from: this repo's run (.orchestrate/state.json, `orch_mode`; a run from before 6.2.0 is
-// panes), else ~/.config/herdr-orchestra/config.json (`mode`), else panes.
+// panes), else Pi's saved mode in ~/.config/herdr-orchestra/config.json (`modes.pi`; before 6.23.0 one
+// machine-wide `mode`, now read as Pi's only), else panes. The mode is saved per agent, so subagent mode set here
+// never reaches Claude Code, Codex, Antigravity or any other agent: they stay in panes mode.
+// (orch knows Pi is asking from AI_AGENT=pi / PI_CODING_AGENT, which Pi sets for every command it runs.)
+
 //
 // Commands:  /orch-mode [panes|subagent]       show or switch the mode; `subagent` also sets it up (below)
 //            /orch-setup [--mode panes|subagent] install the `orch` command from this package (needed once)
@@ -30,7 +34,7 @@ type Mode = "panes" | "subagent";
 const MODES: Mode[] = ["panes", "subagent"];
 const STATUS_KEY = "orch";
 /** `orch setup` result lines (bin/orch pi_setup and set_mode). */
-const SETUP_LINE = /^(WROTE|ok |KEPT|REFUSED|NO PI|INSTALL|INSTALLED|FAILED|mode:|mode panes:|this repo|NOT CHANGED|run it yourself)/;
+const SETUP_LINE = /^(WROTE|ok |KEPT|REFUSED|NO PI|INSTALL|INSTALLED|FAILED|mode:|mode panes:|MOVED|this repo|NOT CHANGED|run it yourself)/;
 
 function packageRoot(): string {
   const here = typeof __dirname !== "undefined" ? __dirname : dirname(fileURLToPath(import.meta.url));
@@ -153,14 +157,27 @@ async function readMode(pi: ExtensionAPI, cwd: string): Promise<{ mode: Mode; fr
     const st = readJson(state);
     if (st) return { mode: asMode(st.orch_mode) ?? "panes", from: "this repo's run" };
   }
-  const saved = asMode(readJson(configFile())?.mode);
+  const saved = piSavedMode(readJson(configFile()));
   return saved ? { mode: saved, from: configFile() } : { mode: "panes", from: "default" };
+}
+
+/** Pi's saved mode: `modes.pi`, else the old machine-wide `mode: subagent` (read as Pi's). */
+function piSavedMode(data: Record<string, unknown> | undefined): Mode | undefined {
+  const modes = data?.modes;
+  const own = modes && typeof modes === "object" && !Array.isArray(modes) ? asMode((modes as Record<string, unknown>).pi) : undefined;
+  return own ?? (asMode(data?.mode) === "subagent" ? "subagent" : undefined);
 }
 
 function saveConfigMode(mode: Mode): void {
   const path = configFile();
   const data = readJson(path) ?? {};
-  data.mode = mode;
+  const old = data.modes && typeof data.modes === "object" && !Array.isArray(data.modes) ? (data.modes as Record<string, unknown>) : {};
+  const modes: Record<string, unknown> = { ...old };
+  if (asMode(data.mode) === "subagent" && !("pi" in modes)) modes.pi = "subagent";
+  delete data.mode;
+  if (mode === "subagent") modes.pi = mode;
+  else delete modes.pi;
+  data.modes = modes;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path + ".tmp", JSON.stringify(data, null, 2) + "\n");
   renameSync(path + ".tmp", path);

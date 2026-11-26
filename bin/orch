@@ -1642,7 +1642,7 @@ def cmd_sync(args):
         "title": title_m.group(1) if title_m else branch,
         "commits": commits,
         "mode": mode,
-        "orch_mode": old.get("orch_mode") or config_mode(),     # panes (herdr) or subagent (Pi): kept for the run
+        "orch_mode": plan_orch_mode(old, branch, lead[1][0] if lead else None),   # panes, or subagent (Pi leads only)
         "quick_because": quick_because if quick else None,
         "green_tree": old.get("green_tree"),
         "integration_broken": old.get("integration_broken"),
@@ -5260,6 +5260,11 @@ def _autopilot(args):
         out = (r.stdout + r.stderr).strip()
         if r.returncode not in ok:
             raise RuntimeError(f"orch {' '.join(str(x) for x in a)} -> exit {r.returncode}: {out}")
+        if r.returncode == 0 and a[0] in ("send", "review"):
+            # a job just started: tell herdr's sidebar now, not at the next round (a short review could be missed)
+            with contextlib.suppress(NameError):
+                if names:
+                    names.update(load())
         return r.returncode, out
 
     def patch_state(fn):
@@ -6875,7 +6880,7 @@ def team_up(args):
     flag = mode_flag(args, "usage: orch team up [--dry-run] [--mode panes|subagent]")
     dry = "--dry-run" in args
     if flag and not dry:
-        set_mode(flag, hint=False)
+        set_mode(flag, hint=False, agent=mode_target(flag, "usage: orch team up [--dry-run] [--mode panes|subagent]"))
     st = load()
     if (flag or run_mode(st)) == "subagent":
         print("mode subagent: no panes to open; the coder and the reviewer are Pi subagents")
@@ -8003,9 +8008,12 @@ USAGE = """usage: orch <command> [args]
   team up [--dry-run] [--mode panes|subagent]
                            open a herdr pane for every agent in the plan herdr can't find, in its folder, and name it
                            (subagent mode: no panes; sets up the Pi coder/reviewer subagents instead)
-  mode [panes|subagent]    which mode runs use: panes (herdr panes, the default) or subagent (one Pi window)
-  setup [--mode panes|subagent]  get this machine ready for a mode; subagent: write ~/.pi/agent/agents/coder.md and
-                           reviewer.md from ~/.config/herdr-orchestra/config.json and install pi-subagents
+  mode [panes|subagent] [--agent <kind>]   this agent's mode, or save one: panes (herdr panes, the default for
+                           every agent) or subagent (one Pi window; Pi only). Saved per agent in
+                           ~/.config/herdr-orchestra/config.json ("modes": {"pi": "subagent"}); ORCH_MODE=panes|subagent
+                           overrides it for one command. orch finds the agent by itself (ORCH_AGENT=<kind> to say it)
+  setup [--mode panes|subagent] [--agent <kind>]  get this machine ready for a mode; subagent (saved for Pi): write
+                           ~/.pi/agent/agents/coder.md and reviewer.md from the config and install pi-subagents
   agents                   the agent registry: kinds, installed?, roles, herdr detection, launch commands
   agents launch <kind> [--model <id>] [--role reviewer]  print the command that starts <kind> in a pane
                            (auto-approve edits; --role reviewer: its read-only reviewer command when it has one)
@@ -8313,6 +8321,8 @@ def lead_self_name():
 
 def cmd_lead(args):
     """orch lead plan|run -> print the lead playbook; orch lead whoami -> this pane + how to name it `lead`."""
+    args = list(args)
+    agent_flag(args, "usage: orch lead plan|run [--agent <kind>]")    # which agent leads, when orch can't tell
     sub = args[0] if args else ""
     if sub in ("plan", "run"):
         pb = asset(f"playbooks/{sub}.md") or die(f"playbooks/{sub}.md not found next to orch or in the install")
@@ -9156,9 +9166,84 @@ def config_save(data):
     os.replace(tmp, p)
 
 
-def config_mode():
-    m = str(config_load().get("mode") or "panes").lower()
-    return m if m in ORCH_MODES else "panes"
+# The mode is saved per agent (`modes` in the config, e.g. {"modes": {"pi": "subagent"}}): an agent not listed
+# runs in panes mode. Subagent mode exists only for Pi today (it needs @tintinweb/pi-subagents), so orch never gives
+# another agent (Claude Code, Codex, Antigravity, ...) subagent instructions, whatever the config says.
+# Before 6.23.0 the config had one machine-wide `"mode"`; a saved `"mode": "subagent"` is read as Pi's, and the next
+# save moves it to `modes.pi`.
+SUBAGENT_AGENTS = ("pi",)
+AGENT_RE_KIND = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+AGENT_OVERRIDE = None       # set by `--agent <kind>`
+
+
+def config_modes(conf=None):
+    """{agent: mode} from the config, with the old machine-wide `mode: subagent` read as Pi's."""
+    conf = config_load() if conf is None else conf
+    raw = conf.get("modes") if isinstance(conf.get("modes"), dict) else {}
+    out = {str(k).lower(): str(v).lower() for k, v in raw.items() if str(v).lower() in ORCH_MODES}
+    if str(conf.get("mode") or "").lower() == "subagent":
+        out.setdefault("pi", "subagent")
+    return out
+
+
+def config_mode(agent="pi"):
+    """The mode saved for this agent; panes when none is saved, or when the agent has no subagent mode."""
+    m = config_modes().get(agent or "", "panes")
+    return m if m == "panes" or agent in SUBAGENT_AGENTS else "panes"
+
+
+def calling_agent():
+    """Which agent runs this orch command (its kind, as in agents.toml), or None when orch can't tell.
+    `--agent` or ORCH_AGENT win; then AI_AGENT, which the innermost agent sets (Pi: "pi", Claude Code:
+    "claude-code_..."); then the marks agents leave in their shell (PI_CODING_AGENT, CLAUDECODE, CODEX_*, OPENCODE)."""
+    e = os.environ
+    v = (AGENT_OVERRIDE or e.get("ORCH_AGENT") or "").strip().lower()
+    if v:
+        return v
+    names = {"pi": "pi", "claude": "claude", "codex": "codex", "opencode": "opencode", "amp": "amp",
+             "hermes": "hermes", "agy": "agy", "antigravity": "agy", "gemini": "agy"}
+    first = (re.split(r"[^a-z0-9]+", (e.get("AI_AGENT") or "").strip().lower()) or [""])[0]
+    if first:
+        return names.get(first, first if AGENT_RE_KIND.match(first) else None)
+    if e.get("PI_CODING_AGENT") == "true":
+        return "pi"
+    if e.get("CLAUDECODE") == "1":
+        return "claude"
+    if any(k.startswith("CODEX_") for k in e):
+        return "codex"
+    if e.get("OPENCODE"):
+        return "opencode"
+    return None
+
+
+def agent_flag(args, usage):
+    """Take `--agent <kind>` (or `--agent=<kind>`) out of args and use it as the calling agent; returns it or None."""
+    global AGENT_OVERRIDE
+    for i, a in enumerate(list(args)):
+        if a == "--agent" or a.startswith("--agent="):
+            val = (a.split("=", 1)[1] if "=" in a else (args[i + 1] if len(args) > i + 1 else "")).strip().lower()
+            del args[i:i + (1 if "=" in a else 2)]
+            if not AGENT_RE_KIND.match(val):
+                die(f"--agent needs an agent kind such as pi, claude, codex or agy, got {val!r} — {usage}")
+            AGENT_OVERRIDE = val
+            return val
+    return None
+
+
+def mode_env():
+    """ORCH_MODE=panes|subagent: a one-command override (e.g. `ORCH_MODE=panes orch lead plan`); None when unset."""
+    v = (os.environ.get("ORCH_MODE") or "").strip().lower()
+    if not v:
+        return None
+    if v not in ORCH_MODES:
+        die(f"ORCH_MODE must be panes or subagent, got {v!r}")
+    return v
+
+
+def no_subagent_for(agent):
+    return (f"subagent mode is only for Pi today (it uses Pi's pi-subagents); "
+            f"{'this agent (' + agent + ')' if agent else 'orch cannot tell which agent this is, so it'} "
+            f"uses panes mode. In Pi orch finds it by itself; elsewhere add `--agent pi` or set ORCH_AGENT=pi")
 
 
 def run_mode(st):
@@ -9197,15 +9282,46 @@ def _repo_state_path():
     return p if p.exists() else None
 
 
-def current_mode():
-    """(mode, where it comes from): this repo's run, else the machine's config, else panes."""
+def current_mode(agent=...):
+    """(mode, where it comes from) for the agent running orch: a one-command ORCH_MODE, else this repo's run, else
+    the mode saved for this agent, else panes. Only Pi has a subagent mode, so any other agent gets panes even when
+    this repo's last run or the config says subagent (that is Pi's)."""
+    agent = calling_agent() if agent is ... else agent
+    env = mode_env()
+    if env == "subagent" and agent not in SUBAGENT_AGENTS:
+        die("ORCH_MODE=subagent: " + no_subagent_for(agent))
+    if env:
+        return env, "ORCH_MODE"
+    run = None
     with contextlib.suppress(Exception):
         p = _repo_state_path()
         if p:
-            return run_mode(json.loads(p.read_text())), "this repo's run"
-    if "mode" in config_load():
-        return config_mode(), short(user_config_file())
+            run = run_mode(json.loads(p.read_text()))
+    if agent not in SUBAGENT_AGENTS:
+        if run == "panes":
+            return "panes", "this repo's run"
+        if run == "subagent" or "subagent" in config_modes().values():
+            return "panes", f"{agent or 'this agent'}: subagent mode is only for Pi"
+        return "panes", "default"
+    if run:
+        return run, "this repo's run"
+    if agent in config_modes():
+        return config_mode(agent), f"{agent}, in {short(user_config_file())}"
     return "panes", "default"
+
+
+def plan_orch_mode(old, branch, lead_kind):
+    """The mode a run synced from the plan gets: subagent only when its lead is Pi and Pi's saved mode (or the run
+    this plan already had, on the same branch) is subagent; every other lead runs in panes."""
+    kind = (lead_kind or calling_agent() or "").lower()
+    env = mode_env()
+    if kind not in SUBAGENT_AGENTS:
+        return "panes"
+    if env:
+        return env
+    if old.get("branch") == branch and old.get("orch_mode") in ORCH_MODES:
+        return old["orch_mode"]
+    return config_mode(kind)
 
 
 def mode_flag(args, usage):
@@ -9376,16 +9492,30 @@ def pi_setup():
     return problems + 1
 
 
+def mode_target(mode, usage):
+    """Which agent `orch mode` / `orch setup --mode` saves the mode for: `--agent`, else the agent running orch.
+    Subagent mode is Pi's, so `--mode subagent` with no agent named (a plain terminal) is saved for Pi."""
+    agent = AGENT_OVERRIDE or calling_agent()
+    if mode == "subagent":
+        if AGENT_OVERRIDE and agent not in SUBAGENT_AGENTS:
+            die(f"{agent} has no subagent mode: it is only for Pi today (Pi's pi-subagents). {agent} stays in panes "
+                f"mode — {usage}")
+        return agent if agent in SUBAGENT_AGENTS else "pi"
+    return agent if agent in SUBAGENT_AGENTS or AGENT_OVERRIDE else "pi"
+
+
 def cmd_setup(args):
-    """orch setup [--mode panes|subagent] -> get this machine ready for a mode (and save it with --mode)."""
-    usage = "usage: orch setup [--mode panes|subagent]"
+    """orch setup [--mode panes|subagent] [--agent <kind>] -> get this machine ready for a mode (save it with --mode)."""
+    usage = "usage: orch setup [--mode panes|subagent] [--agent <kind>]"
     args = list(args)
+    agent_flag(args, usage)
     flag = mode_flag(args, usage)
     if args:
         die(usage)
     if flag:
-        set_mode(flag, hint=False)
-    mode = flag or current_mode()[0]
+        set_mode(flag, hint=False, agent=mode_target(flag, usage))
+    # setup only ever prepares Pi's subagents, so with no --mode it looks at Pi's saved mode too
+    mode = flag or ("subagent" if "subagent" in (current_mode()[0], config_mode("pi")) else "panes")
     if mode == "panes":
         print("mode panes: nothing to set up here. Coders and the reviewer run in herdr panes; `orch team up` opens "
               "them when a run starts.")
@@ -9394,22 +9524,47 @@ def cmd_setup(args):
 
 
 def cmd_mode(args):
-    """orch mode -> which mode is active and where it comes from; orch mode panes|subagent -> switch."""
+    """orch mode -> this agent's mode and where it comes from; orch mode panes|subagent [--agent <kind>] -> save it
+    for that agent (subagent: Pi only)."""
+    usage = "usage: orch mode [panes|subagent] [--agent <kind>]"
+    args = list(args)
+    agent_flag(args, usage)
     if not args:
-        mode, src = current_mode()
+        agent = calling_agent()
+        mode, src = current_mode(agent)
         print(f"mode: {mode} ({src})")
+        saved = config_modes()
+        others = {k: v for k, v in saved.items() if k != agent and v != "panes"}
+        if others:
+            print("saved per agent: " + ", ".join(f"{k}={v}" for k, v in sorted(others.items()))
+                  + " (every other agent: panes)")
+        if "modes" not in config_load() and "pi" in saved:
+            print(f"NOTE    {short(user_config_file())} still has the old machine-wide \"mode\": \"subagent\". orch "
+                  f"reads it as Pi's only; `orch mode subagent` (or panes) saves it the new way")
         return
     if len(args) != 1 or args[0].lower() not in ORCH_MODES:
-        die("usage: orch mode [panes|subagent]")
-    set_mode(args[0].lower())
+        die(usage)
+    set_mode(args[0].lower(), agent=mode_target(args[0].lower(), usage))
 
 
-def set_mode(mode, hint=True):
-    """Save the machine's mode, and switch this repo's run too when nothing in it is in progress."""
+def set_mode(mode, hint=True, agent="pi"):
+    """Save the mode for one agent (`modes.<agent>`), and switch this repo's run too when its lead is that agent and
+    nothing in it is in progress. The old machine-wide `mode` key is moved into `modes.pi`."""
     c = config_load()
-    c["mode"] = mode
+    modes = config_modes(c)
+    moved = "mode" in c
+    c.pop("mode", None)
+    if mode == "panes":
+        modes.pop(agent, None)
+    else:
+        modes[agent] = mode
+    c["modes"] = modes
     config_save(c)
-    print(f"mode: {mode} (saved in {short(user_config_file())})")
+    print(f"mode: {mode} for {agent} (saved in {short(user_config_file())}; "
+          + ("every other agent uses panes)" if mode == "subagent" else
+             "agents with no saved mode use panes)"))
+    if moved:
+        print("MOVED   the old machine-wide \"mode\" setting: it now applies to Pi only (\"modes\": {\"pi\": ...})")
     p = None
     with contextlib.suppress(Exception):
         p = _repo_state_path()
@@ -9419,11 +9574,16 @@ def set_mode(mode, hint=True):
         with state_lock():
             st = load()
             busy = [k for k, v in st["tasks"].items() if v["status"] in ACTIVE]
-            if run_mode(st) != mode and (driver_alive() or busy):
+            lead_kind = ((st.get("lead") or {}).get("kind") or "").lower()
+            if mode == "subagent" and lead_kind not in SUBAGENT_AGENTS:
+                if run_mode(st) != mode:
+                    print(f"this repo's run stays {run_mode(st)}: its lead is {lead_kind or 'not named'}, and "
+                          f"subagent mode needs `Lead: lead (pi)` (the next Pi-led plan uses it)")
+            elif run_mode(st) != mode and (driver_alive() or busy):
                 print(f"NOT CHANGED this repo's run stays {run_mode(st)}: "
                       + (f"{', '.join(busy)} in progress" if busy else "the event manager is running")
                       + ". Switch when nothing is in progress.")
-            elif run_mode(st) != mode:
+            elif run_mode(st) != mode and (lead_kind == agent or (not lead_kind and agent in SUBAGENT_AGENTS)):
                 st["orch_mode"] = mode
                 save(st)
                 print(f"this repo's run: {mode}")

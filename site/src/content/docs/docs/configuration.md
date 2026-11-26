@@ -9,12 +9,14 @@ Most settings for a run live in the plan header: branch, base, commit style, che
 
 ## Pi mode file
 
-`~/.config/herdr-orchestra/config.json` holds the Pi mode (`panes` or `subagent`) and the subagents' `model`, `thinking` and `max_turns`. See [Pi: setup and use](/docs/pi/#step-6-optional-pick-the-subagents-models).
+`~/.config/herdr-orchestra/config.json` holds the mode per agent (`"modes": {"pi": "subagent"}`; only Pi has a subagent mode, every other agent uses panes) and the subagents' `model`, `thinking` and `max_turns`. See [Pi: setup and use](/docs/pi/#step-6-optional-pick-the-subagents-models).
 
 ## Environment variables
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `ORCH_AGENT` | found by itself | Which agent runs `orch` (`pi`, `claude`, `codex`, `agy`, ...), when orch can't tell from the agent's own `AI_AGENT` / `PI_CODING_AGENT` / `CLAUDECODE` / `CODEX_*`. Picks the mode saved for that agent |
+| `ORCH_MODE` | unset | `panes` or `subagent` for one command, over the saved mode. `subagent` only works in Pi |
 | `ORCH_CODER_BUDGET_MIN` | 45 | Minutes a coder gets per milestone before `TIMEOUT` |
 | `ORCH_REVIEW_BUDGET_MIN` | 15 | Minutes the reviewer gets per review |
 | `ORCH_CHECK_TIMEOUT_MIN` | 30 | Timeout for the check command |
