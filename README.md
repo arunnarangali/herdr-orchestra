@@ -85,6 +85,7 @@ orch update --check            # only say whether a new version is out
 orch update --version v5.8.0   # install that exact version (this is also how you go back)
 orch config                    # auto-update on/off, the installed version, the last check
 orch config auto-update off    # or: on
+orch config compact off        # or: on (coders and the reviewer get /compact between milestones)
 ```
 
 - **The check.** At most once a day, at `orch lead plan` or `orch version`, orch asks GitHub for the latest release (3 seconds at most; nothing about you or your project is sent). With no internet it stays silent and asks again the next day. `ORCH_NO_UPDATE_CHECK=1` turns the check off.
@@ -341,6 +342,7 @@ Three views show a run while it goes; none of them changes it.
 | Attempts keep getting lost (unreachable, gone, rate-limited) | after 4 (`ORCH_MAX_LOST`) the task fails with the history instead of looping |
 | Autopilot is killed mid-step | the next run confirms or re-sends an unconfirmed prompt to the same agent, and finishes or undoes a half-done merge |
 | The computer was off, herdr was closed, or the event manager died | `orch status` says so in its first lines. `orch resume` carries on: the time orch was down is not counted against any task, the agents' panes get their names back, unsaved work is saved and the tasks in progress are sent again (see [After a restart](#after-a-restart)) |
+| A coder's or the reviewer's chat keeps growing, milestone after milestone | between milestones, while herdr shows it idle, orch types the tool's `/compact` (Claude Code, Codex, AGY 1.2.15+): its chat becomes a short summary, and `orch story` says so. Never mid-work, never for a fix round of the same milestone, never the lead. `orch config compact off` turns it off |
 | A milestone is paused or moved while its coder still works | orch presses the agent's interrupt key (Esc; set per agent kind as `interrupt_keys` in the registry), then types the STOP note. The coder shows as `stopping M7` in `orch status` and gets no new work until herdr shows it idle; the event manager presses the key again if it keeps going. `orch free <worker>` frees it once you have checked its pane |
 | A paused coder keeps writing files | whatever it writes anyway is saved into the milestone the next time the milestone or that folder is used. orch never refuses a task because a folder has unsaved files |
 | plan.md changed while a coder works on that milestone | its task.md is not rewritten mid-work; `orch sync` warns and says how to send the new text (`orch set Mn paused`, then `orch dispatch Mn`) |

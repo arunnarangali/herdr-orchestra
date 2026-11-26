@@ -2,6 +2,23 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.14.0] - 2026-11-26
+
+A coder's and the reviewer's chat no longer keeps growing from milestone to milestone. When one is done with a milestone, orch types its tool's `/compact` into its pane while it is idle, so the tool swaps the long chat for a short summary. Every job orch gives an agent is already written down in files (`task.md`, `task.json`, fix and review files), so the next milestone loses nothing it needs.
+
+Example: `claude-1` builds M2 and M2 lands. `claude-1` is idle, so orch sends `/compact`. When herdr shows it idle again, it gets `Read .orch-task/M4/task.md ...`. `orch story` reads `the event manager did: claude-1 finished M2: orch sent /compact so its chat does not keep growing`.
+
+### Added
+- **`/compact` between milestones**, on by default for Claude Code, Codex and AGY. orch sends it only while herdr shows the agent idle and it holds no job: as soon as its milestone lands, or just before it starts a different milestone (then that milestone waits until the compact is done). Never in the middle of work, never for a fix or review round of the same milestone, and never for the lead.
+- While it compacts, the agent shows as `compacting` in `orch status`, `orch status --json`, `orch view` and `orch board`, and gets no new work. It is free again once herdr shows it idle for `ORCH_COMPACT_SETTLE_S` (10 s). Still working after `ORCH_COMPACT_MAX_S` (5 min): orch stops waiting and says so.
+- **`orch config compact on|off`** (and `ORCH_COMPACT=0|1`) turns it on or off for this machine. `orch config` shows it.
+- Registry keys **`compact`** (the command, `/compact`) and **`compact_min_version`**. AGY added `/compact` in 1.2.15: an older or unreadable `agy --version` means no compacting, said once in `orch story`, and `orch doctor agy` shows it. OpenCode, amp, Pi and Hermes stay off until their command is checked; `compact = "/compact"` in your `agents.toml` turns it on for a kind, `compact = ""` turns it off.
+- Restart recovery: what each agent's chat holds and a compact in progress are kept across `orch sync` and `orch resume`. A compact that was cut short by a restart does no harm: the agent just gets its next job.
+- Docs: [Compact between milestones](https://herdr-orchestra.vercel.app/docs/agents/#compact-between-milestones), the new keys and variables in Configuration, the command in Commands.
+
+### Not yet tried
+- With real Claude Code, Codex and AGY windows. It was tested with orch's simulated agents and herdr. The command name was checked in each tool's docs (AGY: from 1.2.15).
+
 ## [6.13.0] - 2026-11-26
 
 The views no longer pass an old run off as the current one, and orch says when a plan file has a name it does not read.

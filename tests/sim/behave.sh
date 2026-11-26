@@ -20,6 +20,10 @@ if [[ $prompt == orch:* ]]; then                        # the lead being woken b
   grep -q "ALL_DONE" <<<"$out" && printf '\n## Manual verification checklist\n- [ ] check totals by hand\n- [ ] open /totals on a phone -> the table\n  fits the screen\n' >> .orchestrate/summary.md
   echo idle > "$FH/$agent.status"; exit 0
 fi
+if [[ $prompt == /compact* ]]; then                     # orch compacts its chat between milestones
+  echo "$prompt" >> "$FH/$agent.compacts"; echo "$agent $prompt" >> "$FH/compacts.log"
+  sleep "$(cat "$FH/compact-secs" 2>/dev/null || echo 1)"; echo idle > "$FH/$agent.status"; exit 0
+fi
 if [[ $prompt == STOP:* ]]; then                        # orch told it to stop: it answers and goes idle,
   echo "$prompt" >> "$FH/$agent.stops"                  # unless it is still busy with its step (agy queues the note)
   [ -f "$FH/$agent.ignores-esc" ] && { echo working > "$FH/$agent.status"; exit 0; }

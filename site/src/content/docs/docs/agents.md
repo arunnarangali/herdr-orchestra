@@ -72,6 +72,18 @@ Milestones are matched to coders by tier, not by kind. The plan's `Prefer:` line
 - `orch agents sync` installs the skills for every installed agent. Run it after adding one.
 - `orch agents check` confirms the skills are installed.
 
+## Compact between milestones
+
+A coder's chat only needs its current milestone: every job orch gives it is written down in files (`task.md`, `task.json`, fix and review files). So when a coder or the reviewer is done with a milestone, orch types the tool's compact command into its pane, and the tool replaces the long chat with a short summary. The chat does not keep growing from milestone to milestone.
+
+Example: `claude-1` builds M2, and M2 lands. `claude-1` is idle, so orch sends `/compact`. Once herdr shows it idle again, it gets M4's `Read .orch-task/M4/task.md ...`. `orch story` says `claude-1 finished M2: orch sent /compact so its chat does not keep growing`.
+
+- **When:** only while herdr shows the agent idle and it holds no job: never in the middle of work. Before another milestone, or as soon as its milestone has landed.
+- **Not:** for a fix or review round of the **same** milestone (that chat is still useful), and never for the lead.
+- **Which tools:** Claude Code, Codex and AGY (1.2.15 or newer; an older AGY is skipped, and `orch story` says why). OpenCode, amp, Pi and Hermes are off until someone checks their command. Set `compact = "/compact"` for a kind in your `agents.toml` to turn it on there, or `compact = ""` to turn it off.
+- **Turn it off:** `orch config compact off` (or `ORCH_COMPACT=0`).
+- While it compacts, `orch status` shows the agent as `compacting`, and it gets no new work.
+
 ## Add your own agent
 
 Add or fix kinds in `~/.config/herdr-orchestra/agents.toml`, merged key by key over the defaults:

@@ -41,6 +41,10 @@ STOP_WAIT_S = float(os.environ.get("ORCH_STOP_WAIT_S", "60"))   # `orch stop` wa
 HALT_WAIT_S = float(os.environ.get("ORCH_HALT_WAIT_S", "5"))      # `orch set/park` waits this long for it to go idle
 HALT_SETTLE_S = float(os.environ.get("ORCH_HALT_SETTLE_S", "10"))  # idle at least this long after the stop note
 HALT_REPEAT_S = float(os.environ.get("ORCH_HALT_REPEAT_S", "90"))  # still working after this: interrupt it again
+# a coder or reviewer whose milestone is done gets its tool's compact command (`/compact`), so its chat does not keep
+# growing from milestone to milestone. It counts as busy until herdr shows it idle for COMPACT_SETTLE_S
+COMPACT_SETTLE_S = float(os.environ.get("ORCH_COMPACT_SETTLE_S", "10"))
+COMPACT_MAX_S = float(os.environ.get("ORCH_COMPACT_MAX_S", "300"))   # still working after this: stop waiting for it
 TEAM_CONFIRM_S = float(os.environ.get("ORCH_TEAM_CONFIRM_S", "5"))   # `team up` looks again after this: still running?
 LOG_MAX_B = int(float(os.environ.get("ORCH_LOG_MAX_MB", "2")) * 1024 * 1024)   # autopilot.log; one old copy is kept
 CRASH_KEEP = int(os.environ.get("ORCH_CRASH_KEEP", "20"))         # saved agent screens in .orchestrate/crash/
@@ -1666,7 +1670,7 @@ def cmd_sync(args):
         "reviewer_info": ({"kind": rev_kind, "pane": rev_pane, "detect": detect(rev_kind, rev_pane, "Reviewer"),
                            "model": models.get(reviewer), "tier": tier_of(reviewer),
                            **({k: v for k, v in (old.get("reviewer_info") or {}).items()
-                               if k in ("cooldown_until", "cooldown_reason") and v is not None}
+                               if k in ("cooldown_until", "cooldown_reason", "ctx", "compacting") and v is not None}
                               if old.get("reviewer") == reviewer else {})}
                           if reviewer else None),
         "reviewer_busy": old.get("reviewer_busy") if old.get("reviewer") == reviewer else None,
@@ -1681,6 +1685,7 @@ def cmd_sync(args):
         "lead_seq": old.get("lead_seq", 0),
         "lead_wake": old.get("lead_wake"),
         "lead_ready_told": old.get("lead_ready_told"),
+        "compact_told": old.get("compact_told") or [],
         "tree_task": old.get("tree_task"),
         "workers": {},
         "order": ids,
@@ -1692,6 +1697,8 @@ def cmd_sync(args):
                                "cooldown_reason": ow.get("cooldown_reason", ""),
                                **({"off": ow["off"]} if ow.get("off") else {}),     # kept until `orch bench <w> on`
                                **({"stopping": ow["stopping"]} if ow.get("stopping") else {}),   # told to stop
+                               **({k: ow[k] for k in ("ctx", "compacting") if ow.get(k)}
+                                  if ow.get("kind") in (None, kind) else {}),     # what its chat holds
                                "dir": ow.get("dir"), "setup_done": ow.get("setup_done", False),
                                "setup_hash": ow.get("setup_hash"), "delivery_fails": ow.get("delivery_fails", 0),
                                "pane": pane, "detect": detect(kind, pane, "Workers"),
@@ -1984,6 +1991,132 @@ def stopping_line(st, name, w):
     h = w.get("stopping") or {}
     return (f"stopping {h.get('task') or '?'} (told to stop {_fmt_secs(now() - h.get('ts', now()))} ago; "
             f"it gets no new work until herdr shows it idle — `orch free {name}` if you checked its pane)")
+
+
+# ---------------------------------------------------------------- compacting a coder's or the reviewer's chat
+# Every job orch gives a coder or the reviewer is written down in files (task.md, task.json, fix and review files),
+# so the chat itself only holds what the agent did on its LAST milestone. Before the agent starts a different
+# milestone (and as soon as the milestone it worked on has landed) orch types its tool's compact command
+# (`/compact` in Claude Code, Codex and AGY): the tool replaces the long chat with a short summary. Only when herdr
+# shows the agent idle, never while it works, and never the lead. A fix or review round of the SAME milestone keeps
+# the chat. `orch config compact off` (or ORCH_COMPACT=0) turns it off; `compact = ""` in agents.toml turns it off
+# for one tool.
+
+def compact_on():
+    env = os.environ.get("ORCH_COMPACT")
+    if env in ("0", "1"):
+        return env == "1"
+    return settings_load().get("compact", True) is not False
+
+
+_VERSIONS = {}
+
+
+def _version_of(binary):
+    """The x.y.z version `<binary> --version` prints, or None (asked once per process)."""
+    if binary not in _VERSIONS:
+        _VERSIONS[binary] = _ask_version(binary)
+    return _VERSIONS[binary]
+
+
+def _ask_version(binary):
+    try:
+        r = subprocess.run([binary, "--version"], text=True, capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", (r.stdout or "") + (r.stderr or ""))
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def compact_command(st, kind):
+    """(command, None) when orch can compact this kind of agent, else (None, why). A tool whose registry entry has
+    `compact_min_version` is asked its version (once per process); too old or unknown: no compacting."""
+    if not compact_on():
+        return None, "turned off (`orch config compact on` turns it on)"
+    v = (registry(required=False) or {}).get(kind) or {}
+    cmd = str(v.get("compact") or "").strip()
+    if not cmd:
+        return None, f"{kind} has no compact command in the agent list"
+    need_v = str(v.get("compact_min_version") or "").strip()
+    if need_v:
+        have = _version_of(v.get("binary", kind))
+        want = tuple(int(x) for x in re.findall(r"\d+", need_v)[:3])
+        if not have or have < want:
+            return None, (f"{kind} {'.'.join(map(str, have))} is older than {need_v}, the first version with {cmd}"
+                          if have else f"could not read {kind}'s version (`{v.get('binary', kind)} --version`); "
+                          f"{cmd} needs {need_v} or newer")
+    return cmd, None
+
+
+def compact_unsupported(st, name, kind):
+    """Why this agent's chat can't be compacted although its tool has a compact command (an old version), or None."""
+    v = (registry(required=False) or {}).get(kind) or {}
+    if not compact_on() or not str(v.get("compact") or "").strip():
+        return None
+    return compact_command(st, kind)[1]
+
+
+def compact_agents(st):
+    """(name, info dict, holds a job) for every coder and the reviewer. The lead is never compacted."""
+    out = [(n, w, bool(w.get("task"))) for n, w in st.get("workers", {}).items()]
+    if st.get("reviewer") and st.get("reviewer_info") is not None:
+        out.append((st["reviewer"], st["reviewer_info"], bool(st.get("reviewer_busy"))))
+    return out
+
+
+def still_compacting(st, name, w=None):
+    """True while an agent that got the compact command may still be compacting: herdr shows it working, or it has
+    been idle for less than COMPACT_SETTLE_S. Such an agent is busy: it gets no new work."""
+    w = w if w is not None else agent_info(st, name)
+    h = (w or {}).get("compacting")
+    if not h or not w.get("detect", True):
+        return False
+    if now() - h.get("ts", 0) > COMPACT_MAX_S:
+        return False
+    s = herdr_state(name)
+    if s is None:
+        return False
+    if busy_word(s):
+        return True
+    return now() - (h.get("idle_since") or h.get("ts", 0)) < COMPACT_SETTLE_S
+
+
+def compact_due(st, name, w, next_tid=None):
+    """The compact command to send now, or None. Due when the agent's chat holds another milestone than next_tid
+    (or, with no next_tid, a milestone that has landed), it holds no job, and herdr shows it idle."""
+    ctx = w.get("ctx")
+    if not ctx or ctx == next_tid or w.get("compacting") or not w.get("detect", True) or w.get("off"):
+        return None
+    if next_tid is None and (st["tasks"].get(ctx) or {}).get("status", "merged") not in ("merged", "skipped"):
+        return None
+    if w.get("stopping") or cooling(name, w):
+        return None
+    cmd, _ = compact_command(st, w.get("kind"))
+    if not cmd:
+        return None
+    s = herdr_state(name)
+    if s is None or busy_word(s):
+        return None
+    return cmd
+
+
+def start_compact(st, name, w, cmd, before=None):
+    """Type the compact command into the agent's pane. The caller saves the state. Returns True when it was sent."""
+    after = w.get("ctx")
+    try:
+        deliver(st, name, cmd)
+    except DeliveryError:
+        return False
+    w["compacting"] = {"ts": now(), "after": after, "cmd": cmd, "before": before}
+    story_note(st, f"{name} finished {after}: orch sent {cmd} so its chat does not keep growing"
+               + (f" (before it starts {before})" if before else ""), who="event manager")
+    return True
+
+
+def compacting_line(st, name, w):
+    h = w.get("compacting") or {}
+    return (f"compacting its chat after {h.get('after') or '?'} ({h.get('cmd') or '/compact'}, sent "
+            f"{_fmt_secs(now() - h.get('ts', now()))} ago; it gets new work once herdr shows it idle)")
 
 
 def commit_message(st, tid):
@@ -2509,7 +2642,7 @@ def cmd_ready(args):
         slots = 1          # shared mode: a queued fix job IS the active milestone, and it needs a coder
     # only coders herdr can see count as free: a coder with no agent can't take work, whatever its task field says
     present = [n for n, w in st["workers"].items() if not w.get("task") and not w.get("off") and not cooling(n, w)
-               and not still_stopping(st, n, w)
+               and not still_stopping(st, n, w) and not still_compacting(st, n, w)
                and (not w.get("detect", True) or w.get("pane") or herdr_state(n) is not None)]
     gone = [n for n, w in st["workers"].items() if not w.get("task") and not w.get("off") and w.get("detect", True)
             and not w.get("pane") and herdr_state(n) is None]
@@ -2535,7 +2668,8 @@ def cooling(name, info):
 
 
 def worker_free(st, name, w):
-    if w.get("task") or w.get("off") or cooling(name, w) or still_stopping(st, name, w):
+    if w.get("task") or w.get("off") or cooling(name, w) or still_stopping(st, name, w) \
+            or still_compacting(st, name, w):
         return False
     if not w.get("detect", True):      # herdr can't watch it: no task + no cooldown = free
         return True
@@ -2580,6 +2714,15 @@ def cmd_prepare(args):
               f"(or `orch free {worker}` after you checked its pane)")
         sys.exit(3)
     w.pop("stopping", None)
+    if still_compacting(st, worker, w):
+        print(f"BUSY {worker} is {compacting_line(st, worker, w)}")
+        sys.exit(3)
+    squash = None if w.get("task") == tid else compact_due(st, worker, w, tid)
+    if squash and start_compact(st, worker, w, squash, tid):
+        save(st)
+        print(f"BUSY {worker} is compacting its chat after {w['compacting']['after']} first ({squash}); {tid} starts "
+              f"there once herdr shows it idle")
+        sys.exit(3)
     if not holds(st, tid) and free_slots(st) <= 0 and not (st["isolation"] == "shared" and t["status"] in ("conflict", "needs-fix")):
         die("no free slot (max parallel reached)")
     d = Path(w["dir"] or ROOT)
@@ -2802,6 +2945,8 @@ def cmd_send(args):
                  "result": str(d / rel / f"result-{k}.json"), "since": now(), "started": now(), "kind": "coder",
                  "prompt": text, "nudges": 0, "file": fname, "delivering": True,
                  "model": st["workers"][t["worker"]].get("model"), "tier": st["workers"][t["worker"]].get("tier")}
+    st["workers"][t["worker"]]["ctx"] = tid          # its chat now holds this milestone (compacted before another)
+    st["workers"][t["worker"]].pop("compacting", None)
     save(st)
     try:
         deliver(st, t["worker"], text)
@@ -2895,10 +3040,15 @@ def cmd_review(args):
         die("no reviewer configured")
     ri = st.get("reviewer_info") or {}
     busy = st.get("reviewer_busy") and st["reviewer_busy"] != tid
-    if busy or cooling(st["reviewer"], ri):
+    squash = None if busy or cooling(st["reviewer"], ri) or still_compacting(st, st["reviewer"], ri) else \
+        compact_due(st, st["reviewer"], ri, tid)
+    if squash and not start_compact(st, st["reviewer"], ri, squash, tid):
+        squash = None
+    if busy or cooling(st["reviewer"], ri) or still_compacting(st, st["reviewer"], ri):
         move(st, tid, "awaiting-review")
         save(st)
-        why = f"is on {st['reviewer_busy']}" if busy else "is benched (cooldown)"
+        why = (f"is on {st['reviewer_busy']}" if busy else "is benched (cooldown)" if cooling(st["reviewer"], ri)
+               else compacting_line(st, st["reviewer"], ri))
         print(f"BUSY reviewer {why}; {tid} queued as awaiting-review")
         sys.exit(3)
     d = task_dir(t, tid)
@@ -2969,6 +3119,9 @@ def cmd_review(args):
     rtext = f"Read {rel}/review-task-{k}.md and do exactly what it says."
     t["review_round"] = k
     st["reviewer_busy"] = tid
+    if st.get("reviewer_info") is not None:
+        st["reviewer_info"]["ctx"] = tid             # its chat now holds this milestone (compacted before another)
+        st["reviewer_info"].pop("compacting", None)
     move(st, tid, "reviewing")
     t["wait"] = {"agent": st["reviewer"], "sentinel": str(sentinel), "report": str(rd / f"review-{k}.md"),
                  "result": str(rd / f"review-{k}.json"), "since": now(), "started": now(), "kind": "reviewer",
@@ -3150,6 +3303,12 @@ def cmd_poll(args):
         if events:
             print("\n".join(events))
             return
+        # an agent that got /compact and is idle again can take its next milestone now: back to the event manager
+        squashed = [n for n, w, holding in compact_agents(st) if w.get("compacting") and not holding
+                    and not still_compacting(st, n, w)]
+        if squashed:
+            print(f"WAITING compacted: {' '.join(squashed)} (free for new work)")
+            sys.exit(10)
         if time.time() >= end:
             running = [f"{tid}:{st['tasks'][tid]['status']}" for tid in st["order"]
                        if st["tasks"][tid]["status"] in ("coding", "reviewing", "conflict")]
@@ -3642,7 +3801,9 @@ def cmd_status(args):
     if st.get("mode") == "quick":
         print(f"QUICK RUN because: {st.get('quick_because') or '-'}")
     print(f"branch={st['branch']} base={st.get('base')} isolation={st['isolation']} "
-          f"max_parallel={st['max_parallel']} reviewer={st['reviewer']} (busy: {st.get('reviewer_busy')})")
+          f"max_parallel={st['max_parallel']} reviewer={st['reviewer']} (busy: {st.get('reviewer_busy')})"
+          + (f" — reviewer {compacting_line(st, st['reviewer'], st['reviewer_info'])}"
+             if st.get("reviewer") and still_compacting(st, st["reviewer"], st.get("reviewer_info") or {}) else ""))
     vu = view_url()
     print(f"live view: {vu}" if vu else "live view: off — `orch view` shows this run as a picture in your browser")
     for n in run_notices(st):
@@ -3656,6 +3817,7 @@ def cmd_status(args):
         state = ("OFF (" + (w["off"].get("why") or "developer") + ")" if w.get("off") else
                  f"coding {w['task']}" if w.get("task") else
                  stopping_line(st, n, w) if still_stopping(st, n, w) else
+                 compacting_line(st, n, w) if still_compacting(st, n, w) else
                  f"benched {cd // 60}m ({w.get('cooldown_reason') or 'cooldown'})" if cd else "free")
         if state == "free" and h == "ok" and w.get("detect", True) and busy_word(herdr_state(n)):
             state = "free, but herdr shows it working: look at its pane before it gets new work"
@@ -5702,6 +5864,70 @@ def _autopilot(args):
                     + f". It gets no new work until it is idle; look at its pane (`orch free {n}` once it has "
                     f"stopped)", h.get("again", 0) >= 1)
 
+    def _agent_of(s_, name):
+        return s_["workers"].get(name) if name in s_.get("workers", {}) else \
+            (s_.get("reviewer_info") if name == s_.get("reviewer") else None)
+
+    def tend_compacts():
+        """Coders and the reviewer whose milestone landed get their tool's compact command while they are idle and
+        hold no job; one that is compacting is free again once herdr shows it idle (or after COMPACT_MAX_S)."""
+        st_ = load()
+        for n, w, holding in compact_agents(st_):
+            if holding:
+                continue
+            h = w.get("compacting")
+            if h:
+                s = herdr_state(n) if w.get("detect", True) else None
+                busy = s is not None and busy_word(s)
+                if busy and h.get("idle_since"):
+                    h["idle_since"] = None
+                elif s is not None and not busy and not h.get("idle_since"):
+                    h["idle_since"] = now()
+                late = now() - h.get("ts", 0) > COMPACT_MAX_S
+                done = not still_compacting(st_, n, w)
+
+                def upd(s_, n=n, idle=h.get("idle_since"), done=done, late=late, busy=busy):
+                    a = _agent_of(s_, n)
+                    if not a or not a.get("compacting"):
+                        return
+                    if not done:
+                        a["compacting"]["idle_since"] = idle
+                        return
+                    a.pop("compacting", None)
+                    a["ctx"] = None
+                    if late and busy:
+                        story_note(s_, f"{n} was still busy {_fmt_secs(COMPACT_MAX_S)} after {h.get('cmd')}: orch "
+                                       f"stopped waiting for it", who="event manager")
+                patch_state(upd)
+                if done:
+                    say(f"{n} is still working {_fmt_secs(COMPACT_MAX_S)} after {h.get('cmd')}: look at its pane"
+                        if late and busy else f"COMPACTED {n}: its chat after {h.get('after')} is now a short summary",
+                        late and busy)
+                continue
+            if not compact_due(st_, n, w):
+                why = w.get("ctx") and w.get("detect", True) and compact_unsupported(st_, n, w.get("kind"))
+                if why and w.get("kind") not in st_.get("compact_told", []):
+                    def told(s_, n=n, k=w.get("kind"), why=why):
+                        if k not in s_.setdefault("compact_told", []):
+                            s_["compact_told"].append(k)
+                            story_note(s_, f"{n}'s chat is not compacted: {why}", who="event manager")
+                    patch_state(told)
+                    say(f"{n}'s chat is not compacted: {why}")
+                continue
+            sent_ = {}
+
+            def go(s_, n=n, ctx=w.get("ctx")):
+                a = _agent_of(s_, n)
+                holds_ = (a or {}).get("task") if n in s_.get("workers", {}) else s_.get("reviewer_busy")
+                if not a or holds_ or a.get("ctx") != ctx or a.get("compacting"):
+                    return
+                cmd, _ = compact_command(s_, a.get("kind"))
+                if cmd and start_compact(s_, n, a, cmd):
+                    sent_["cmd"] = cmd
+            patch_state(go)
+            if sent_:
+                say(f"{n} finished {w.get('ctx')} and is idle: sent {sent_['cmd']} so its chat does not keep growing")
+
     def dispatch(kind, tid, worker):
         code, prep = run("prepare", tid, worker, ok=(0, 3))
         if code == 3:                  # the coder is busy after all (still stopping its last milestone): next loop
@@ -5906,6 +6132,7 @@ def _autopilot(args):
             patch_state(lambda s_: (s_["run"].get("manager") or {}).update(procs))
         watch_herdr()
         tend_stops()
+        tend_compacts()
         # 0. budget: driving time adds up across restarts (time spent only waiting for an answer doesn't count)
         el, last_tick = time.time() - last_tick, time.time()
         asleep = slept()
@@ -7102,6 +7329,7 @@ def view_model(st=None, recent=40):
     for n, w in st.get("workers", {}).items():
         cd = max(0, w.get("cooldown_until", 0) - t_now)
         state = ("off" if w.get("off") else "stopping" if w.get("stopping") else
+                 "compacting" if w.get("compacting") and not w.get("task") else
                  (VIEW_WORDS.get(tasks.get(w["task"], {}).get("status"), "working") if w.get("task") else
                   f"benched {cd // 60}m" if cd else "free"))
         agents.append({"name": n, "role": "coder", "kind": w.get("kind"), "model": w.get("model"),
@@ -7110,7 +7338,8 @@ def view_model(st=None, recent=40):
         ri = st.get("reviewer_info") or {}
         busy = st.get("reviewer_busy")
         agents.append({"name": st["reviewer"], "role": "reviewer", "kind": ri.get("kind"), "model": ri.get("model"),
-                       "tier": ri.get("tier"), "task": busy, "state": "reviewing" if busy else "free"})
+                       "tier": ri.get("tier"), "task": busy, "state": "reviewing" if busy else
+                       "compacting" if ri.get("compacting") else "free"})
     groups = [m["group"] for m in ms]
     run = st.get("run") or {}
     return {
@@ -7743,6 +7972,8 @@ USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
   update [--check] [--version vX.Y.Z]  install the latest release (or that one) and show what is new
   config [auto-update on|off]  this machine's settings: keep orch up to date by itself, or only be told
+  config compact on|off    a coder or the reviewer gets /compact when its milestone is done (on by default for
+                           Claude Code, Codex and AGY 1.2.15+; never the lead). ORCH_COMPACT=0|1 overrides it
   lead plan|run            print the lead playbook (any agent can lead: "Run `orch lead plan` and follow it")
   lead plan quick|full     the rest of the plan playbook: a quick run's rules, or steps 3-10 of the full process
   lead run --section <EVENT|ALL_DONE|rules>   one part of the run playbook (orch events prints these for you)
@@ -8550,6 +8781,10 @@ def cmd_doctor(args):
             continue
         bad = [m for ok, m in res if not ok]
         broken += bool(bad)
+        if str(reg[k].get("compact") or "").strip():      # information only: no compacting is never "broken"
+            cmd, why = compact_command({}, k)
+            res.append((True, f"compact: {cmd} between milestones (coders and the reviewer)" if cmd else
+                        f"compact: not sent — {why}"))
         print(f"{'BROKEN' if bad else 'ok':<7} {k}" + ("" if reg[k].get("verified") else "  (registry entry unverified)"))
         for ok, m in res:
             print(f"    {'ok ' if ok else 'BAD'} {m}")
@@ -9296,7 +9531,7 @@ def cmd_sub(args):
 
 
 def cmd_config(args):
-    """orch config -> this machine's settings; orch config auto-update on|off."""
+    """orch config -> this machine's settings; orch config auto-update on|off; orch config compact on|off."""
     if args[:1] == ["auto-update"] and args[1:2] and args[1].lower() in ("on", "off"):
         s = settings_load()
         s["auto_update"] = args[1].lower() == "on"
@@ -9305,13 +9540,28 @@ def cmd_config(args):
               "never during a run" if s["auto_update"] else " — orch only tells you when a new version is out; "
               "update with `orch update`"))
         return
+    if args[:1] == ["compact"] and args[1:2] and args[1].lower() in ("on", "off"):
+        s = settings_load()
+        s["compact"] = args[1].lower() == "on"
+        settings_save(s)
+        print(f"compact: {args[1].lower()}" + (" — a coder or the reviewer gets its tool's compact command "
+              "(/compact) when its milestone is done, before it starts another one" if s["compact"] else
+              " — orch never compacts an agent's chat; the tools still compact by themselves when the chat is full"))
+        return
     if args:
-        die("usage: orch config | orch config auto-update on|off")
+        die("usage: orch config | orch config auto-update on|off | orch config compact on|off")
     s = settings_load()
     env = os.environ.get("ORCH_AUTO_UPDATE")
     print(f"auto-update: {'on' if auto_update_on() else 'off'}"
           + (f" (ORCH_AUTO_UPDATE={env} overrides the saved setting)" if env else "")
           + ("" if "auto_update" in s or env else " (never asked: `orch config auto-update on` turns it on)"))
+    cenv = os.environ.get("ORCH_COMPACT")
+    reg = registry(required=False) or {}
+    kinds = [k for k, v in reg.items() if str(v.get("compact") or "").strip()]
+    print(f"compact: {'on' if compact_on() else 'off'}"
+          + (f" (ORCH_COMPACT={cenv} overrides the saved setting)" if cenv in ("0", "1") else "")
+          + (f" — coders and the reviewer on {', '.join(kinds)} get /compact between milestones; "
+             "`orch config compact off` turns it off" if compact_on() and kinds else ""))
     print(f"installed: {installed_version()}" + ("" if release_install() else " (not a release install: no update checks)"))
     lc = int(s.get("last_check") or 0)
     print("last check: " + (time.strftime("%Y-%m-%d %H:%M", time.localtime(lc)) if lc else "never")
