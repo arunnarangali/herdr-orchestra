@@ -2111,7 +2111,8 @@ check "orch view --lan: a phone link with a secret token, and the page refuses w
 "$ORCH" view stop >/dev/null
 out=$("$ORCH" view herdr-config)
 check "orch view herdr-config prints the sidebar rows and the popup key" 'grep -q "^\[ui.sidebar.agents\]" <<<"$out" && grep -q "orch_desc" <<<"$out" && grep -q "herdr-orchestra.board.open" <<<"$out"'
-"$ORCH" view plugin link >/dev/null 2>&1
+linkout=$("$ORCH" view plugin link 2>&1)
+check "orch view plugin link prints the key lines to paste into herdr's config" 'grep -q "herdr-orchestra.board.open" <<<"$linkout" && grep -q "prefix+o" <<<"$linkout" && grep -q "plugin_action" <<<"$linkout"'
 check "orch view plugin link links the shipped herdr plugin" 'grep -q "^plugin link .*/view/herdr-plugin$" "$FH/team.log"'
 check "…the plugin manifest is valid TOML with the board popup and its action" 'python3 -c "
 import tomllib,sys
