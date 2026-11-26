@@ -60,7 +60,7 @@ If you changed plan.md by hand, run `orch sync` (it works once the event manager
 
 **Swap a coder** (for example, AGY instead of OpenCode): `orch stop` (the event manager finishes its current step and exits; nothing is lost), change `Workers:` in plan.md, `orch sync`, `orch team up`, check that `orch status` shows the new worker as `herdr=ok`, then `orch resume`. Never kill the event manager by hand.
 
-**Move a milestone to another coder** (for example M7 from rs-agy-1 to rs-claude-1): `orch set M7 paused`, then `orch dispatch M7 --to rs-claude-1`. orch presses the old coder's interrupt key and tells it to stop. Tell the developer it has stopped only when `orch status` no longer shows it as `stopping M7`; until then it may still be editing files, and it gets no new work.
+**Move a milestone to another coder** (for example M7 from rs-agy-1 to rs-claude-1): `orch set M7 paused`, then `orch dispatch M7 --to rs-claude-1`. orch presses the old coder's interrupt key and tells it to stop. Tell the developer it has stopped only when `orch status` no longer shows it as `stopping M7`; until then it may still be editing files, and it gets no new work. A coder or the reviewer shown as `compacting` got `/compact` after its last milestone (orch does this by itself between milestones, never mid-work): it takes its next milestone in a minute, nothing to do.
 
 **Before `orch dispatch --to <worker>`**, `orch status` must show that worker as `herdr=ok`. dispatch refuses a worker with no agent (`NO AGENT`, `SHELL ONLY`); do what it says (`orch team up`) and try again. If `orch team up` reports `QUIT <worker>`, the agent quit as soon as it started: show the developer the pane and the saved screen it names.
 

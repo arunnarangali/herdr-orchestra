@@ -16,6 +16,11 @@
 #   interrupt_keys the keys that stop its current step, as `herdr agent send-keys` names them (default ["esc"]).
 #                 orch presses them when a milestone is paused or moved while the coder still works, before the
 #                 STOP note: a typed message is only read after the current step (agy queues it)
+#   compact       the command that shrinks the tool's chat to a short summary (e.g. "/compact"). orch types it into a
+#                 coder's or the reviewer's pane when its milestone is done, before it starts another one, while
+#                 herdr shows it idle (never the lead). Leave it out (or "") for a tool where it is not known to work
+#   compact_min_version  the first version of the tool that has that command: an older (or unreadable)
+#                 `<binary> --version` means no compacting, said once in `orch story`
 #   roles         any of "lead", "coder", "reviewer"
 #   skills_dirs   global SKILL.md folders the installer may put the orch-plan / orch-run / orch-explain skills into
 #                 (first = preferred)
@@ -43,6 +48,7 @@ review_launch = "claude --permission-mode acceptEdits --disallowedTools Edit,Not
 model_flag = "--model"
 herdr_detect = true
 interrupt_keys = ["esc"]
+compact = "/compact"
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.claude/skills"]
 skills_one_wins = true
@@ -63,6 +69,7 @@ model_flag = "--model"
 effort_flag = "-c model_reasoning_effort={effort}"
 herdr_detect = true
 interrupt_keys = ["esc"]
+compact = "/compact"
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.agents/skills", "~/.codex/skills"]
 skills_reads = ["~/.agents/skills", "~/.codex/skills"]
@@ -116,6 +123,8 @@ binary = "agy"
 launch = "agy --mode accept-edits"
 herdr_detect = true
 interrupt_keys = ["esc"]
+compact = "/compact"
+compact_min_version = "1.2.15"
 roles = ["lead", "coder", "reviewer"]
 skills_dirs = ["~/.gemini/config/skills"]
 invoke = "use the orch-plan skill: <feature>"

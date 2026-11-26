@@ -31,6 +31,7 @@ Run `orch` with no arguments for the full help.
 | `orch version` | The installed version |
 | `orch update [--check] [--version vX.Y.Z]` | Install the latest release (or that one) and show what is new; `--check` only looks |
 | `orch config [auto-update on\|off]` | This machine's settings: update by itself when a new plan starts, or only be told |
+| `orch config compact on\|off` | Coders and the reviewer get `/compact` between milestones (on by default for Claude Code, Codex and AGY 1.2.15+; never the lead). See [Compact between milestones](/docs/agents/#compact-between-milestones) |
 
 ## The lead, during a run
 

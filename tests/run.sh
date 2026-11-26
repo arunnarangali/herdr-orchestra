@@ -21,6 +21,8 @@ export ORCH_GUARD_GITHUB=0
 export ORCH_CONFIG_FILE="$WORK/config/config.json" PI_CODING_AGENT_DIR="$WORK/pi-agent" ORCH_PI="$WORK/pibin/pi"
 # a coder told to stop: short waits (section 49 tests the real behaviour with its own values)
 export ORCH_HALT_WAIT_S=2 ORCH_HALT_SETTLE_S=1
+# a coder or reviewer that got /compact between milestones: free again 1s after herdr shows it idle (section 59)
+export ORCH_COMPACT_SETTLE_S=1
 pass=0 fail=0
 ok()   { echo "  ok   $*"; pass=$((pass+1)); }
 bad()  { echo "  FAIL $*"; fail=$((fail+1)); }
@@ -151,7 +153,7 @@ check "staller nudged then parked" 'grep -q "nudged once" "$WORK/bl.log" && [ "$
 check "the permission alert is remembered in state (no second alert after a restart)" '[ "$(grep -c PERMISSION "$WORK/bl.log")" -eq 1 ] && python3 -c "import json; assert json.load(open(\".orchestrate/state.json\"))[\"notified\"]"'
 
 echo "7. review pipelining: the coder takes another milestone while its work is in review"
-newrepo pl; touch "$FH/slow-review"
+newrepo pl; touch "$FH/slow-review"; echo 0 > "$FH/compact-secs"   # /compact before M6 takes no time here
 printf '# Plan: t\nBranch: orch/pl\nCheck command: true\nIsolation: worktree\nMax parallel: 1\nWorkers: codex-1 (codex)\nReviewer: reviewer (agy)\n\n## [x] M2: Endpoint\nDepends on: none\nReview: yes\nOpen questions:\n- none\n\n## [x] M6: Other screen\nDepends on: none\nReview: no\nOpen questions:\n- none\n' > .orchestrate/plan.md
 timeout 150 "$ORCH" autopilot > "$WORK/pl.log" 2>&1; code=$?
 check "finished (exit 0)" '[ $code -eq 0 ]'
@@ -1008,7 +1010,8 @@ newrepo rs; WT="$APP/../app-wt"
 printf '%b' "${PRS/ISO/worktree}" > .orchestrate/plan.md
 "$ORCH" sync >/dev/null && "$ORCH" start >/dev/null && "$ORCH" prepare M9 codex-1 >/dev/null && "$ORCH" write-task M9 >/dev/null && "$ORCH" send M9 task.md >/dev/null
 sleep 2
-"$ORCH" prepare M5 claude-1 >/dev/null; echo half > "$WT/claude-1/half.txt"; "$ORCH" park M5 pending "claude-1 hit a usage/rate limit" >/dev/null
+# (this folder's state.json is left from an earlier section, where claude-1 built M16: no /compact before M5 here)
+ORCH_COMPACT=0 "$ORCH" prepare M5 claude-1 >/dev/null; echo half > "$WT/claude-1/half.txt"; "$ORCH" park M5 pending "claude-1 hit a usage/rate limit" >/dev/null
 echo more > "$WT/claude-1/more.txt"                       # written after M5 was parked, before the power went
 stpy "
 w = st['tasks']['M9']['wait']; w['since'] -= 7500; w['started'] -= 7500
@@ -1543,7 +1546,7 @@ check "Plain: is for the developer: it is not in the coder's task file" 'f=$(ls 
 check "every event in orch events has a SAY line in plain words" 'grep -q "^    SAY: Ready to start: M5 (e)\.$" "$E" && grep -q "^    SAY: M5 (e) is done: its check passed and the reviewer approved it, and it is on feature/pw\.$" "$E" && grep -q "^    SAY: M4 (Totals) has started by itself, because M5 landed\.$" "$E" && grep -q "^    SAY: M4 (Totals) is paused: the coder asks: which currency should totals use, INR or multi?$" "$E" && grep -q "^    SAY: Every milestone is done: final check PASS on feature/pw\.$" "$E"'
 check "each wake-up tells the lead to say them before it stops" '[ "$(grep -c "^BEFORE YOU STOP, tell the developer in your chat, one short line per event" "$E")" -eq "$(grep -c "^EVENTS for the lead" "$E")" ] && grep -q "^7\. \*\*Never end a wake-up silently\.\*\*" "$E"'
 out=$("$ORCH" story 2>&1)
-check "orch story: what happened and what the lead did, in time order" 'grep -q "what happened: Ready to start: M5 (e)\." <<<"$out" && grep -q "the lead did: M5 (e) was sent to start$" <<<"$out" && grep -q "the lead did: M4 (Totals) got the answer \"INR only\" and goes back to claude-1" <<<"$out" && [ "$(grep -n "is paused" <<<"$out" | cut -d: -f1)" -lt "$(grep -n "got the answer" <<<"$out" | cut -d: -f1)" ]'
+check "orch story: what happened and what the lead did, in time order" 'grep -q "what happened: Ready to start: M5 (e)\." <<<"$out" && grep -q "the lead did: M5 (e) was sent to start$" <<<"$out" && grep -qE "the lead did: M4 \(Totals\) got the answer \"INR only\" and goes back to (claude-1|codex-1)" <<<"$out" && [ "$(grep -n "is paused" <<<"$out" | cut -d: -f1)" -lt "$(grep -n "got the answer" <<<"$out" | cut -d: -f1)" ]'
 "$ORCH" sync >/dev/null 2>&1
 check "orch sync keeps the diary (the plan is synced again after every answer)" '"$ORCH" story | grep -q "the lead did: M5 (e) was sent to start$"'
 check "the diary is saved in .orchestrate/story.md" 'grep -q "^# Run diary: Totals (feature/pw)" .orchestrate/story.md && grep -q "^- .*what happened: Every milestone is done" .orchestrate/story.md'
@@ -2206,6 +2209,95 @@ out=$("$ORCH" sync 2>&1)
 check "orch sync warns when another plan file is newer than plan.md" 'grep -q "csv-import.md is newer than plan.md, but orch only reads plan.md" <<<"$out"'
 check "…and still loads plan.md as before" '[ "$(status_of M1)" = pending ]'
 check "the empty summary (no run yet) also points out the unread plan" 'rm -f .orchestrate/state.json; "$ORCH" status --json | grep -q "\"other_plan\""'
+
+echo "60. a coder's and the reviewer's chat is compacted (/compact) between milestones, never mid-work, never the lead"
+CPLAN='# Plan: c
+Branch: feature/compact
+Check command: true
+Setup command: none
+Isolation: worktree
+Max parallel: 1
+Workers: claude-1 (claude)
+
+## [x] M1: First
+Depends on: none
+Open questions:
+- none
+
+## [x] M5: Second
+Depends on: M1
+Open questions:
+- none
+
+## [x] M6: Third
+Depends on: M5
+Open questions:
+- none
+'
+newrepo cmp; printf '%s' "$CPLAN" > .orchestrate/plan.md
+timeout 120 "$ORCH" autopilot > "$WORK/cmp.log" 2>&1; code=$?
+order=$(grep -oE '^claude-1 <- (/compact|Read \.orch-task/M[0-9]+)' "$FH/prompts.log" | sed 's/claude-1 <- //; s/Read .orch-task\///' | tr '\n' ' ')
+check "the run lands every milestone" '[ $code -eq 0 ] && [ "$(status_of M1)$(status_of M5)$(status_of M6)" = mergedmergedmerged ]'
+check "the coder gets /compact after M1 and after M5, before the next milestone, and never twice in a row ($order)" '[ "$order" = "M1 /compact M5 /compact M6 " ] || [ "$order" = "M1 /compact M5 /compact M6 /compact " ]'
+check "the event manager says so, and orch story has a line for it" 'grep -qE "claude-1 finished M1 and is idle: sent /compact so its chat does not keep growing|BUSY claude-1 is compacting its chat after M1 first" "$WORK/cmp.log" && grep -q "COMPACTED claude-1: its chat after M1 is now a short summary" "$WORK/cmp.log" && grep -q "the event manager did: claude-1 finished M1: orch sent /compact so its chat does not keep growing" <<<"$("$ORCH" story)"'
+newrepo cmpoff; printf '%s' "$CPLAN" > .orchestrate/plan.md
+ORCH_COMPACT=0 timeout 120 "$ORCH" autopilot > "$WORK/cmpoff.log" 2>&1; code=$?
+check "ORCH_COMPACT=0: the same run, no /compact at all" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ] && ! grep -q "/compact" "$FH/prompts.log"'
+newrepo cmpcfg; printf '%s' "$CPLAN" > .orchestrate/plan.md
+out=$("$ORCH" config compact off 2>&1)
+check "orch config compact off is saved and shown" 'grep -q "^compact: off" <<<"$out" && grep -q "^compact: off" <<<"$("$ORCH" config)"'
+timeout 120 "$ORCH" autopilot > "$WORK/cmpcfg.log" 2>&1; code=$?
+check "…and the run then sends no /compact" '[ $code -eq 0 ] && [ "$(status_of M6)" = merged ] && ! grep -q "/compact" "$FH/prompts.log"'
+"$ORCH" config compact on >/dev/null
+check "orch config compact on turns it back on and names the tools" 'grep -q "^compact: on — coders and the reviewer on claude, codex, agy get /compact between milestones" <<<"$("$ORCH" config)"'
+# the rules, by hand
+newrepo cmpr; printf '%s' "${PLAN5/ISO/worktree}" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null && "$ORCH" start >/dev/null
+stpy "st['workers']['claude-1']['ctx'] = 'M1'; st['tasks']['M1']['status'] = 'needs-fix'"
+out=$("$ORCH" prepare M1 claude-1 2>&1); code=$?
+check "a fix round of the SAME milestone keeps the chat (no /compact)" '[ $code -eq 0 ] && ! grep -q "/compact" "$FH/prompts.log" 2>/dev/null'
+stpy "st['workers']['claude-1']['task'] = None; st['tasks']['M1']['status'] = 'pending'; st['tasks']['M1']['worker'] = None"
+echo working > "$FH/claude-1.status"
+out=$("$ORCH" prepare M4 claude-1 2>&1); code=$?
+check "a coder herdr shows working is never sent /compact" '! grep -q "claude-1 <- /compact" "$FH/prompts.log" 2>/dev/null'
+stpy "st['workers']['claude-1']['task'] = None; st['tasks']['M4'].update(status='pending', worker=None)"
+echo idle > "$FH/claude-1.status"; echo 3 > "$FH/compact-secs"
+out=$("$ORCH" prepare M4 claude-1 2>&1); code=$?
+check "another milestone for an idle coder: /compact first, the job waits (exit 3)" '[ $code -eq 3 ] && grep -q "^BUSY claude-1 is compacting its chat after M1 first (/compact); M4 starts there once herdr shows it idle" <<<"$out" && grep -q "^claude-1 <- /compact$" "$FH/prompts.log" && [ "$(status_of M4)" = pending ]'
+out=$("$ORCH" status 2>&1)
+check "orch status shows it compacting, not free" 'grep -q "worker claude-1 .*state=compacting its chat after M1 (/compact" <<<"$out"'
+out=$("$ORCH" pick M4 2>&1); code=$?
+check "…it is not picked for work while it compacts" '[ "$out" != claude-1 ]'
+out=$("$ORCH" status --json 2>&1)
+check "orch status --json (the views) says compacting" 'python3 -c "import json,sys; d=json.loads(sys.argv[1]); a=[x for x in d[\"agents\"] if x[\"name\"]==\"claude-1\"][0]; assert a[\"state\"]==\"compacting\", a" "$out"'
+for _ in $(seq 20); do [ "$(cat "$FH/claude-1.status")" = idle ] && break; sleep 0.5; done; sleep 1.2
+stpy "st['workers']['claude-1'].pop('compacting'); st['workers']['claude-1']['ctx'] = None"
+out=$("$ORCH" prepare M4 claude-1 2>&1); code=$?
+check "once compacted it takes the job, with no second /compact" '[ $code -eq 0 ] && [ "$(grep -c "^claude-1 <- /compact$" "$FH/prompts.log")" = 1 ]'
+rm -f "$FH/compact-secs"
+# the reviewer (agy here, 1.5): compacted before it reviews another milestone
+mkdir -p "$WORK/agybin"; printf '#!/bin/sh\necho "Antigravity CLI v1.5.0"\n' > "$WORK/agybin/agy"; chmod +x "$WORK/agybin/agy"
+stpy "st['reviewer_info']['ctx'] = 'M9'; st['tasks']['M2']['status'] = 'verifying'"
+out=$(PATH="$WORK/agybin:$PATH" "$ORCH" review M2 2>&1); code=$?
+check "the reviewer gets /compact before it reviews another milestone; the review waits (awaiting-review)" '[ $code -eq 3 ] && grep -q "^reviewer <- /compact$" "$FH/prompts.log" && [ "$(status_of M2)" = awaiting-review ]'
+# AGY: only from 1.2.15
+printf '#!/bin/sh\necho "agy 1.2.4"\n' > "$WORK/agybin/agy"
+check "AGY older than 1.2.15 is not compacted, and orch says why" 'PATH="$WORK/agybin:$PATH" python3 -c "
+import importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader(\"orch\", \"$ROOT/bin/orch\"); m = importlib.util.module_from_spec(importlib.util.spec_from_loader(\"orch\", l)); l.exec_module(m)
+cmd, why = m.compact_command({}, \"agy\")
+assert cmd is None and \"agy 1.2.4 is older than 1.2.15\" in why, why"'
+printf '#!/bin/sh\necho "Antigravity CLI v1.5.0"\n' > "$WORK/agybin/agy"
+check "AGY 1.5 gets /compact; Claude Code and Codex always; OpenCode, amp, Pi and Hermes never" 'PATH="$WORK/agybin:$PATH" python3 -c "
+import importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader(\"orch\", \"$ROOT/bin/orch\"); m = importlib.util.module_from_spec(importlib.util.spec_from_loader(\"orch\", l)); l.exec_module(m)
+for k in (\"agy\", \"claude\", \"codex\"): assert m.compact_command({}, k)[0] == \"/compact\", k
+for k in (\"opencode\", \"amp\", \"pi\", \"hermes\"): assert m.compact_command({}, k)[0] is None, k"'
+check "the lead is never compacted" 'python3 -c "
+import importlib.machinery, importlib.util
+l = importlib.machinery.SourceFileLoader(\"orch\", \"$ROOT/bin/orch\"); m = importlib.util.module_from_spec(importlib.util.spec_from_loader(\"orch\", l)); l.exec_module(m)
+st = {\"workers\": {\"c\": {}}, \"reviewer\": \"r\", \"reviewer_info\": {}, \"lead\": {\"name\": \"lead\", \"kind\": \"claude\"}}
+assert [n for n, _, _ in m.compact_agents(st)] == [\"c\", \"r\"]"'
 
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

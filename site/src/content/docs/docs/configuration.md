@@ -34,6 +34,9 @@ Most settings for a run live in the plan header: branch, base, commit style, che
 | `ORCH_LEAD_SETTLE_S` | 300 | At the end of a run, how long the event manager stays up for a busy lead to pick up the last events |
 | `ORCH_LEAD_MAX_WAKES` | 3 | Wake-ups for one batch before you are notified instead |
 | `ORCH_LEAD_IDLE_MAX_MIN` | 720 | How long the event manager waits for an answer before it stops |
+| `ORCH_COMPACT` | | `0` or `1`: overrides `orch config compact on\|off` for this shell |
+| `ORCH_COMPACT_SETTLE_S` | 10 | After `/compact`, how long herdr must show the agent idle before it takes new work |
+| `ORCH_COMPACT_MAX_S` | 300 | Still working this long after `/compact`: orch stops waiting for it and says so |
 | `ORCH_NO_AUTOSTART` | | Set to `1` and `orch dispatch` / `orch answer` never start the event manager |
 | `ORCH_AGENTS_FILE` | `~/.config/herdr-orchestra/agents.toml` | Your agent registry overrides |
 | `ORCH_MODELS_FILE` | `~/.config/herdr-orchestra/models.toml` | Your model catalog overrides |
@@ -65,6 +68,8 @@ skills_dirs = ["~/.myagent/skills"]
 | `review_launch` | Optional: the command for the reviewer pane, with the tool's edit tools off (Claude Code: `--disallowedTools Edit,NotebookEdit`). `orch team up` uses it; `orch agents launch <kind> --role reviewer` prints it. Your own `launch` without a `review_launch` is used for the reviewer too |
 | `model_flag` | The option that picks the model, used by `orch agents launch <kind> --model <id>`. Leave it out when the tool has none |
 | `herdr_detect` | Herdr can tell when it is idle, working or blocked |
+| `compact` | The command that shrinks the tool's chat to a short summary (`/compact` for Claude Code, Codex and AGY). orch types it into a coder's or the reviewer's pane between milestones. Leave it out (or `""`) where it is not known to work. See [Compact between milestones](/docs/agents/#compact-between-milestones) |
+| `compact_min_version` | The first version of the tool that has that command (AGY: `1.2.15`). An older or unreadable `--version` means no compacting, said once in `orch story` |
 | `roles` | Any of `lead`, `coder`, `reviewer` |
 | `skills_dirs` | Folders the `orch-plan` / `orch-run` / `orch-explain` skills are copied into |
 | `commands_dirs`, `commands_from` | Slash-command folders and flavour (`claude-commands` or `opencode-commands`) |
