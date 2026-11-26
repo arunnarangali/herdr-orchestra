@@ -2,6 +2,19 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.13.0] - 2026-11-26
+
+The views no longer pass an old run off as the current one, and orch says when a plan file has a name it does not read.
+
+Example: a developer saves the new plan as `.orchestrate/csv-import.md` and opens `orch view`. Before, the page still showed last week's `plan.md` milestones as if they were live. Now a note at the top reads "This is the last run (Categories): all its milestones landed 2 d ago. No run is going now" and "`.orchestrate/csv-import.md` is not used: orch only reads `.orchestrate/plan.md`. Rename or copy it to plan.md, then run `orch sync`."
+
+### Added
+- **Notes about old runs and unread plans** in `orch view` (a bar at the top), `orch board`, `orch status` (a `note:` line) and `orch status --json` (a `notices` list). They appear only when no run is going: the last run landed everything (`old_run`), `plan.md` changed after the last run (`plan_unsynced`), or a `.orchestrate/*.md` file that orch does not read is newer than the run (`other_plan`). Files orch writes itself (summary, story, pr-body, manual-tests) are never counted. While a milestone is being worked on there are no notes.
+- **`orch sync` points out a plan it does not read.** With no `plan.md` it names the other `.md` file and says to rename it; with a newer file beside `plan.md` it warns and still loads `plan.md` as before.
+
+### Not changed
+- orch still reads only `.orchestrate/plan.md`, and one repo still has one run at a time.
+
 ## [6.12.1] - 2026-11-26
 
 ### Fixed

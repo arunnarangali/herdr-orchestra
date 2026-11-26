@@ -162,7 +162,8 @@ asks herdr, never takes the state lock and never writes.
               "task": "M2", "state": "building"}],
   "lead": {"name": "lead", "unread": 2, "open": 3},
   "recent": [{"ts": 1764072400, "task": "M2", "from": "pending", "to": "coding", "why": "", "agent": "codex-1"}],
-  "all_done": false
+  "all_done": false,
+  "notices": [{"kind": "old_run", "text": "This is the last run (Categories): all its milestones landed 2 d ago. No run is going now. ..."}]
 }
 ```
 
@@ -170,6 +171,10 @@ asks herdr, never takes the state lock and never writes.
 - `group` is one of `waiting`, `building`, `checking`, `review`, `landing`, `needs_you`, `landed`, `skipped`.
 - `manager.applies` is false in subagent mode (Pi drives the run one milestone at a time; there is no event manager).
 - `usage` is null when no agent reported its usage.
+- `notices` is empty while a run is going. Otherwise it holds plain-words notes: `old_run` (every milestone of the run shown landed and
+  nothing is going now), `plan_unsynced` (`plan.md` is newer than the run: run `orch sync`) and `other_plan`
+  (a `.orchestrate/*.md` file that orch does not read: orch reads `plan.md` only). The same list is in the empty
+  summary (`"empty": true`) when only an unread plan file exists.
 - Adding fields keeps `"view": 1`; renaming or removing one needs `"view": 2`.
 
 `/api/history` returns every line of `events.jsonl` (`{"events": [...]}`), for the page's replay. With

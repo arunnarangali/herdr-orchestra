@@ -13,7 +13,7 @@ Task status flow (every change goes through move(), which checks TRANSITIONS)
   side states: needs-answer, paused, failed, conflict, needs-fix, held (waiting for `orch approve`), skipped
 Also: .orchestrate/events.jsonl (one line per transition), driver.lock (held by autopilot while it drives).
 """
-import atexit, contextlib, fcntl, fnmatch, hashlib, json, os, re, shlex, shutil, signal, socket, subprocess, sys, tempfile, time
+import atexit, contextlib, fcntl, fnmatch, hashlib, json, os, re, shlex, shutil, signal, socket, subprocess, sys, tempfile, textwrap, time
 from pathlib import Path
 
 HERDR = os.environ.get("HERDR", "herdr")
@@ -1273,10 +1273,17 @@ def parse_workers(s):
 def cmd_sync(args):
     plan = ORCH / "plan.md"
     if not plan.exists():
-        die("missing .orchestrate/plan.md")
+        others = other_plan_files()
+        die("missing .orchestrate/plan.md" + (
+            f" (found {', '.join(others[:3])}, but orch only reads plan.md: rename or copy it to plan.md)"
+            if others else ""))
     plan_text = plan.read_text()
     cfg, tasks = parse_plan(plan_text)
     errors, warns = [], []
+    newer = other_plan_files(plan.stat().st_mtime)
+    if newer:
+        warns.append(f"{', '.join(newer[:3])} {'is' if len(newer) == 1 else 'are'} newer than plan.md, but orch only "
+                     f"reads plan.md. If that is the plan you mean, copy it to plan.md and run `orch sync` again")
 
     get = lambda k, d="": " ".join(cfg.get(k, [])).strip() or d
     branch = get("branch").split()[0] if get("branch") else die("plan header needs `Branch: feature/<slug>`")
@@ -3638,6 +3645,8 @@ def cmd_status(args):
           f"max_parallel={st['max_parallel']} reviewer={st['reviewer']} (busy: {st.get('reviewer_busy')})")
     vu = view_url()
     print(f"live view: {vu}" if vu else "live view: off — `orch view` shows this run as a picture in your browser")
+    for n in run_notices(st):
+        print("note: " + n["text"])
     if st.get("integration_broken"):
         print(f"  INTEGRATION BROKEN: the check failed on {st['branch']} after merging "
               f"{st['integration_broken']} — fix it; autopilot re-checks before it continues")
@@ -6984,6 +6993,65 @@ def view_events(limit=None):
     return out
 
 
+ORCH_OWN_MD = {"plan.md", "summary.md", "summary.prev.md", "story.md", "pr-body.md", "manual-tests.md"}
+
+
+def other_plan_files(newer_than=0):
+    """.orchestrate/*.md files that orch does not write itself and does not read (it reads plan.md only)."""
+    out = []
+    try:
+        for f in sorted(ORCH.glob("*.md")):
+            if f.name not in ORCH_OWN_MD and f.stat().st_mtime > newer_than:
+                out.append(f.name)
+    except OSError:
+        pass
+    return out
+
+
+def _ago(secs):
+    secs = max(0, int(secs))
+    return ("less than a minute" if secs < 60 else f"{secs // 60} min" if secs < 3600 else
+            f"{secs // 3600} h" if secs < 86400 else f"{secs // 86400} d")
+
+
+def run_notices(st):
+    """Plain-words notes for the views and `orch status` when what they show is not a run that is going now:
+    the last run finished long ago, or a plan was written that orch will not read. Never fails."""
+    try:
+        try:
+            state_t = STATE.stat().st_mtime
+        except OSError:
+            state_t = 0
+        out = []
+        if st is not None:
+            tasks = st.get("tasks", {})
+            active = any((tasks.get(t) or {}).get("status") in ACTIVE for t in st.get("order", []))
+            done = bool(st.get("order")) and (
+                all((tasks.get(t) or {}).get("status") in ("merged", "skipped") for t in st["order"])
+                or any(e.get("kind") == "finished" for e in st.get("lead_events", [])))
+            if active or driver_alive() or not done:
+                return out                      # a run is going (or stopped half way): nothing to add
+            out.append({"kind": "old_run", "text": (
+                f"This is the last run ({st.get('title') or st.get('branch')}): all its milestones landed "
+                f"{_ago(now() - state_t)} ago. No run is going now. For a new run, put the plan in "
+                f".orchestrate/plan.md and run `orch sync`.")})
+            try:
+                if (ORCH / "plan.md").stat().st_mtime > state_t:
+                    out.append({"kind": "plan_unsynced", "text": (
+                        ".orchestrate/plan.md was changed after this run. Run `orch sync` to load it.")})
+            except OSError:
+                pass
+        others = other_plan_files(state_t)
+        if others:
+            out.append({"kind": "other_plan", "text": (
+                f"{', '.join('.orchestrate/' + o for o in others[:3])} "
+                f"{'is' if len(others) == 1 else 'are'} not used: orch only reads .orchestrate/plan.md. "
+                f"Rename or copy it to plan.md, then run `orch sync`.")})
+        return out
+    except Exception:
+        return []
+
+
 def view_model(st=None, recent=40):
     """The run in one stable shape ("view": 1). Adding fields is fine; renaming one needs "view": 2."""
     if st is None:
@@ -6991,7 +7059,8 @@ def view_model(st=None, recent=40):
             st = json.loads(STATE.read_text())
         except (OSError, ValueError):
             return {"view": VIEW_SCHEMA, "empty": True, "repo": ROOT.name,
-                    "text": "No run in this repo yet: the lead writes the plan, then `orch sync` / `orch start`."}
+                    "text": "No run in this repo yet: the lead writes the plan, then `orch sync` / `orch start`.",
+                    "notices": run_notices(None)}
     tasks, t_now = st.get("tasks", {}), now()
     ms, by_model = [], {}
     for tid in st.get("order", []):
@@ -7062,6 +7131,7 @@ def view_model(st=None, recent=40):
                   "open": len([e for e in st.get("lead_events", []) if event_open(st, e)])} if st.get("lead") else None),
         "recent": view_events(recent)[::-1],
         "all_done": bool(ms) and all(m["status"] in ("merged", "skipped") for m in ms),
+        "notices": run_notices(st),
     }
 
 
@@ -7521,8 +7591,10 @@ def render_board(vm, width=100, color=True, sel=None, note=""):
 
     def cut(s, n):
         return s if len(s) <= n else s[:max(0, n - 1)] + "…"
+    notes = [c("a", ln) for n in vm.get("notices", [])
+             for ln in textwrap.wrap("! " + n["text"], max(30, width - 2), subsequent_indent="  ")]
     if vm.get("empty"):
-        return [c("a", "orch board"), "", vm.get("text", "No run yet.")]
+        return [c("a", "orch board"), "", vm.get("text", "No run yet.")] + ([""] + notes if notes else [])
     cn = vm["counts"]
     out = [c("a", f"orch board · {vm.get('branch')}") + c("d", f"   {time.strftime('%H:%M')} · live"),
            c("B", f"{cn['landed']} of {cn['total']} landed")
@@ -7534,6 +7606,7 @@ def render_board(vm, width=100, color=True, sel=None, note=""):
         out.append(c("d", f"tokens {u['tokens'] / 1e6:.1f}M · cost ~${u['cost_usd']:.2f}"))
     if vm.get("all_done"):
         out.append(c("g", "ALL DONE — `orch finish` pushes the branch and opens the PR"))
+    out += notes
     out += ["", c("d", "MILESTONES")]
     ms = {m["id"]: m for m in vm["milestones"]}
     kids = {}
