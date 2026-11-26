@@ -9,14 +9,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Lint shell scripts
-        run: shellcheck -S warning install.sh scripts/release.sh tests/run.sh tests/sim/herdr tests/sim/behave.sh
+        run: shellcheck -S warning install.sh scripts/release.sh tests/run.sh tests/parallel.sh tests/sim/herdr tests/sim/behave.sh
       - name: Compile orch
         run: python3 -m py_compile bin/orch
       - name: End-to-end tests (fake agents)
         run: |
           git config --global user.email ci@example.com
           git config --global user.name ci
-          bash tests/run.sh
+          bash tests/parallel.sh   # the tests of tests/run.sh, sections side by side
       - name: Installer from checkout
         run: |
           export HOME=$(mktemp -d)
