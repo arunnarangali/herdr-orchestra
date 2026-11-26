@@ -61,13 +61,13 @@ To press one key for the popup, add this to Herdr's `config.toml` and restart He
 
 ```toml
 [[keys.command]]
-key = "prefix+o"
+key = "prefix+a"
 type = "plugin_action"
 command = "herdr-orchestra.board.open"
 description = "orch run board"
 ```
 
-`prefix+o` means press your Herdr prefix (default `ctrl+b`), let go, then press `o`. It is not used by Herdr's default keys. If you already use it, Herdr keeps your existing key and ignores this one, so pick another letter; `prefix+?` lists every key in use. The `orch board` command in a pane keeps working either way.
+`prefix+a` means press your Herdr prefix (default `ctrl+b`), let go, then press `a`. It is not used by Herdr's default keys. If you already use it, Herdr keeps your existing key and ignores this one, so pick another letter; `prefix+?` lists every key in use. The `orch board` command in a pane keeps working either way.
 
 ## Agent names in Herdr's sidebar
 

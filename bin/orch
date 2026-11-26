@@ -7234,7 +7234,7 @@ rows = [
 
 # Optional: open the run board as a popup with one key (after `orch view plugin link`):
 [[keys.command]]
-key = "prefix+o"
+key = "prefix+a"
 type = "plugin_action"
 command = "herdr-orchestra.board.open"
 description = "orch run board"
@@ -7275,9 +7275,9 @@ def cmd_view(args):
             print((r.stdout + r.stderr).strip() or f"linked {d}")
             if r.returncode == 0:
                 print("To open the board with a key, add this to herdr's config.toml and restart herdr "
-                      "(`orch view herdr-config` prints it too). prefix+o is free in herdr's defaults; "
+                      "(`orch view herdr-config` prints it too). prefix+a is free in herdr's defaults; "
                       "`prefix+?` shows every key in use. If the key is taken, herdr keeps its own and ignores this one.\n\n"
-                      "[[keys.command]]\nkey = \"prefix+o\"\ntype = \"plugin_action\"\n"
+                      "[[keys.command]]\nkey = \"prefix+a\"\ntype = \"plugin_action\"\n"
                       "command = \"herdr-orchestra.board.open\"\ndescription = \"orch run board\"\n\n"
                       "Undo with `orch view plugin unlink`.")
             sys.exit(r.returncode)

@@ -2,6 +2,11 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.12.1] - 2026-11-26
+
+### Fixed
+- **The run board key is now `prefix+a`, not `prefix+o`.** `prefix+o` is Herdr's own "open notification target" key, so Herdr kept its key and ignored ours. `orch view plugin link`, `orch view herdr-config` and the docs now give `prefix+a`, which no Herdr default key uses. If you added the old lines to Herdr's config, change `prefix+o` to `prefix+a` and restart Herdr.
+
 ## [6.12.0] - 2026-11-26
 
 The website's run diagrams are now interactive. Nothing in `orch` changed.
