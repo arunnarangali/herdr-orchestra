@@ -7048,7 +7048,8 @@ def view_model(st=None, recent=40):
         "view": VIEW_SCHEMA, "repo": ROOT.name, "title": st.get("title") or st.get("branch"),
         "branch": st.get("branch"), "base": st.get("base"), "mode": st.get("mode") or "full",
         "orch_mode": st.get("orch_mode") or "panes", "updated": t_now,
-        "manager": {"running": driver_alive(), "beat": run.get("beat")},
+        "manager": {"running": driver_alive(), "beat": run.get("beat"),
+                    "applies": (st.get("orch_mode") or "panes") != "subagent"},   # subagent mode has no event manager
         "counts": {"total": len([g for g in groups if g != "skipped"]), "landed": groups.count("landed"),
                    "needs_you": groups.count("needs_you"),
                    "active": len([g for g in groups if g in ("building", "checking", "review", "landing")]),

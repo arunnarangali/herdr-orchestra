@@ -312,7 +312,8 @@ function got(vm) {
   VM = vm; if (!vm.empty) notify(vm);
   const t = new Date().toLocaleTimeString();
   $("live").classList.toggle("off", false);
-  $("livetxt").textContent = (vm.manager && vm.manager.running ? "● live" : "● live · event manager not running") + " · " + t;
+  const mg = vm.manager || {};
+  $("livetxt").textContent = (mg.applies === false ? "● live · one milestone at a time, driven from the Pi window" : mg.running ? "● live" : "● live · event manager not running") + " · " + t;
   if (replayAt != null && HIST && vm.recent && vm.recent.length && HIST.length < (vm.recent.length)) HIST = null;
   render();
 }

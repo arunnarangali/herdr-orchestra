@@ -2119,6 +2119,13 @@ m=tomllib.load(open(\"$ROOT/view/herdr-plugin/herdr-plugin.toml\",\"rb\"))
 sys.exit(not (m[\"id\"]==\"herdr-orchestra.board\" and m[\"min_herdr_version\"]==\"0.7.4\" and m[\"panes\"][0][\"placement\"]==\"popup\" and m[\"actions\"][0][\"id\"]==\"open\"))"'
 "$ORCH" view plugin unlink >/dev/null 2>&1
 check "…and unlinks it" 'grep -q "^plugin unlink herdr-orchestra.board$" "$FH/team.log"'
+python3 - <<'PY'
+import json; p=".orchestrate/state.json"; s=json.load(open(p)); s["orch_mode"]="subagent"; json.dump(s,open(p,"w"))
+PY
+check "subagent mode: the summary says there is no event manager, and the board still draws the run" '"$ORCH" status --json | python3 -c "import json,sys;m=json.load(sys.stdin)[\"manager\"];sys.exit(m[\"applies\"] is not False)" && "$ORCH" board --once --no-color | grep -q "M4 Totals"'
+python3 - <<'PY'
+import json; p=".orchestrate/state.json"; s=json.load(open(p)); s["orch_mode"]="panes"; json.dump(s,open(p,"w"))
+PY
 out=$("$ORCH" doctor 2>&1)
 check "orch doctor says which views this herdr supports" 'grep -q "^views   ok  herdr 0.9.5: sidebar names, sidebar rows" <<<"$out"'
 echo 0.6.5 > "$FH/version"
