@@ -122,11 +122,11 @@ A run keeps the mode it was planned in. Switching with `/orch-mode` while a run 
 
 ## Step 6 (optional): pick the subagents' models
 
-The mode and the subagent settings live in `~/.config/herdr-orchestra/config.json`:
+The mode and the subagent settings live in `~/.config/herdr-orchestra/config.json`. The mode is saved per agent, so `subagent` here is Pi's only: every other agent that leads (Claude Code, Codex, Antigravity, ...) stays in panes mode.
 
 ```json
 {
-  "mode": "subagent",
+  "modes": { "pi": "subagent" },
   "subagent": {
     "coder":    { "model": "anthropic/claude-sonnet-4-5", "thinking": "medium", "max_turns": 80 },
     "reviewer": { "model": "openai/gpt-5", "thinking": "high" }
@@ -135,6 +135,7 @@ The mode and the subagent settings live in `~/.config/herdr-orchestra/config.jso
 ```
 
 - `model` and `thinking`: with none set, the subagents use the lead's model. A model the policy denies (`orch models check <id>`) is refused.
+- `modes`: the mode per agent. Only `pi` can be `subagent`; any agent not listed uses panes. An older file with one `"mode": "subagent"` is read as Pi's. `ORCH_MODE=panes` (or `subagent`, in Pi) overrides it for one command.
 - `max_turns`: stops a subagent that loops after that many turns. The lead resumes it once, then asks you. Not set means no limit.
 
 Run `/orch-mode subagent` (or `orch setup --mode subagent`) again after you change this file, so the agent files pick up the new models.

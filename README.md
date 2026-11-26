@@ -291,7 +291,7 @@ Runs have two modes. Nothing changes for anyone who never picks the second one.
 | `panes` (default) | herdr panes, as described above | the event manager; the lead dispatches and pauses |
 | `subagent` | inside one Pi window, as Pi subagents ([pi-subagents](https://www.npmjs.com/package/@tintinweb/pi-subagents)) | the lead, one milestone at a time |
 
-Switch with `/orch-mode subagent` in Pi; `/orch-mode` alone shows the mode, and Pi's footer shows it too (`orch: subagent`). The choice is saved in `~/.config/herdr-orchestra/config.json`, and a run keeps the mode it was planned in.
+Switch with `/orch-mode subagent` in Pi; `/orch-mode` alone shows the mode, and Pi's footer shows it too (`orch: subagent`). The choice is saved for Pi only, in `~/.config/herdr-orchestra/config.json` (`"modes": {"pi": "subagent"}`): every other agent (Claude Code, Codex, Antigravity, ...) keeps leading in panes mode, because subagent mode exists only for Pi. A run keeps the mode it was planned in. A config from before 6.23.0 with one `"mode": "subagent"` is read as Pi's, and `orch mode` saves it the new way.
 
 `/orch-mode subagent` also sets subagent mode up, right there in Pi, with no terminal step: it installs the `orch` command if it is missing or old, writes the coder and reviewer agents, installs pi-subagents, and reloads Pi so the `Agent` tool is ready. It ends with `Done: subagent mode is ready.` `/orch-setup --mode subagent` does the same. From a normal terminal (no Pi open), the same setup is:
 
@@ -303,7 +303,7 @@ Setup writes `~/.pi/agent/agents/coder.md` and `reviewer.md` (the reviewer canno
 
 ```json
 {
-  "mode": "subagent",
+  "modes": { "pi": "subagent" },
   "subagent": {
     "coder":    { "model": "anthropic/claude-sonnet-4-5", "thinking": "medium", "max_turns": 80 },
     "reviewer": { "model": "openai/gpt-5", "thinking": "high" }

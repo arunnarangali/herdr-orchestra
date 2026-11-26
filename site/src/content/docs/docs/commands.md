@@ -80,7 +80,7 @@ These are for [Pi](/docs/pi/). In Pi you can type `/orch-mode` and `/orch-setup`
 
 | Command | What it does |
 |---|---|
-| `orch mode [panes\|subagent]` | Show or switch where the coder and reviewer run: Herdr panes, or Pi subagents in one window |
+| `orch mode [panes\|subagent] [--agent <kind>]` | Show or switch where the coder and reviewer run: Herdr panes, or Pi subagents in one window. Saved per agent; subagent is for Pi only, every other agent uses panes |
 | `orch setup [--mode panes\|subagent]` | Set a mode up; `subagent` writes Pi's `coder` and `reviewer` agents and installs pi-subagents |
 | `orch sub next` | Subagent mode: the next milestone and its task file (`NEXT`, `TASK`, `REVIEW`) |
 | `orch sub done <Mn>` | Subagent mode: save the milestone on the feature branch (`MERGED`, or `HELD` for risky changes) |
