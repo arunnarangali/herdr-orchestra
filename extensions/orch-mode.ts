@@ -12,12 +12,16 @@
 // Commands:  /orch-mode [panes|subagent]       show or switch the mode; `subagent` also sets it up (below)
 //            /orch-setup [--mode panes|subagent] install the `orch` command from this package (needed once)
 //
+// Tool:      orch_ask                            the lead's clickable questions before it writes the plan (/orch-plan
+//                                                step 2a): one picker per question, answers saved in
+//                                                .orchestrate/questions.md. Pi has no question tool of its own.
+//
 // Subagent mode is set up from inside Pi, with no terminal step: `/orch-mode subagent` runs
 // `orch setup --mode subagent` (or this package's installer when orch is missing or old), which writes
 // ~/.pi/agent/agents/coder.md and reviewer.md and runs `pi install npm:@tintinweb/pi-subagents`. When that install
 // is new, the command reloads Pi (ctx.reload) so the Agent tool is there at once.
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,6 +68,83 @@ async function stateFile(pi: ExtensionAPI, cwd: string): Promise<string | undefi
     // not a git repo, or no git: no run here
   }
   return undefined;
+}
+
+/** The main checkout's .orchestrate folder (the same place as stateFile(), also from a worktree); cwd's when no git. */
+async function orchestrateDir(pi: ExtensionAPI, cwd: string): Promise<string> {
+  try {
+    const r = await pi.exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, timeout: 5000 });
+    if (r.code === 0 && r.stdout.trim()) return join(dirname(r.stdout.trim()), ".orchestrate");
+  } catch {
+    // no git: use cwd
+  }
+  return join(cwd, ".orchestrate");
+}
+
+type AskOption = { key: string; label: string; description?: string; recommended?: boolean };
+type AskQuestion = { id: string; question: string; options: AskOption[]; allow_custom?: boolean };
+type AskParams = { title?: string; questions: AskQuestion[] };
+type AskAnswer = { id: string; question: string; key: string; label: string; custom: boolean };
+
+const CUSTOM = "Custom answer...";
+
+/** orch_ask's parameters, as plain JSON Schema (Pi validates JSON Schema; no typebox import needed). */
+const ASK_SCHEMA = {
+  type: "object",
+  properties: {
+    title: { type: "string", description: 'Short header, e.g. "Decisions before planning"' },
+    questions: {
+      type: "array",
+      minItems: 1,
+      maxItems: 8,
+      description: "The decisions only the developer can make, asked one after another",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "q1, q2, ..." },
+          question: { type: "string", description: "One clear question" },
+          options: {
+            type: "array",
+            minItems: 1,
+            maxItems: 6,
+            items: {
+              type: "object",
+              properties: {
+                key: { type: "string", description: "a, b, c" },
+                label: { type: "string", description: "The choice, in a few words" },
+                description: { type: "string", description: "Optional: what it means, from what you found" },
+                recommended: { type: "boolean", description: "true on your suggested choice (one per question)" },
+              },
+              required: ["key", "label"],
+            },
+          },
+          allow_custom: { type: "boolean", description: 'Adds "Custom answer..." (default true)' },
+        },
+        required: ["id", "question", "options"],
+      },
+    },
+  },
+  required: ["questions"],
+} as const;
+
+function optionLine(o: AskOption): string {
+  return `(${o.key}) ${o.label}${o.recommended ? " [Recommended]" : ""}${o.description ? ` - ${o.description}` : ""}`;
+}
+
+/** The questions and answers as markdown for .orchestrate/questions.md (questions with choices, then ## Answers). */
+function questionsMarkdown(p: AskParams, answers: AskAnswer[]): string {
+  const lines = [`# ${p.title?.trim() || "Questions before planning"}`, ""];
+  p.questions.forEach((q, i) => {
+    lines.push(`${i + 1}. ${q.question}`);
+    for (const o of q.options) lines.push(`   ${optionLine(o)}`);
+  });
+  lines.push("", "## Answers", "");
+  answers.forEach((a, i) => lines.push(`${i + 1}. ${a.custom ? a.label : `(${a.key}) ${a.label}`}`));
+  return lines.join("\n") + "\n";
+}
+
+function textResult(text: string, details: Record<string, unknown>) {
+  return { content: [{ type: "text" as const, text }], details };
 }
 
 async function readMode(pi: ExtensionAPI, cwd: string): Promise<{ mode: Mode; from: string }> {
@@ -153,7 +234,77 @@ export default function orchMode(pi: ExtensionAPI) {
       mode === "subagent"
         ? "herdr-orchestra (orch) mode: subagent. When you lead an orch run, the coder and the reviewer are Pi subagents (the Agent tool), not herdr panes; `orch lead run` prints the steps."
         : "herdr-orchestra (orch) mode: panes. When you lead an orch run, coders and the reviewer run in herdr panes; `orch lead run` prints the steps.";
-    return { systemPrompt: `${event.systemPrompt}\n\n${line}` };
+    const ask =
+      "When you lead /orch-plan and need decisions only the developer can make, ask them with the orch_ask tool " +
+      "(clickable choices, saved to .orchestrate/questions.md). A coder or reviewer never uses it.";
+    return { systemPrompt: `${event.systemPrompt}\n\n${line}\n${ask}` };
+  });
+
+  pi.registerTool({
+    name: "orch_ask",
+    label: "orch ask",
+    description:
+      "herdr-orchestra lead only, during /orch-plan (plan playbook step 2a): ask the developer the decisions only " +
+      "they can make, as clickable choices, before you write .orchestrate/plan.md. Shows one picker per question, " +
+      "saves questions and answers to .orchestrate/questions.md, and returns the answers. status `cancelled`: the " +
+      "developer stopped; don't guess, say planning is paused until they answer. status `no_ui`: ask in chat instead. " +
+      "Coders and reviewers never use it (a coder reports status `question` in its result file).",
+    promptSnippet: "orch_ask: the orch lead's clickable questions for the developer before writing the plan",
+    parameters: ASK_SCHEMA as any,
+    async execute(_id: string, params: AskParams, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: ExtensionContext) {
+      const qs = Array.isArray(params?.questions) ? params.questions : [];
+      if (!qs.length) return textResult("orch_ask needs at least one question.", { status: "error" });
+      if (!ctx.hasUI) {
+        return textResult(
+          "status: no_ui. This Pi has no screen for pickers (print or JSON mode). Write the questions to " +
+            ".orchestrate/questions.md and ask them in chat, as plan playbook step 2a says.",
+          { status: "no_ui" },
+        );
+      }
+      const answers: AskAnswer[] = [];
+      for (let i = 0; i < qs.length; i++) {
+        const q = qs[i];
+        const opts = Array.isArray(q.options) ? q.options : [];
+        const choices = opts.map(optionLine);
+        if (q.allow_custom !== false) choices.push(CUSTOM);
+        const head = (params.title?.trim() || "Decisions before planning") + (qs.length > 1 ? ` (${i + 1} of ${qs.length})` : "");
+        const picked: string | undefined = await ctx.ui.select(`${head}\n${q.question}`, choices);
+        let answer: AskAnswer | undefined;
+        if (picked === CUSTOM) {
+          const typed: string | undefined = await ctx.ui.input(q.question, "Your answer");
+          if (typed !== undefined && typed.trim()) answer = { id: q.id, question: q.question, key: "custom", label: typed.trim(), custom: true };
+        } else if (picked !== undefined) {
+          const o = opts[choices.indexOf(picked)];
+          if (o) answer = { id: q.id, question: q.question, key: o.key, label: o.label, custom: false };
+        }
+        if (!answer) {
+          return textResult(
+            `status: cancelled at question ${i + 1} of ${qs.length} (${q.id}). The developer stopped answering. ` +
+              "Don't guess and don't write the plan: tell them planning is paused until they answer, and ask again " +
+              "when they say so. Nothing was saved.",
+            { status: "cancelled", at: q.id, answers },
+          );
+        }
+        answers.push(answer);
+      }
+      const dir = await orchestrateDir(pi, ctx.cwd);
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, "questions.md");
+      const md = questionsMarkdown(params, answers);
+      // The same planning (questions.md newer than plan.md: a second round, or `grill:` one at a time): add to it.
+      // Otherwise it is from an earlier plan: start the file again.
+      const plan = join(dir, "plan.md");
+      const samePlanning =
+        existsSync(file) && readFileSync(file, "utf8").trim() !== "" && (!existsSync(plan) || statSync(file).mtimeMs > statSync(plan).mtimeMs);
+      if (samePlanning) appendFileSync(file, "\n" + md);
+      else writeFileSync(file, md);
+      const lines = answers.map((a, i) => `${i + 1}. ${a.id}: ${a.custom ? `custom: ${a.label}` : `(${a.key}) ${a.label}`}`);
+      return textResult(
+        `status: answered. Saved in ${file}. The developer's answers:\n${lines.join("\n")}\n` +
+          "Write each answer into the plan where it applies (plan playbook step 2a), then carry on from step 2b.",
+        { status: "answered", file, answers },
+      );
+    },
   });
 
   /** Lines worth showing from installer / `orch setup` output (both can be long). */

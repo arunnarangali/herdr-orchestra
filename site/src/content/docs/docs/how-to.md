@@ -63,6 +63,24 @@ Before I plan, 3 questions:
 
 You answer `1 whole order, 2 both, 3 no`, and it writes the plan. Nothing runs until you say go. When the code settles everything, there are no questions. Want one question at a time? Start your request with `grill:`. See [The orchestration plan](/docs/planning/#questions-come-first).
 
+### Can I click the answers instead of typing them?
+
+Yes, when your lead's tool has a question picker. The lead then shows each question as a list you pick from with the arrow keys, its suggestion marked:
+
+```text
+Decisions before planning (1 of 3)
+Discount on the whole order or on each item?
+> (a) Whole order  [Recommended]
+  (b) Each item
+  Custom answer...
+```
+
+- **Claude Code** uses its own picker (`AskUserQuestion`), **OpenCode** its `question` tool, and **Antigravity** its own picker.
+- **Codex** has one too (`request_user_input`), but only in Plan mode unless a setting is on. orch's start command for a Codex lead turns it on (`orch agents launch codex --role lead`, or the line `orch team codex` prints). Coders never get it, because nobody watches their panes.
+- **Pi** has no picker of its own, so orch's Pi package adds one: the `orch_ask` tool.
+
+Your answers are saved in `.orchestrate/questions.md` either way, and the lead goes straight on to the plan. Press Escape to stop: the lead pauses and asks again when you say so, and never guesses. With no picker (a headless run, or a lead started before this version) it asks in chat as above.
+
 ### How do I give the coders and the reviewer my project's rules?
 
 Add any of these files to your repo (in `docs/`, or the folder a `Docs:` line in the plan names):

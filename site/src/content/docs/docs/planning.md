@@ -101,7 +101,7 @@ It warns about a milestone without `Why separate` (in a plan with more than one)
 
 ## Questions come first
 
-After reading the code, and before writing any plan, the lead asks you what only you can decide (business rules, data shapes nobody has defined, security trade-offs), **all in one message**, each with 2 or 3 choices and its own suggestion. You answer by number, and the plan is written once, with your answers in it. When the code already settles everything, it skips the questions. Start your request with `grill:` if you want one question at a time instead.
+After reading the code, and before writing any plan, the lead asks you what only you can decide (business rules, data shapes nobody has defined, security trade-offs), **all in one message**, each with 2 or 3 choices and its own suggestion. When the lead's tool has a question picker (Claude Code, OpenCode, Antigravity, a Codex lead started by orch, Pi with orch's `orch_ask`), you click your answers instead; otherwise you answer by number. Either way the plan is written once, with your answers in it, and they are kept in `.orchestrate/questions.md`. When the code already settles everything, it skips the questions. Start your request with `grill:` if you want one question at a time instead.
 
 New words the feature brings go under `## Glossary additions`, and hard-to-change decisions become a decision record in `docs/adr/`. A coder writes them, as part of the milestone that introduces them.
 
