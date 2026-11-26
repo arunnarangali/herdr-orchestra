@@ -817,7 +817,7 @@ echo "12. one installed tool builds the whole team: orch team <kind>, orch team 
 out=$("$ORCH" team codex 2>&1)
 check "team codex: 2 coders across the codex tiers + reviewer on the strongest" 'grep -q "^Workers: codex-1 (codex: gpt-6-luna@high), codex-2 (codex: gpt-6.2-sol@medium)$" <<<"$out" && grep -q "^Reviewer: reviewer (codex: gpt-6.2-sol@medium)$" <<<"$out"'
 check "team codex has a high Codex level now (Sol on medium thinking), so no high-tier note" '! grep -q "strongest allowed codex model is" <<<"$out" && grep -q "gpt-6.2-sol@medium  (high tier)" <<<"$out"'
-check "team codex prints the lead's own start command on the strongest level" 'grep -q "^  codex --approve-for-me .* --model gpt-6.2-sol -c model_reasoning_effort=medium$" <<<"$out"'
+check "team codex prints the lead's own start command on the strongest level, with Codex's question picker on" 'grep -q "^  codex --approve-for-me .* --model gpt-6.2-sol -c model_reasoning_effort=medium -c features.default_mode_request_user_input=true$" <<<"$out"'
 out=$("$ORCH" team claude --coders 1 --no-reviewer 2>&1)
 check "team claude --coders 1: one coder on the strongest model, no reviewer" 'grep -q "^Workers: claude-1 (claude: opus)$" <<<"$out" && grep -q "^Reviewer: none$" <<<"$out"'
 out=$("$ORCH" team codex --models gpt-6-astra 2>&1); code=$?
@@ -1674,6 +1674,45 @@ else
   echo "  skip: this node cannot run TypeScript (needs 22.6+)"
 fi
 unset ORCH_CONFIG_FILE PI_CODING_AGENT_DIR ORCH_PI
+echo "48c. native question pickers: the lead asks in its agent's own picker (Pi: orch_ask), chat stays the fallback"
+out=$("$ORCH" lead plan 2>&1)
+check "the plan playbook has the native question rule: a picker when there is one, for every agent" 'grep -q "native question rule" <<<"$out" && for t in AskUserQuestion "\`question\` in OpenCode" request_user_input orch_ask Antigravity; do grep -q "$t" <<<"$out" || { echo "missing $t"; exit 1; }; done'
+check "…answers go to questions.md under ## Answers, and planning goes straight on" 'grep -q "under \`## Answers\` in \`.orchestrate/questions.md\` (\`orch_ask\` saves the file itself), then go straight on" <<<"$out"'
+check "…a closed picker pauses planning instead of guessing" 'grep -q "closed the picker without answering.*don.t guess and don.t plan" <<<"$out"'
+check "…no picker: the chat questions as before, all in one message, and grill: is still one at a time" 'grep -q "No picker, or it can.t show here" <<<"$out" && grep -q "all in one message" <<<"$out" && grep -q "Answer by number" <<<"$out" && grep -q "one picker call per question" <<<"$out"'
+newrepo nq
+check "a Codex lead starts with its question picker on; coders and the reviewer never get it (unattended panes)" '"$ORCH" agents launch codex --role lead | grep -q " -c features.default_mode_request_user_input=true$" && ! "$ORCH" agents launch codex | grep -q request_user_input && ! "$ORCH" agents launch codex --role reviewer | grep -q request_user_input && [ "$("$ORCH" agents launch claude --role lead)" = "claude --permission-mode acceptEdits" ]'
+check "a lead started on a model keeps the picker after the model and thinking options" '[ "$("$ORCH" agents launch codex --role lead --model gpt-6.2-sol@high)" = "$("$ORCH" agents launch codex --model gpt-6.2-sol@high) -c features.default_mode_request_user_input=true" ]'
+if node -e 'process.exit(process.features && process.features.typescript ? 0 : 1)' 2>/dev/null; then
+  PT(){ NODE_NO_WARNINGS=1 node "$ROOT/tests/pi-extension.mjs" "$@" 2>&1; }
+  NQ='{"title":"Decisions before planning","questions":[{"id":"q1","question":"Discount on the whole order or each item?","options":[{"key":"a","label":"Whole order","recommended":true},{"key":"b","label":"Each item"}]},{"id":"q2","question":"Can a discount bring the total to zero?","options":[{"key":"a","label":"No"},{"key":"b","label":"Yes","description":"free orders"}],"allow_custom":true}]}'
+  out=$(PICKS=0,1 PT tool orch_ask "$NQ")
+  check "Pi orch_ask shows one picker per question, the suggestion marked [Recommended], with a custom answer" 'grep -q "^SELECT Decisions before planning (1 of 2) / Discount on the whole order or each item? | (a) Whole order \[Recommended\] | (b) Each item | Custom answer...$" <<<"$out" && grep -q "^SELECT Decisions before planning (2 of 2) / .* | (b) Yes - free orders | Custom answer...$" <<<"$out"'
+  check "…returns the answers to the lead, who goes straight on" 'grep -q "^status: answered" <<<"$out" && grep -q "^1. q1: (a) Whole order$" <<<"$out" && grep -q "^2. q2: (b) Yes$" <<<"$out" && grep -q "carry on from step 2b" <<<"$out" && grep -q "^RESULT {\"status\":\"answered\"" <<<"$out"'
+  check "…and saves questions, choices and answers to .orchestrate/questions.md" 'grep -q "^# Decisions before planning$" .orchestrate/questions.md && grep -q "^   (a) Whole order \[Recommended\]$" .orchestrate/questions.md && grep -q "^## Answers$" .orchestrate/questions.md && grep -q "^2. (b) Yes$" .orchestrate/questions.md'
+  out=$(PICKS=custom,"Only on weekdays" PT tool orch_ask '{"questions":[{"id":"q3","question":"When?","options":[{"key":"a","label":"Always"}]}]}')
+  check "…a custom answer is typed in and saved; a second round in the same planning adds to the file" 'grep -q "^INPUT When?$" <<<"$out" && grep -q "^1. q3: custom: Only on weekdays$" <<<"$out" && grep -q "^1. Only on weekdays$" .orchestrate/questions.md && grep -q "^# Decisions before planning$" .orchestrate/questions.md'
+  echo "# Plan" > .orchestrate/plan.md; touch -d "+1 minute" .orchestrate/plan.md
+  PICKS=0 PT tool orch_ask '{"questions":[{"id":"q1","question":"New feature?","options":[{"key":"a","label":"Yes"}]}]}' >/dev/null
+  check "…questions from an earlier plan are replaced, not added to" '! grep -q "Whole order" .orchestrate/questions.md && grep -q "^1. New feature?$" .orchestrate/questions.md'
+  rm -f .orchestrate/questions.md .orchestrate/plan.md
+  out=$(PICKS=0,esc PT tool orch_ask "$NQ")
+  check "…Escape stops it: status cancelled, the lead is told not to guess, nothing saved" 'grep -q "^status: cancelled at question 2 of 2 (q2)" <<<"$out" && grep -q "Don.t guess" <<<"$out" && [ ! -e .orchestrate/questions.md ]'
+  out=$(PICKS=custom,esc PT tool orch_ask "$NQ")
+  check "…an empty or cancelled custom answer is a cancel too" 'grep -q "^status: cancelled at question 1" <<<"$out"'
+  out=$(NO_UI=1 PT tool orch_ask "$NQ")
+  check "…without a screen (Pi print mode) it says no_ui and the lead asks in chat" 'grep -q "^status: no_ui" <<<"$out" && ! grep -q "^SELECT" <<<"$out" && [ ! -e .orchestrate/questions.md ]'
+  git worktree add -q ../nq-wt -b nqwt 2>/dev/null
+  (cd ../nq-wt && PICKS=1,0 PT tool orch_ask "$NQ" >/dev/null)
+  check "…from a worktree the file goes to the main checkout's .orchestrate (like state.json)" '[ -f .orchestrate/questions.md ] && [ ! -e ../nq-wt/.orchestrate/questions.md ] && grep -q "^1. (b) Each item$" .orchestrate/questions.md'
+  out=$(PT prompt)
+  check "Pi's lead is told orch_ask is there for /orch-plan decisions; coders are told not to use it" 'grep -q "When you lead /orch-plan and need decisions only the developer can make, ask them with the orch_ask tool" <<<"$out" && grep -q "A coder or reviewer never uses it" <<<"$out" && grep -q "^herdr-orchestra (orch) mode:" <<<"$out"'
+  check "orch_ask's parameters are plain JSON Schema (no typebox import: Pi validates JSON Schema)" '! grep -q "from \"typebox\"\|@sinclair/typebox" "$ROOT/extensions/orch-mode.ts" && grep -q "maxItems: 8" "$ROOT/extensions/orch-mode.ts"'
+else
+  echo "  skip: this node cannot run TypeScript (needs 22.6+)"
+fi
+cd "$WORK"
+
 echo "49. a coder moved off its milestone is really stopped (bug: STOP note queued, coder shown free while it still worked)"
 HPLAN='# Plan: t\nBranch: feature/halt\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: claude-1 (claude), codex-1 (codex)\nReviewer: none\n\n## [x] M20: long job\nDepends on: none\nAcceptance criteria:\n- it works\nOpen questions:\n- none\n\n## [x] M8: next job\nDepends on: none\nOpen questions:\n- none\n'
 newrepo halt; printf "$HPLAN" > .orchestrate/plan.md
@@ -2186,7 +2225,7 @@ check "a finished run with nothing going says it is the last run, in the summary
 printf '# Plan: other\n' > .orchestrate/csv-import.md
 vm=$("$ORCH" status --json)
 check "a plan file with another name is pointed out: orch reads plan.md only" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);k=[n[\"kind\"] for n in d[\"notices\"]];sys.exit(0 if k==[\"old_run\",\"other_plan\"] else 1)" "$vm" && "$ORCH" board --once --no-color | grep -q "csv-import.md is not used: orch only reads .orchestrate/plan.md"'
-check "…the files orch writes itself (summary, story, pr-body...) are never mistaken for a plan" 'for f in summary.md summary.prev.md story.md pr-body.md manual-tests.md; do printf x > .orchestrate/$f; done; ! "$ORCH" status --json | grep -q "summary.md is not used"; ! "$ORCH" status --json | grep -q "story.md is not used"'
+check "…the files orch writes itself (summary, story, pr-body...) and the lead's questions.md are never mistaken for a plan" 'for f in summary.md summary.prev.md story.md pr-body.md manual-tests.md questions.md; do printf x > .orchestrate/$f; done; ! "$ORCH" status --json | grep -q "summary.md is not used"; ! "$ORCH" status --json | grep -q "story.md is not used" && ! "$ORCH" status --json | grep -q "questions\.md"'
 sleep 1; touch .orchestrate/plan.md
 check "a plan.md changed after the run says to run orch sync" '"$ORCH" status --json | grep -q "\"plan_unsynced\""'
 cp .orchestrate/state.json "$WORK/state.keep"

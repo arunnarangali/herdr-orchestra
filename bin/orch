@@ -6722,6 +6722,7 @@ def launch_cmd(kind, v, model=None, strict=True, role=None, cwd=None):
     """The shell command that starts agent `kind` in a pane, on `model` when given. With strict=False a kind
     without a model_flag starts on its default model instead of failing (the caller says so). role="reviewer"
     uses the kind's `review_launch` when it has one: the same tool with its code-editing tools turned off.
+    role="lead" adds the kind's `lead_flags` (Codex: its question picker, so /orch-plan asks in a picker).
     A model `<id>@<level>` on a kind with an `effort_flag` starts <id> with that thinking level. `cwd` is the
     folder the agent will run in ({git_dir} is filled in from it)."""
     cmd = fill_launch((v.get("review_launch") if role == "reviewer" else None) or v.get("launch")
@@ -6743,6 +6744,8 @@ def launch_cmd(kind, v, model=None, strict=True, role=None, cwd=None):
         cmd += f" {v['model_flag']} {shlex.quote(base)}"
         if effort:
             cmd += " " + v["effort_flag"].replace("{effort}", shlex.quote(effort))
+    if role == "lead" and v.get("lead_flags"):
+        cmd += " " + v["lead_flags"]
     return cmd
 
 
@@ -6830,7 +6833,7 @@ def cmd_team(args):
               f"it, and `orch sync` will say so")
     if top and v.get("model_flag") and "lead" in roles:
         print(f"\nYour own lead pane on the strongest level (start it like this, then write `Lead: lead ({kind}: {top})`):"
-              f"\n  {launch_cmd(kind, v, top, strict=False)}")
+              f"\n  {launch_cmd(kind, v, top, strict=False, role='lead')}")
     print(f"\nCheck these are models your {kind} really reaches (`--models a,b` to choose others).")
     print("\nThese panes don't exist yet. After `orch sync` and `orch start`, `orch team up` opens each one in its "
           "own folder, on its model, and names it.")
@@ -7220,7 +7223,8 @@ def view_events(limit=None):
     return out
 
 
-ORCH_OWN_MD = {"plan.md", "summary.md", "summary.prev.md", "story.md", "pr-body.md", "manual-tests.md"}
+ORCH_OWN_MD = {"plan.md", "summary.md", "summary.prev.md", "story.md", "pr-body.md", "manual-tests.md",
+               "questions.md"}   # questions.md: the lead writes it, orch reads it (asked_before_plan)
 
 
 def other_plan_files(newer_than=0):
@@ -8091,7 +8095,7 @@ def sandbox_warnings():
     if out and codex:
         v = (registry(required=False) or {}).get("codex") or {}
         out.append("  Fix: quit this Codex and start it again with orch's command (it opens just those two):\n    "
-                   + launch_cmd("codex", v, None, strict=False, cwd=Path.cwd()) + "\n  (`orch agents launch codex "
+                   + launch_cmd("codex", v, None, strict=False, role="lead", cwd=Path.cwd()) + "\n  (`orch agents launch codex "
                    "--role lead --model <id>` adds a model; `orch models` lists them)")
     return out
 
@@ -8621,7 +8625,7 @@ def cmd_agents(args):
     if sub == "launch":
         rest = args[1:]
         model, role = None, None
-        use = "usage: orch agents launch <kind> [--model <id>] [--role coder|reviewer]"
+        use = "usage: orch agents launch <kind> [--model <id>] [--role coder|reviewer|lead]"
         if "--model" in rest:
             i = rest.index("--model")
             model = rest[i + 1] if len(rest) > i + 1 else die(use)
@@ -8704,9 +8708,9 @@ def doctor_kind(kind, v, full=True):
     hcmd = v.get("help_cmd") or f"{binary} --help"
     code, help_ = _probe(hcmd)
     flags = []
-    for key in ("launch", "review_launch"):
+    for key in ("launch", "review_launch", "lead_flags"):
         try:
-            launch = shlex.split(v.get(key) or binary)
+            launch = shlex.split(v.get(key) or binary) if key != "lead_flags" else [binary] + shlex.split(v.get(key) or "")
         except ValueError:
             launch = [binary]
         for f in (tok.split("=")[0] for tok in launch[1:] if tok.startswith("-")):

@@ -2,6 +2,22 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.15.0] - 2026-11-26
+
+The lead's questions before planning now open in your agent's own question picker, so you click your answers instead of typing `1 a, 2 both, 3 no`. This works in every agent that has a picker, and chat stays the fallback.
+
+Example: `/orch-plan add discounts` in Pi shows `Discount on the whole order or on each item?` with `(a) Whole order [Recommended]`, `(b) Each item` and `Custom answer...`. You pick, the answers are saved to `.orchestrate/questions.md`, and the plan follows straight away.
+
+### Added
+- **Native question rule** in the plan playbook (step 2a), for every lead: use your question picker when you have one (Claude Code `AskUserQuestion`, OpenCode `question`, Codex `request_user_input`, Pi `orch_ask`, Antigravity's picker), save questions and answers to `.orchestrate/questions.md`, and go straight on to the plan. If you close the picker, planning pauses and the lead never guesses. With no picker, the lead asks in chat as before. `grill:` is still one question at a time.
+- **Pi: `orch_ask` tool** in orch's Pi package (Pi has no question tool of its own). It shows one picker per question, marks the suggestion `[Recommended]`, offers a custom answer, and saves the file in the main checkout's `.orchestrate/`, also from a worktree. Escape returns `cancelled`, and a Pi with no screen returns `no_ui`. A second round in the same planning is added to the file, and questions from an earlier plan are replaced.
+- **Codex lead with its picker on.** New registry key `lead_flags`, added only to the lead's start command. For Codex it is `-c features.default_mode_request_user_input=true`, which codex-cli 0.172 lists as an "under development" feature. `orch team codex` and `orch agents launch codex --role lead` include it. Coders and the reviewer never get it, because a picker in an unattended pane would wait for nobody.
+
+### Notes
+- The real pickers were not tried by hand in Claude Code, Codex, OpenCode, Antigravity or Pi. The tests drive `orch_ask` with a stand-in for Pi's screen, and the extension type-checks against `@earendil-works/pi-coding-agent` 1.6.1. Antigravity's picker tool name is not documented, so the rule describes the tool instead of naming it.
+- A Codex lead that is already open keeps working as before: it asks in chat. Start it again with `orch agents launch codex --role lead` to get the picker.
+- `.orchestrate/questions.md` is no longer listed as "a plan file orch does not read" in the views and `orch sync` (orch reads it to tell planning from a run).
+
 ## [6.14.0] - 2026-11-26
 
 A coder's and the reviewer's chat no longer keeps growing from milestone to milestone. When one is done with a milestone, orch types its tool's `/compact` into its pane while it is idle, so the tool swaps the long chat for a short summary. Every job orch gives an agent is already written down in files (`task.md`, `task.json`, fix and review files), so the next milestone loses nothing it needs.
