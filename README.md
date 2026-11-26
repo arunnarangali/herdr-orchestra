@@ -410,7 +410,7 @@ Tunables: `ORCH_CODER_BUDGET_MIN` (45) · `ORCH_REVIEW_BUDGET_MIN` (15) · `ORCH
 ## Develop and release
 
 ```bash
-bash tests/parallel.sh     # end-to-end tests with fake agents (no AI, no network), sections side by side: ~3 min
+bash tests/parallel.sh     # end-to-end tests with fake agents (no AI, no network), sections side by side: ~5 min
 bash tests/parallel.sh 45  # only the group that holds section 45, while you work on it (not a replacement for the full run)
 bash tests/run.sh          # the same tests one after another (~20 min)
 bash tests/live/run.sh claude codex   # opt-in: one tiny real run per agent kind (needs herdr and the agents; uses their credits)

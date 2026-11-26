@@ -28,6 +28,11 @@ done
 # A section added later that needs the one before it goes here too (tests/parallel.sh then runs them together).
 JOINS=" 2 8 19 27 25b 26 11b 30 31 32 30b 34 38 41 42 48b 48c 59 "
 
+# Sections whose checks compare how long things take (e.g. "both reviews come back before M5's 3-second check ends").
+# They run after the others, one at a time, on a quiet machine like in tests/run.sh, so the other sections' load can
+# not make them fail (CI failed one of these once while 8 groups ran next to it). Nothing in them is changed.
+SOLO=" 7 45 58 "
+
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # cut run.sh into: the setup at the top, one file per section, and the final count at the bottom
 awk -v T="$T" '
@@ -68,8 +73,13 @@ done
 start=$(date +%s)
 echo "running $(wc -w <<<"$sel") groups of tests/run.sh, $jobs at a time"
 # the slowest groups start first, so the run is not left waiting on one long group at the end
-order=$(for i in $sel; do printf '%s %s\n' "$(grep -c 'autopilot\|sleep\|timeout' "$T/group-$i.sh")" "$i"; done | sort -rn | cut -d' ' -f2)
-printf '%s\n' $order | xargs -P "$jobs" -I{} bash -c 's=$(date +%s); bash "$1/group-$2.sh" > "$1/out-$2" 2>&1; echo $? > "$1/code-$2"; echo $(( $(date +%s) - s )) > "$1/secs-$2"' _ "$T" {}
+solo=$(for l in $SOLO; do awk -v l="$l" '$2 == l {print $1}' "$T/groups"; done | sort -un)
+order=$(for i in $sel; do grep -qx "$i" <<<"$solo" && continue
+        printf '%s %s\n' "$(grep -c 'autopilot\|sleep\|timeout' "$T/group-$i.sh")" "$i"; done | sort -rn | cut -d' ' -f2)
+rungroup='s=$(date +%s); bash "$1/group-$2.sh" > "$1/out-$2" 2>&1; echo $? > "$1/code-$2"; echo $(( $(date +%s) - s )) > "$1/secs-$2"'
+[ -n "$order" ] && printf '%s\n' $order | xargs -P "$jobs" -I{} bash -c "$rungroup" _ "$T" {}
+for i in $sel; do grep -qx "$i" <<<"$solo" || continue
+  echo "group $i (timing checks) alone"; bash -c "$rungroup" _ "$T" "$i"; done
 
 pass=0 fail=0 bad=0
 for i in $sel; do
