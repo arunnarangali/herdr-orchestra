@@ -2176,5 +2176,36 @@ newrepo off; printf '%s' "$ONE" > .orchestrate/plan.md; echo p-claude-1 > "$FH/c
 ORCH_SIDEBAR=0 timeout 120 "$ORCH" autopilot > "$WORK/off.log" 2>&1; c3=$?
 check "ORCH_SIDEBAR=0 turns the sidebar names off" '[ $c3 -eq 0 ] && [ ! -s "$FH/meta.log" ]'
 
+echo "59. old runs are labelled, and a plan orch does not read is pointed out"
+cd "$APP" || exit        # the finished 'off' run: all merged, no event manager
+vm=$("$ORCH" status --json)
+check "a finished run with nothing going says it is the last run, in the summary, the board and orch status" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);k=[n[\"kind\"] for n in d[\"notices\"]];sys.exit(0 if k==[\"old_run\"] else 1)" "$vm" && "$ORCH" board --once --no-color | grep -q "^! This is the last run" && "$ORCH" status | grep -q "^note: This is the last run"'
+printf '# Plan: other\n' > .orchestrate/csv-import.md
+vm=$("$ORCH" status --json)
+check "a plan file with another name is pointed out: orch reads plan.md only" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);k=[n[\"kind\"] for n in d[\"notices\"]];sys.exit(0 if k==[\"old_run\",\"other_plan\"] else 1)" "$vm" && "$ORCH" board --once --no-color | grep -q "csv-import.md is not used: orch only reads .orchestrate/plan.md"'
+check "…the files orch writes itself (summary, story, pr-body...) are never mistaken for a plan" 'for f in summary.md summary.prev.md story.md pr-body.md manual-tests.md; do printf x > .orchestrate/$f; done; ! "$ORCH" status --json | grep -q "summary.md is not used"; ! "$ORCH" status --json | grep -q "story.md is not used"'
+sleep 1; touch .orchestrate/plan.md
+check "a plan.md changed after the run says to run orch sync" '"$ORCH" status --json | grep -q "\"plan_unsynced\""'
+cp .orchestrate/state.json "$WORK/state.keep"
+python3 - <<'PY'
+import json
+p=".orchestrate/state.json"; st=json.load(open(p)); st["tasks"]["M1"]["status"]="coding"; json.dump(st,open(p,"w"))
+PY
+check "while a milestone is being worked on there is no old-run note and no plan note" '[ "$("$ORCH" status --json | python3 -c "import json,sys;print(len(json.load(sys.stdin)[\"notices\"]))")" = 0 ]'
+cp "$WORK/state.keep" .orchestrate/state.json
+mv .orchestrate/plan.md "$WORK/plan.keep"
+out=$("$ORCH" sync 2>&1); code=$?
+check "orch sync with no plan.md names the other plan file and says to rename it" '[ $code -ne 0 ] && grep -q "missing .orchestrate/plan.md (found csv-import.md, but orch only reads plan.md" <<<"$out"'
+mv "$WORK/plan.keep" .orchestrate/plan.md
+newrepo wp; printf '%s' "$ONE" > .orchestrate/plan.md
+"$ORCH" sync >/dev/null 2>&1
+out=$("$ORCH" sync 2>&1)
+check "orch sync with only plan.md has no plan-name warning" '! grep -q "newer than plan.md" <<<"$out"'
+sleep 1; printf '# Plan: other\n' > .orchestrate/csv-import.md
+out=$("$ORCH" sync 2>&1)
+check "orch sync warns when another plan file is newer than plan.md" 'grep -q "csv-import.md is newer than plan.md, but orch only reads plan.md" <<<"$out"'
+check "…and still loads plan.md as before" '[ "$(status_of M1)" = pending ]'
+check "the empty summary (no run yet) also points out the unread plan" 'rm -f .orchestrate/state.json; "$ORCH" status --json | grep -q "\"other_plan\""'
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

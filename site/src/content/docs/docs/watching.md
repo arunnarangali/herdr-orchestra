@@ -69,6 +69,12 @@ description = "orch run board"
 
 `prefix+a` means press your Herdr prefix (default `ctrl+b`), let go, then press `a`. It is not used by Herdr's default keys. If you already use it, Herdr keeps your existing key and ignores this one, so pick another letter; `prefix+?` lists every key in use. The `orch board` command in a pane keeps working either way.
 
+## When the view shows an old run
+
+The views read `.orchestrate/state.json`, which `orch sync` writes from `.orchestrate/plan.md`. orch reads that one file name only. A plan saved as `.orchestrate/csv-import.md` is never loaded, so `state.json` still holds the last run.
+
+When no run is going, `orch view` (top bar), `orch board` and `orch status` say so in plain words: "This is the last run ... No run is going now", and, if there is a `.orchestrate/*.md` file orch does not read, "`.orchestrate/csv-import.md` is not used: orch only reads `.orchestrate/plan.md`". Rename or copy the file to `plan.md` and run `orch sync`. `orch sync` itself also names such a file.
+
 ## Agent names in Herdr's sidebar
 
 During a run the event manager tells Herdr what each agent is doing, so Herdr's normal sidebar reads like this:
