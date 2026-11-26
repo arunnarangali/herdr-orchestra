@@ -1,4 +1,6 @@
 ---
+import StageInspector from './StageInspector.astro';
+import type { StageId } from '../lib/stages';
 // One run end to end. Steps 1-3 are small pills; the orchestration run is a loop of five stops the
 // milestones travel round; approved milestones drop onto the feature branch, which ends in the PR.
 // Two drawings: a wide one, and a tall one for narrow screens (CSS picks one).
@@ -11,14 +13,16 @@ const at = (deg: number) => {
   return { x: C.x + R.x * Math.cos(a), y: C.y + R.y * Math.sin(a) };
 };
 const W = 196, H = 54;
-type Stop = { deg: number; title: string; sub: string; cls: string };
-const stops: Stop[] = [
-  { deg: -90, title: 'Lead dispatches, pauses', sub: 'orch dispatch M1 M2', cls: 'lead' },
-  { deg: -14, title: 'Coder builds', sub: "A model of the milestone's tier", cls: 'coder' },
-  { deg: 52, title: 'Checks run', sub: 'Your test command', cls: 'auto' },
-  { deg: 128, title: 'Reviewer reads the diff', sub: 'Blocker: a fix job, 2 rounds', cls: 'reviewer' },
-  { deg: 194, title: 'Event manager queues it', sub: 'Wakes the lead when idle', cls: 'auto' },
-].map((s) => ({ ...s, ...at(s.deg) }));
+type StopDef = { deg: number; title: string; sub: string; cls: string; stage: StageId };
+type Stop = StopDef & { x: number; y: number };
+const stopDefs: StopDef[] = [
+  { deg: -90, title: 'Lead dispatches, pauses', sub: 'orch dispatch M1 M2', cls: 'lead', stage: 'DISPATCHED' },
+  { deg: -14, title: 'Coder builds', sub: "A model of the milestone's tier", cls: 'coder', stage: 'CODING' },
+  { deg: 52, title: 'Checks run', sub: 'Your test command', cls: 'auto', stage: 'CODING' },
+  { deg: 128, title: 'Reviewer reads the diff', sub: 'Blocker: a fix job, 2 rounds', cls: 'reviewer', stage: 'REVIEW_AUDIT' },
+  { deg: 194, title: 'Event manager queues it', sub: 'Wakes the lead when idle', cls: 'auto', stage: 'GATE_HOLD' },
+];
+const stops: Stop[] = stopDefs.map((s) => ({ ...s, ...at(s.deg) }));
 
 const inCard = (p: { x: number; y: number }, pad = 7) =>
   stops.some((s) => Math.abs(p.x - s.x) < W / 2 + pad && Math.abs(p.y - s.y) < H / 2 + pad);
@@ -51,11 +55,13 @@ const commits = [
   { x: 430, label: 'M2' },
 ];
 
-const pills = [
-  { cx: 146, title: '1. You ask for a feature', cls: 'you' },
-  { cx: 380, title: '2. Lead writes the plan', cls: 'lead' },
-  { cx: 614, title: '3. You say go', cls: 'you' },
+const pills: { cx: number; title: string; cls: string; stage: StageId }[] = [
+  { cx: 146, title: '1. You ask for a feature', cls: 'you', stage: 'PLAN_READY' },
+  { cx: 380, title: '2. Lead writes the plan', cls: 'lead', stage: 'PLAN_READY' },
+  { cx: 614, title: '3. You say go', cls: 'you', stage: 'DISPATCHED' },
 ];
+// Focusable diagram nodes: each selects its state in the inspector below.
+const node = (stage: StageId, name: string) => ({ 'data-stage': stage, tabindex: 0, role: 'button' as const, 'aria-label': `${name}: show ${stage}` });
 
 // ---- Tall drawing ---------------------------------------------------------------------------
 const tallStops = stops.map((s, i) => ({ ...s, y: 252 + i * 76 }));
@@ -65,7 +71,8 @@ const label =
   'checks run (a failure goes back to the coder, up to 3 rounds), the reviewer reads the diff, and the event manager queues what happened and wakes the lead, ' +
   'which decides and dispatches again. Each approved milestone becomes one commit on the feature branch, and you review one pull request.';
 ---
-<svg class="dg dg-wide runflow" viewBox="0 0 760 506" role="img" aria-label={label}>
+<div class="rf-wrap" data-inspect>
+<svg class="dg dg-wide runflow" viewBox="0 0 760 506" role="group" aria-label={label}>
   <defs>
     <marker id="rf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z" /></marker>
     <marker id="rf-arrow-lead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--lead)" /></marker>
@@ -76,7 +83,7 @@ const label =
   <g data-step="1">
     <text class="quiet" x="24" y="18" font-size="11" letter-spacing="1.2">THE ORCHESTRATION PLAN</text>
     {pills.map((p) => (
-      <g>
+      <g class="rf-node" {...node(p.stage, p.title)}>
         <rect class={`pill ${p.cls}`} x={p.cx - 104} y="28" width="208" height="34" rx="2" />
         <text x={p.cx} y="50" text-anchor="middle" font-size="13" font-weight="600">{p.title}</text>
       </g>
@@ -106,7 +113,7 @@ const label =
     <text x={C.x - 40} y={C.y} text-anchor="middle" font-size="11.5" class="quiet">the lead only decides</text>
   </g>
   {stops.map((s) => (
-    <g data-step="3">
+    <g data-step="3" class="rf-node" {...node(s.stage, s.title)}>
       <rect class={`box stop ${s.cls}`} x={s.x - W / 2} y={s.y - H / 2} width={W} height={H} rx="2" />
       <circle class={`node ${s.cls}`} cx={s.x - W / 2 + 16} cy={s.y - 7} r="4" />
       <text x={s.x - W / 2 + 28} y={s.y - 3} font-size="13" font-weight="600">{s.title}</text>
@@ -115,7 +122,7 @@ const label =
   ))}
 
   <!-- 5: the feature branch and the PR -->
-  <g data-step="4">
+  <g data-step="4" class="rf-node" {...node('MERGED', 'Feature branch')}>
     <path class="edge" d={`M${reviewer.x} ${reviewer.y + H / 2 + 2}V${branchY - 12}`} marker-end="url(#rf-arrow)" />
     <text class="quiet" x={reviewer.x + 10} y="438" font-size="11.5">approved</text>
     <line class="branch" x1="40" y1={branchY} x2="508" y2={branchY} marker-end="url(#rf-arrow-lead)" />
@@ -128,7 +135,7 @@ const label =
       </g>
     ))}
   </g>
-  <g data-step="5">
+  <g data-step="5" class="rf-node" {...node('MERGED', 'Pull request')}>
     <rect class="accent" x="524" y={branchY - 30} width="212" height="60" rx="2" />
     <text x="630" y={branchY - 4} text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text>
     <text x="630" y={branchY + 14} text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text>
@@ -141,13 +148,13 @@ const label =
   </g>
 </svg>
 
-<svg class="dg dg-tall runflow" viewBox="0 0 360 830" role="img" aria-label={label}>
+<svg class="dg dg-tall runflow" viewBox="0 0 360 830" role="group" aria-label={label}>
   <defs>
     <marker id="rft-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z" /></marker>
     <marker id="rft-arrow-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--bad)" /></marker>
   </defs>
   {pills.map((p, i) => (
-    <g data-step="1">
+    <g data-step="1" class="rf-node" {...node(p.stage, p.title)}>
       <rect class={`pill ${p.cls}`} x="60" y={20 + i * 52} width="240" height="34" rx="2" />
       <text x="180" y={42 + i * 52} text-anchor="middle" font-size="13" font-weight="600">{p.title}</text>
     </g>
@@ -160,7 +167,7 @@ const label =
     <text x="28" y="196" font-size="13" font-weight="600">4. Orchestration run</text>
   </g>
   {tallStops.map((s, i) => (
-    <g data-step="3">
+    <g data-step="3" class="rf-node" {...node(s.stage, s.title)}>
       <rect class={`box stop ${s.cls}`} x="60" y={s.y - H / 2} width="240" height={H} rx="2" />
       <circle class={`node ${s.cls}`} cx="76" cy={s.y - 7} r="4" />
       <text x="88" y={s.y - 3} font-size="13" font-weight="600">{s.title}</text>
@@ -173,7 +180,7 @@ const label =
     <path class="edge fix" d={`M300 ${tallStops[2].y}H326V${tallStops[1].y}H303`} marker-end="url(#rft-arrow-bad)" />
     <text class="fix-label" x="334" y={(tallStops[1].y + tallStops[2].y) / 2 + 4} font-size="11" text-anchor="middle" transform={`rotate(90 334 ${(tallStops[1].y + tallStops[2].y) / 2})`}>fix ×3</text>
   </g>
-  <g data-step="4">
+  <g data-step="4" class="rf-node" {...node('MERGED', 'Feature branch')}>
     <path class="edge" d={`M300 ${tallStops[3].y + 10}H340V650H300`} marker-end="url(#rft-arrow)" />
     <text class="quiet" x="290" y="626" font-size="11.5" text-anchor="end">approved</text>
     <rect class="box" x="60" y="626" width="240" height="54" rx="2" />
@@ -182,12 +189,14 @@ const label =
     <path class="edge" d="M180 681V720" marker-end="url(#rft-arrow)" />
     <text class="quiet" x="190" y="706" font-size="11.5">when every milestone is in</text>
   </g>
-  <g data-step="5">
+  <g data-step="5" class="rf-node" {...node('MERGED', 'Pull request')}>
     <rect class="accent" x="60" y="724" width="240" height="60" rx="2" />
     <text x="180" y="750" text-anchor="middle" font-size="13" font-weight="600">5. You review the PR</text>
     <text x="180" y="768" text-anchor="middle" font-size="11.5">Read summary.md, test, merge</text>
   </g>
 </svg>
+<StageInspector id="rf-si" initial="CODING" />
+</div>
 
 <script>
   // Start the milestone dots once, when the wide drawing is on screen. Skipped for reduced motion.
@@ -211,3 +220,13 @@ const label =
     io.observe(svg);
   });
 </script>
+
+<style>
+  .rf-node { cursor: pointer; outline: none; }
+  .rf-node rect { transition: stroke var(--fast) linear, fill var(--fast) linear; }
+  .rf-node:hover rect.box, .rf-node:hover rect.pill { fill: var(--surface); }
+  .rf-node.si-on rect.box, .rf-node.si-on rect.pill, .rf-node:focus-visible rect { stroke: var(--accent); stroke-width: 2; }
+  .rf-node.si-on rect.box, .rf-node.si-on rect.pill { fill: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
+  .rf-node.si-on .branch { stroke-width: 3.5; }
+  .rf-wrap :global(.si) { min-width: 0; }
+</style>

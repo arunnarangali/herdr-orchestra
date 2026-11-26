@@ -16,7 +16,11 @@ const list = agents();
   </section>
   <section>
     <div class="wrap">
-      <div style="margin-bottom:28px"><AgentStrip /></div>
+      <div class="section-head" style="margin-bottom:20px">
+        <h2 style="font-size:22px">Map agents to roles</h2>
+        <p class="lede" style="font-size:15.5px">Pick a lead, coders and a reviewer. The files below follow your picks: the <code>roles</code> each kind may take, and the team lines of <code>plan.md</code> with each kind's model from <code>models.default.toml</code> (high tier for the lead and reviewer, medium for coders).</p>
+      </div>
+      <div style="margin-bottom:40px"><AgentStrip mapper /></div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Agent</th><th>Launch command</th><th>Pick its model</th><th>Start it as lead</th><th>Status tracking</th></tr></thead>

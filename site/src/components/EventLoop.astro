@@ -1,4 +1,6 @@
 ---
+import StageInspector from './StageInspector.astro';
+import type { StageId } from '../lib/stages';
 // How the lead is woken, drawn like a browser's call stack, Web APIs, callback queue and event loop.
 // Event kinds and commands are the real ones (docs/contracts.md "The lead's event queue").
 // Without animation it shows the moment a batch is waiting; with it, it plays the whole story once.
@@ -7,12 +9,14 @@ const agents = [
   { y: 134, name: 'codex-1', work: 'building M2', event: 'M2 paused: a question', cls: 'coder' },
   { y: 176, name: 'opencode-1', work: 'building M3', event: 'M3 still failing after its rounds', cls: 'coder' },
 ];
-const queue = [
-  { x: 180, kind: 'merged', task: 'M1', cls: 'good' },
-  { x: 312, kind: 'ready', task: 'M4', cls: 'auto' },
-  { x: 444, kind: 'paused', task: 'M2', cls: 'lead' },
-  { x: 576, kind: 'failed', task: 'M3', cls: 'bad' },
+const queue: { x: number; kind: string; task: string; cls: string; stage: StageId }[] = [
+  { x: 180, kind: 'merged', task: 'M1', cls: 'good', stage: 'MERGED' },
+  { x: 312, kind: 'ready', task: 'M4', cls: 'auto', stage: 'PLAN_READY' },
+  { x: 444, kind: 'paused', task: 'M2', cls: 'lead', stage: 'CODING' },
+  { x: 576, kind: 'failed', task: 'M3', cls: 'bad', stage: 'CODING' },
 ];
+// Focusable diagram nodes: each selects its state in the inspector below.
+const node = (stage: StageId, name: string) => ({ 'data-stage': stage, tabindex: 0, role: 'button' as const, 'aria-label': `${name}: show ${stage}` });
 // The lead's frames after it is woken, bottom first.
 const frames = ['orch events   → 4 events', 'orch dispatch M4', 'orch answer M2 "skip empty rows"', 'orch dispatch M3 --tier high'];
 const label =
@@ -20,16 +24,16 @@ const label =
   'Each event is stored in the event queue. While the lead is busy the events wait. When the lead is idle, the event manager, orch autopilot, wakes it once with the whole batch, ' +
   'like the event loop pushing a callback onto an empty call stack. The lead reads its events, dispatches M4 that M1 unlocked, answers M2 (the answer goes back to codex-1), and sends M3 to a stronger model.';
 ---
-<div class="evloop">
-  <svg class="dg dg-loop" viewBox="0 0 760 420" role="img" aria-label={label}>
+<div class="evloop" data-inspect>
+  <svg class="dg dg-loop" viewBox="0 0 760 420" role="group" aria-label={label}>
     <defs>
       <marker id="el-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z" /></marker>
       <marker id="el-arrow-lead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--lead)" /></marker>
     </defs>
 
     <!-- Lead = call stack -->
-    <rect class="panel lead" x="24" y="24" width="316" height="194" rx="2" />
-    <text x="42" y="50" font-size="14" font-weight="700">Lead</text>
+    <g class="el-node" {...node('DISPATCHED', 'Lead')}><rect class="panel lead" x="24" y="24" width="316" height="194" rx="2" />
+    <text x="42" y="50" font-size="14" font-weight="700">Lead</text></g>
     <text class="quiet" x="84" y="50" font-size="11.5">like the call stack</text>
     <text class="quiet ev-busy-note" x="322" y="50" font-size="11" text-anchor="end">busy</text>
     <text class="ev-idle-note" x="322" y="50" font-size="11" text-anchor="end">woken</text>
@@ -49,7 +53,7 @@ const label =
     <text x="438" y="50" font-size="14" font-weight="700">Agents</text>
     <text class="quiet" x="496" y="50" font-size="11.5">like Web APIs: work in the background</text>
     {agents.map((a, i) => (
-      <g class={`ev-agent ev-a${i}`}>
+      <g class={`ev-agent ev-a${i} el-node`} {...node('CODING', a.name)}>
         <rect class={`frame ${a.cls}`} x="436" y={a.y - 20} width="284" height="32" rx="2" />
         <text x="450" y={a.y + 1} font-size="12" font-weight="600" style="font-family:var(--font-mono)">{a.name}</text>
         <text class="quiet ev-work" x="546" y={a.y + 1} font-size="12">{a.work}</text>
@@ -73,7 +77,7 @@ const label =
     <text x="176" y="288" font-size="14" font-weight="700">Event queue</text>
     <text class="quiet" x="270" y="288" font-size="11.5">like the callback queue · kept in state.json, so none is missed</text>
     {queue.map((q, i) => (
-      <g class={`ev-card ev-c${i}`}>
+      <g class={`ev-card ev-c${i} el-node`} {...node(q.stage, `${q.kind} ${q.task}`)}>
         <rect class={`card-ev ${q.cls}`} x={q.x} y="302" width="120" height="36" rx="2" />
         <text x={q.x + 14} y="325" font-size="12" style="font-family:var(--font-mono)" font-weight="600">{q.kind}</text>
         <text class="quiet" x={q.x + 106} y="325" font-size="12" text-anchor="end" style="font-family:var(--font-mono)">{q.task}</text>
@@ -83,7 +87,7 @@ const label =
     <text class="quiet ev-empty" x="448" y="325" font-size="12" text-anchor="middle">empty: the lead read them all</text>
 
     <!-- Event manager = event loop -->
-    <g class="ev-loop-wrap">
+    <g class="ev-loop-wrap el-node" {...node('GATE_HOLD', 'Event manager')}>
       <circle class="loop-ring" cx="88" cy="310" r="36" />
       <path class="ev-loop-arrow" d="M88 284A26 26 0 1 1 62 310" marker-end="url(#el-arrow-lead)" />
     </g>
@@ -106,6 +110,7 @@ const label =
     <div><dt>In a browser</dt><dd>The event loop runs a callback only when the call stack is empty.</dd></div>
     <div><dt>In a run</dt><dd>The event manager wakes the lead only when it is idle, with the whole batch.</dd></div>
   </dl>
+  <StageInspector id="el-si" initial="MERGED" />
 </div>
 
 <script>
@@ -145,6 +150,9 @@ const label =
   .evloop .ev-work, .evloop .ev-frame, .evloop .ev-reply, .evloop .ev-idle-note, .evloop .ev-empty { opacity: 0; }
 
   .evloop svg { min-width: 640px; }
+  .el-node { cursor: pointer; outline: none; }
+  .el-node rect, .el-node circle { transition: stroke var(--fast) linear, stroke-width var(--fast) linear; }
+  .el-node.si-on > rect, .el-node.si-on .loop-ring, .el-node:focus-visible > rect, .el-node:focus-visible .loop-ring { stroke: var(--accent); stroke-width: 2.25; }
   .evmap { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; margin: 22px 0 0; }
   .evmap div { display: flex; gap: 10px; align-items: baseline; }
   .evmap dt { flex: 0 0 104px; white-space: nowrap; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }
@@ -156,7 +164,7 @@ const label =
   .evloop.anim .ev-work, .evloop.anim .ev-event, .evloop.anim .ev-card, .evloop.anim .ev-busy, .evloop.anim .ev-busy-note,
   .evloop.anim .ev-idle-note, .evloop.anim .ev-frame, .evloop.anim .ev-reply, .evloop.anim .ev-empty, .evloop.anim .ev-loop-arrow,
   .evloop.anim .ev-wake, .evloop.anim .ev-answer {
-    animation-duration: 10s; animation-fill-mode: both; animation-timing-function: ease; animation-play-state: paused;
+    animation-duration: 10s; animation-fill-mode: both; animation-timing-function: linear; animation-play-state: paused;
   }
   .evloop.anim.play * { animation-play-state: running !important; }
   .evloop.anim .ev-card, .evloop.anim .ev-loop-arrow { transform-box: fill-box; transform-origin: center; }
@@ -183,24 +191,24 @@ const label =
   .evloop.anim .ev-reply { animation-name: ev-in-84; }
   .evloop.anim .ev-empty { animation-name: ev-in-72; }
 
-  @keyframes ev-out-12 { 0%, 12% { opacity: 1; } 15%, 100% { opacity: 0; } }
-  @keyframes ev-out-22 { 0%, 22% { opacity: 1; } 25%, 100% { opacity: 0; } }
-  @keyframes ev-out-32 { 0%, 32% { opacity: 1; } 35%, 100% { opacity: 0; } }
-  @keyframes ev-in-12 { 0%, 13% { opacity: 0; } 16%, 100% { opacity: 1; } }
-  @keyframes ev-in-22-out { 0%, 23% { opacity: 0; } 26%, 82% { opacity: 1; } 84%, 100% { opacity: 0; } }
-  @keyframes ev-in-32 { 0%, 33% { opacity: 0; } 36%, 100% { opacity: 1; } }
-  @keyframes ev-card-0 { 0%, 14% { opacity: 0; transform: translateY(-24px); } 18%, 52% { opacity: 1; transform: none; } 60%, 100% { opacity: 0; transform: translateX(-80px); } }
-  @keyframes ev-card-1 { 0%, 17% { opacity: 0; transform: translateY(-24px); } 21%, 53% { opacity: 1; transform: none; } 61%, 100% { opacity: 0; transform: translateX(-212px); } }
-  @keyframes ev-card-2 { 0%, 24% { opacity: 0; transform: translateY(-24px); } 28%, 54% { opacity: 1; transform: none; } 62%, 100% { opacity: 0; transform: translateX(-344px); } }
-  @keyframes ev-card-3 { 0%, 34% { opacity: 0; transform: translateY(-24px); } 38%, 56% { opacity: 1; transform: none; } 64%, 100% { opacity: 0; transform: translateX(-476px); } }
-  @keyframes ev-busy { 0%, 44% { opacity: 1; } 49%, 100% { opacity: 0; } }
-  @keyframes ev-spin { 0%, 50% { transform: rotate(0); } 64%, 100% { transform: rotate(720deg); } }
-  @keyframes ev-flash-60 { 0%, 58% { stroke: var(--line-strong); } 62%, 70% { stroke: var(--lead); stroke-width: 2.5; } 76%, 100% { stroke: var(--line-strong); } }
-  @keyframes ev-flash-82 { 0%, 80% { stroke: var(--line-strong); } 83%, 92% { stroke: var(--lead); stroke-width: 2.5; } 100% { stroke: var(--line-strong); } }
-  @keyframes ev-in-60 { 0%, 58% { opacity: 0; } 62%, 100% { opacity: 1; } }
-  @keyframes ev-in-64 { 0%, 63% { opacity: 0; } 67%, 100% { opacity: 1; } }
-  @keyframes ev-in-72 { 0%, 71% { opacity: 0; } 75%, 100% { opacity: 1; } }
-  @keyframes ev-in-80 { 0%, 79% { opacity: 0; } 83%, 100% { opacity: 1; } }
-  @keyframes ev-in-84 { 0%, 84% { opacity: 0; } 88%, 100% { opacity: 1; } }
-  @keyframes ev-in-88 { 0%, 87% { opacity: 0; } 91%, 100% { opacity: 1; } }
+  @keyframes ev-out-12 { 0%, 12% { opacity: 1; } 13%, 100% { opacity: 0; } }
+  @keyframes ev-out-22 { 0%, 22% { opacity: 1; } 23%, 100% { opacity: 0; } }
+  @keyframes ev-out-32 { 0%, 32% { opacity: 1; } 33%, 100% { opacity: 0; } }
+  @keyframes ev-in-12 { 0%, 13% { opacity: 0; } 14%, 100% { opacity: 1; } }
+  @keyframes ev-in-22-out { 0%, 23% { opacity: 0; } 24%, 82% { opacity: 1; } 83%, 100% { opacity: 0; } }
+  @keyframes ev-in-32 { 0%, 33% { opacity: 0; } 34%, 100% { opacity: 1; } }
+  @keyframes ev-card-0 { 0%, 14% { opacity: 0; transform: translateY(-24px); } 15.5%, 58% { opacity: 1; transform: none; } 59.5%, 100% { opacity: 0; transform: translateX(-80px); } }
+  @keyframes ev-card-1 { 0%, 17% { opacity: 0; transform: translateY(-24px); } 18.5%, 59% { opacity: 1; transform: none; } 60.5%, 100% { opacity: 0; transform: translateX(-212px); } }
+  @keyframes ev-card-2 { 0%, 24% { opacity: 0; transform: translateY(-24px); } 25.5%, 60% { opacity: 1; transform: none; } 61.5%, 100% { opacity: 0; transform: translateX(-344px); } }
+  @keyframes ev-card-3 { 0%, 34% { opacity: 0; transform: translateY(-24px); } 35.5%, 61% { opacity: 1; transform: none; } 62.5%, 100% { opacity: 0; transform: translateX(-476px); } }
+  @keyframes ev-busy { 0%, 48% { opacity: 1; } 49%, 100% { opacity: 0; } }
+  @keyframes ev-spin { 0%, 50% { opacity: 0.35; } 51%, 100% { opacity: 1; } }
+  @keyframes ev-flash-60 { 0%, 60% { stroke: var(--line-strong); } 61%, 70% { stroke: var(--lead); stroke-width: 2.5; } 71%, 100% { stroke: var(--line-strong); } }
+  @keyframes ev-flash-82 { 0%, 82% { stroke: var(--line-strong); } 83%, 92% { stroke: var(--lead); stroke-width: 2.5; } 93%, 100% { stroke: var(--line-strong); } }
+  @keyframes ev-in-60 { 0%, 60% { opacity: 0; } 61%, 100% { opacity: 1; } }
+  @keyframes ev-in-64 { 0%, 64% { opacity: 0; } 65%, 100% { opacity: 1; } }
+  @keyframes ev-in-72 { 0%, 72% { opacity: 0; } 73%, 100% { opacity: 1; } }
+  @keyframes ev-in-80 { 0%, 80% { opacity: 0; } 81%, 100% { opacity: 1; } }
+  @keyframes ev-in-84 { 0%, 84% { opacity: 0; } 85%, 100% { opacity: 1; } }
+  @keyframes ev-in-88 { 0%, 88% { opacity: 0; } 89%, 100% { opacity: 1; } }
 </style>
