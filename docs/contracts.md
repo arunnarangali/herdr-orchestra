@@ -147,7 +147,7 @@ asks herdr, never takes the state lock and never writes.
 {
   "view": 1, "repo": "my-app", "title": "Categories", "branch": "feature/categories", "base": "main",
   "mode": "full", "orch_mode": "panes", "updated": 1764072400,
-  "manager": {"running": true, "beat": 1764072398},
+  "manager": {"running": true, "beat": 1764072398, "applies": true},
   "counts": {"total": 7, "landed": 3, "needs_you": 1, "active": 2, "waiting": 1},
   "time": {"driven_s": 2280, "estimate_s": 4200},
   "usage": {"total": {"tokens": 1200000, "cost_usd": 3.4}, "by_model": {"gpt-6.2-sol@low": {"tokens": 900000, "cost_usd": 2.8}}},
@@ -168,6 +168,7 @@ asks herdr, never takes the state lock and never writes.
 
 - `desc` is the plan's `Plain:` line, or the title when the plan has none.
 - `group` is one of `waiting`, `building`, `checking`, `review`, `landing`, `needs_you`, `landed`, `skipped`.
+- `manager.applies` is false in subagent mode (Pi drives the run one milestone at a time; there is no event manager).
 - `usage` is null when no agent reported its usage.
 - Adding fields keeps `"view": 1`; renaming or removing one needs `"view": 2`.
 
