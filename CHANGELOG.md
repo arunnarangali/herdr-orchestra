@@ -2,6 +2,11 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.28.0] - 2026-11-27
+
+### Changed
+- **The README and the website say herdr-orchestra is in beta.** A "status: beta" badge and a short note at the top of the README, a BETA line in the homepage hero and a note at the top of the docs introduction say the project is in active development and that commands, plan format and behaviour may still change. Versions stay on 6.x: going back to 0.x would make `npx herdr-orchestra@latest` and installed copies treat new releases as older.
+
 ## [6.27.0] - 2026-11-27
 
 `/orch-board` in Pi: open the run board without leaving Pi.
