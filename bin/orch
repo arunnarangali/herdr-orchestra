@@ -7937,9 +7937,52 @@ description = "orch run board"
 """
 
 
+def board_plugin_dir():
+    """The board plugin folder to give herdr. For an install it is the stable `current/view/herdr-plugin` path, not
+    the folder of the version running now: every update installs into a new folder and moves `current`, so a link to
+    the version folder would keep herdr on that version's popup forever. For a checkout it is the checkout's folder."""
+    cur = share_dir() / "current" / "view" / "herdr-plugin"
+    try:
+        installed = Path(__file__).resolve().parent.parent.parent == share_dir().resolve()
+    except OSError:
+        installed = False
+    return cur if installed and cur.is_dir() else asset("view/herdr-plugin")
+
+
+def board_plugin_linked():
+    """True when the board plugin was linked: by this version (remembered in settings) or by an older one, which
+    left no note, so herdr's own plugin list is asked too."""
+    if settings_load().get("board_plugin_linked"):
+        return True
+    try:
+        r = subprocess.run([HERDR, "plugin", "list"], text=True, capture_output=True, timeout=HERDR_TIMEOUT_S,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0 and VIEW_PLUGIN_ID in r.stdout
+
+
+def board_plugin_link(d):
+    """Link the board plugin folder `d` in herdr. Unlinks first, so a link to another folder (an older version's)
+    is replaced instead of refused as a duplicate id."""
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+        subprocess.run([HERDR, "plugin", "unlink", VIEW_PLUGIN_ID], text=True, capture_output=True,
+                       timeout=HERDR_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    try:
+        r = subprocess.run([HERDR, "plugin", "link", str(d)], text=True, capture_output=True,
+                           timeout=HERDR_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess([HERDR], 1, "", f"herdr did not answer ({e})")
+    if r.returncode == 0:
+        st = settings_load()
+        st["board_plugin_linked"] = True
+        settings_save(st)
+    return r
+
+
 def cmd_view(args):
     """orch view [--lan] [--port N] [--no-open] [--bg] -> the run as a live picture in your browser (view only).
-    orch view stop | status | herdr-config | plugin link|unlink"""
+    orch view stop | status | herdr-config | plugin link|unlink|refresh"""
     sub = args[0] if args and not args[0].startswith("-") else None
     if sub == "status":
         v = view_info()
@@ -7963,11 +8006,20 @@ def cmd_view(args):
         return
     if sub == "plugin":
         act = args[1] if len(args) > 1 else ""
-        d = asset("view/herdr-plugin")
+        d = board_plugin_dir()
+        if act == "refresh":
+            # run by install.sh after every install or update: a link made by an older version points at that
+            # version's own folder, so herdr kept running the old popup. Quiet and never fails the install.
+            if d and board_plugin_linked():
+                r = board_plugin_link(d)
+                print(f"board popup plugin re-linked to {d}" if r.returncode == 0
+                      else f"WARN could not re-link the board popup plugin: {(r.stdout + r.stderr).strip()} "
+                           f"(run `orch view plugin link`)")
+            return
         if act == "link":
             if not d:
                 die("view/herdr-plugin not found next to orch or in the install")
-            r = subprocess.run([HERDR, "plugin", "link", str(d)], text=True, capture_output=True)
+            r = board_plugin_link(d)
             print((r.stdout + r.stderr).strip() or f"linked {d}")
             if r.returncode == 0:
                 print("To open the board with a key, add this to herdr's config.toml and restart herdr "
@@ -7980,11 +8032,14 @@ def cmd_view(args):
         if act == "unlink":
             r = subprocess.run([HERDR, "plugin", "unlink", VIEW_PLUGIN_ID], text=True, capture_output=True)
             print((r.stdout + r.stderr).strip() or f"unlinked {VIEW_PLUGIN_ID}")
+            st = settings_load()
+            if st.pop("board_plugin_linked", None) is not None:
+                settings_save(st)
             sys.exit(r.returncode)
-        die("usage: orch view plugin link|unlink   (herdr 0.7.4 or newer)")
+        die("usage: orch view plugin link|unlink|refresh   (herdr 0.7.4 or newer)")
     if sub:
         die(f"unknown `orch view {sub}` — use: orch view [--lan] [--port N] [--no-open] [--bg] | stop | status | "
-            f"herdr-config | plugin link|unlink")
+            f"herdr-config | plugin link|unlink|refresh")
     lan = "--lan" in args
     port = 0
     if "--port" in args:
@@ -8294,9 +8349,24 @@ def render_board(vm, width=100, color=True, sel=None, note=""):
     return out
 
 
+def board_error_lines(e):
+    """What the live board shows when drawing the run failed, instead of ending (herdr would close the popup and the
+    error with it). The full traceback is saved for a bug report; the board tries again when the run changes."""
+    import traceback
+    tb = traceback.format_exc()
+    saved = share_dir() / "board-error.log"
+    with contextlib.suppress(OSError):
+        share_dir().mkdir(parents=True, exist_ok=True)
+        saved.write_text(f"{time.strftime('%Y-%m-%d %H:%M:%S')} orch {installed_version()} in {ROOT}\n{tb}")
+    return ["orch board", "", f"The board could not draw this run: {type(e).__name__}: {e}",
+            f"The full error is saved in {saved}: please send it with a bug report.",
+            "It tries again when the run changes. [q] close"]
+
+
 def cmd_board(args):
     """orch board [--once] [--no-color] -> the run as text, redrawn when it changes (for a herdr pane or popup)."""
-    once = "--once" in args or not sys.stdout.isatty()
+    # live needs a keyboard and a screen: with stdin or stdout not a terminal, draw once (termios would fail)
+    once = "--once" in args or not (sys.stdout.isatty() and sys.stdin.isatty())
     color = "--no-color" not in args and sys.stdout.isatty() and not os.environ.get("NO_COLOR")
     if once:
         print("\n".join(render_board(view_model(), shutil.get_terminal_size((100, 40)).columns, color)))
@@ -8307,6 +8377,7 @@ def cmd_board(args):
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     sel, note, last, drawn = None, "", None, 0.0
+    opened, closed_by = time.time(), "an interrupt"
     try:
         tty.setcbreak(fd)
         sys.stdout.write("\x1b[?1049h\x1b[?25l")
@@ -8314,17 +8385,26 @@ def cmd_board(args):
             k = _view_snapshot_key()
             if k != last or time.time() - drawn > 30:
                 last, drawn = k, time.time()
-                vm = view_model()
                 size = shutil.get_terminal_size((100, 40))
-                lines = render_board(vm, size.columns, color, sel, note)[:size.lines]
-                sys.stdout.write("\x1b[H\x1b[2J" + "\n".join(lines))
+                try:
+                    vm = view_model()
+                    lines = render_board(vm, size.columns, color, sel, note)
+                except Exception as e:  # noqa: BLE001 - a popup closes when its program ends: show it, keep going
+                    vm = {}
+                    lines = board_error_lines(e)
+                sys.stdout.write("\x1b[H\x1b[2J" + "\n".join(lines[:size.lines]))
                 sys.stdout.flush()
             r, _, _ = select.select([sys.stdin], [], [], 0.5)
             if not r:
                 continue
             ch = os.read(fd, 8).decode(errors="ignore")
+            if ch == "\x1b" and select.select([sys.stdin], [], [], 0.05)[0]:
+                ch += os.read(fd, 8).decode(errors="ignore")   # the rest of an escape sequence, not the Esc key
+            if time.time() - opened < 0.5:
+                continue        # what a terminal sends as a pane opens (focus or size replies) is not a key press
             n = len(vm.get("agents", []))
             if ch in ("q", "Q", "\x1b"):
+                closed_by = repr(ch)
                 break
             if ch in ("\x1b[A", "k"):
                 sel = (n - 1 if sel is None else max(0, sel - 1)) if n else None
@@ -8345,6 +8425,11 @@ def cmd_board(args):
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\x1b[?25h\x1b[?1049l")
         sys.stdout.flush()
+        with contextlib.suppress(OSError):   # why the last board closed, for a "the popup vanished" report
+            share_dir().mkdir(parents=True, exist_ok=True)
+            (share_dir() / "board-last-close.log").write_text(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} orch board in {ROOT} closed by {closed_by} "
+                f"after {time.time() - opened:.1f}s\n")
 
 
 COMMANDS = {
@@ -8427,7 +8512,7 @@ USAGE = """usage: orch <command> [args]
   view [--lan] [--port N] [--no-open] [--bg]
                            the run as a live picture in your browser (view only): milestone graph, agents, details,
                            "needs you" alert, time and cost, replay. --lan: also from your phone, with a secret link
-  view stop|status|herdr-config|plugin link|unlink
+  view stop|status|herdr-config|plugin link|unlink|refresh
                            stop it / show its link / sidebar lines for herdr's config / the optional herdr plugin
   board [--once]           the run as text, redrawn when it changes: for a herdr pane or popup (any terminal)
   report [--json]          estimate vs actual time (why longer, who), rounds, first-pass rate, wasted work, tokens/cost
