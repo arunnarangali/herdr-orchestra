@@ -2197,11 +2197,67 @@ out=$(PATH="$WORK/crashbin:$PATH" $INPTY "" 0 2.5 sh "$BSH")
 check "…orch board ending with an error keeps the popup open with the error and where it is saved" '[[ "$out" == *"orch board stopped by itself (exit 1"* && "$out" == *"Traceback: boom"* && "$out" == *"Press any key to close"* && "$out" == *RUNNING ]] && grep -q "boom" "$ORCH_SHARE/board-error.log"'
 out=$(PATH="$WORK/crashbin:$PATH" $INPTY x 1 3 sh "$BSH")
 check "…and a key closes it" '[[ "$out" == *"EXIT 1" ]]'
+# what each milestone changed (orch changes, the board's [f] screen): read-only git
+out=$("$ORCH" changes M1 --json)
+check "orch changes: a landed milestone shows the files its commit added to the branch, with +/- and A/M" 'python3 -c "
+import json,sys; d=json.loads(sys.argv[1]); f={x[\"path\"]:x for x in d[\"files\"]}
+sys.exit(not (d[\"kind\"]==\"landed\" and f[\"a.txt\"][\"status\"]==\"A\" and f[\"a.txt\"][\"add\"]==1 and f[\"shared.txt\"][\"status\"]==\"M\" and (f[\"shared.txt\"][\"add\"],f[\"shared.txt\"][\"del\"])==(1,1) and d[\"totals\"]=={\"files\":2,\"add\":2,\"del\":1}))" "$out"'
+m1c=$(git log --format=%H -E --grep="^Milestone: M1$" feature/cat)
+check "…the commit it landed as is saved when it merges" '[ -n "$m1c" ] && [ "$(python3 -c "import json;print(json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M1\"][\"landed\"])")" = "$m1c" ]'
+cp .orchestrate/state.json "$WORK/state.ch"
+stpy 'for t in st["tasks"].values(): t.pop("landed", None)'
+check "…a run from an older orch (nothing saved) finds it by its Milestone line" '"$ORCH" changes M1 --json | python3 -c "import json,sys;d=json.load(sys.stdin);sys.exit(d[\"commit\"]!=sys.argv[1])" "$m1c"'
+cp "$WORK/state.ch" .orchestrate/state.json
+out=$("$ORCH" changes M1 shared.txt --no-color)
+check "orch changes M1 <file>: that file's diff" 'grep -q "^-base$" <<<"$out" && grep -q "^@@ " <<<"$out" && grep -q "^diff --git a/shared.txt b/shared.txt" <<<"$out"'
+out=$("$ORCH" changes M1 ../../etc/passwd 2>&1); code=$?
+check "…only a file the milestone changed: nothing else can be read through it" '[ $code -ne 0 ] && grep -q "is not one of M1.s changed files" <<<"$out" && ! grep -q "root:" <<<"$out"'
+out=$("$ORCH" changes --no-color)
+check "orch changes: one line per milestone, and the ones not started say so" 'grep -q "^M1 .* 2 files  +2 −1  (landed)" <<<"$out" && grep -q "^M3 .* 1 file  +1 −0  (landed)" <<<"$out" && grep -q "^M4 .*no changes yet" <<<"$out"'
+# a coder at work on M4: its worktree as `orch prepare` leaves it, then files changed, added (not in git yet), deleted
+WT="$APP/../app-wt/claude-1"; git -C "$WT" switch -q --detach feature/cat
+stpy 'st["tasks"]["M4"].update(status="coding", worker="claude-1", dir="'"$WT"'"); st["workers"]["claude-1"]["task"]="M4"'
+printf 'base\nedited\n' > "$WT/shared.txt"; mkdir -p "$WT/lib/hooks"; printf 'one\ntwo\nthree\n' > "$WT/lib/hooks/use-totals.ts"
+git -C "$WT" rm -q b.txt; printf 'plain\n\033[31mRED\033]0;title\007\n' > "$WT/evil.txt"
+before=$(git -C "$WT" status --porcelain; md5sum < "$(git -C "$WT" rev-parse --git-dir)/index"; find .git/objects -type f | wc -l; ls -l --time-style=full-iso "$(git -C "$WT" rev-parse --git-dir)/index")
+out=$("$ORCH" changes M4 --json)
+check "a milestone being built shows the coder's changes so far: changed, new (not in git yet) and deleted files" 'python3 -c "
+import json,sys; d=json.loads(sys.argv[1]); f={x[\"path\"]:x for x in d[\"files\"]}
+sys.exit(not (d[\"kind\"]==\"live\" and d[\"worker\"]==\"claude-1\" and f[\"shared.txt\"][\"status\"]==\"M\" and f[\"shared.txt\"][\"add\"]>=1
+  and f[\"lib/hooks/use-totals.ts\"][\"status\"]==\"A\" and f[\"lib/hooks/use-totals.ts\"][\"untracked\"] and f[\"lib/hooks/use-totals.ts\"][\"add\"]==3
+  and f[\"b.txt\"][\"status\"]==\"D\" and \"c.txt\" not in f and not any(p.startswith(\".orch\") for p in f)))" "$out"'
+out=$("$ORCH" changes M4 --no-color)
+check "…as a folder tree with +/- counts and A/M/D marks" 'grep -q "^lib/hooks/$" <<<"$out" && grep -qE "^ +use-totals.ts +\+3 −0  U$" <<<"$out" && grep -qE "^ +b.txt +\+0 −1  D$" <<<"$out"'
+out=$("$ORCH" changes M4 lib/hooks/use-totals.ts --no-color)
+check "…a new file nobody added to git yet shows as all added lines" 'grep -q "not added to git yet" <<<"$out" && grep -q "^+three$" <<<"$out"'
+out=$("$ORCH" changes M4 evil.txt --no-color)
+check "…escape codes inside a file never reach the terminal" '! grep -q $'"'"'\x1b'"'"' <<<"$out" && ! grep -q $'"'"'\x07'"'"' <<<"$out" && grep -q "RED" <<<"$out"'
+INPTY="python3 -I $ROOT/tests/sim/inpty.py"
+out=$(PATH="$ROOT/bin:$PATH" $INPTY 'f|\r|q|q|q' 1 8 sh "$ROOT/view/herdr-plugin/board.sh")
+check "the board popup: f shows the changed files of the milestone being built, Enter a file's diff, q goes back" '[[ "$out" == *"orch board · changed files"* && "$out" == *"M4 Totals"* && "$out" == *"use-totals.ts"* && "$out" == *"orch board · diff"* && "$out" == *"EXIT 0" ]]'
+out=$(PATH="$ROOT/bin:$PATH" $INPTY '\x1b[B|\r|\x1b[C|q|q' 1 6 sh "$ROOT/view/herdr-plugin/board.sh")
+check "…↓ picks a milestone and Enter opens its files; → moves to the next milestone" '[[ "$out" == *"M1 Model"*"a.txt"* && "$out" == *"M2 Endpoint"* && "$out" == *"EXIT 0" ]]'
+after=$(git -C "$WT" status --porcelain; md5sum < "$(git -C "$WT" rev-parse --git-dir)/index"; find .git/objects -type f | wc -l; ls -l --time-style=full-iso "$(git -C "$WT" rev-parse --git-dir)/index")
+check "…looking never changes the coder's folder: same files, same git index, no new git objects" '[ "$before" = "$after" ]'
+# saved work between steps (waiting for review): the hidden ref, then the coder's folder is not read any more
+git -C "$WT" add -A && git -C "$WT" commit -qm "orch wip M4: for review" && git -C "$WT" update-ref refs/orch/feature-cat/M4 HEAD
+stpy 'st["tasks"]["M4"].update(status="awaiting-review"); st["workers"]["claude-1"]["task"]=None'
+echo later > "$WT/later.txt"
+check "saved work waiting for review shows what was handed in" '"$ORCH" changes M4 --json | python3 -c "import json,sys;d=json.load(sys.stdin);f={x[\"path\"] for x in d[\"files\"]};sys.exit(not (d[\"kind\"]==\"saved\" and \"lib/hooks/use-totals.ts\" in f and \"later.txt\" not in f))"'
+git update-ref -d refs/orch/feature-cat/M4; git -C "$WT" reset -q --hard feature/cat; git -C "$WT" clean -qfd
+# shared folder (subagent mode, Isolation: shared): the main folder against the branch head
+cp "$WORK/state.ch" .orchestrate/state.json
+stpy 'st["isolation"]="shared"; st["tasks"]["M4"].update(status="coding", worker=None, dir="'"$APP"'"); st["tree_task"]="M4"'
+echo sub > sub-new.txt
+check "shared folder (subagent mode): the milestone at work shows the main folder's unsaved files" '"$ORCH" changes M4 --json | python3 -c "import json,sys;d=json.load(sys.stdin);f={x[\"path\"] for x in d[\"files\"]};sys.exit(not (d[\"kind\"]==\"live\" and f=={\"sub-new.txt\"}))"'
+rm -f sub-new.txt; cp "$WORK/state.ch" .orchestrate/state.json
 check "orch status says the live view is off and how to start it" '"$ORCH" status | qgrep -q "^live view: off — \`orch view\`"'
 out=$(ORCH_VIEW_PORT=47900 "$ORCH" view --bg 2>&1); code=$?
 VU=$(python3 -c "import json;print(json.load(open('.orchestrate/view.json'))['url'])" 2>/dev/null)
 check "orch view --bg starts the page on this computer only and prints its link" '[ $code -eq 0 ] && grep -q "^orch view: http://127.0.0.1:479" <<<"$out" && [ -n "$VU" ]'
 check "…the page, the summary and the history are served" 'curl -sf "$VU" | qgrep -q "<title>orch view</title>" && curl -sf "${VU}api/state" | python3 -c "import json,sys;sys.exit(json.load(sys.stdin)[\"counts\"][\"landed\"]!=3)" && curl -sf "${VU}api/history" | python3 -c "import json,sys;sys.exit(len(json.load(sys.stdin)[\"events\"])<4)"'
+check "…the changed files of a milestone and one file's diff are served" 'curl -sf "${VU}api/changes?m=M1" | python3 -c "import json,sys;d=json.load(sys.stdin);sys.exit(not (d[\"kind\"]==\"landed\" and d[\"totals\"][\"files\"]==2))" && curl -sf "${VU}api/diff?m=M1&f=shared.txt" | python3 -c "import json,sys;d=json.load(sys.stdin);sys.exit(\"-base\" not in d[\"lines\"])"'
+check "…no other file can be read through it, and an unknown milestone is refused" 'curl -sf "${VU}api/diff?m=M1&f=../../etc/passwd" | python3 -c "import json,sys;d=json.load(sys.stdin);sys.exit(not (d[\"lines\"]==[] and \"not one of\" in d[\"error\"]))" && [ "$(curl -s -o /dev/null -w "%{http_code}" "${VU}api/changes?m=M99")" = 404 ]'
 sse=$(timeout 3 curl -sN "${VU}api/stream" 2>/dev/null)
 check "…the live stream sends the run at once" 'grep -q "^event: state" <<<"$sse" && grep -q "^data: {\"view\": 1" <<<"$sse"'
 check "…orch status and orch view status show its link" '"$ORCH" status | qgrep -q "^live view: http://127.0.0.1:" && "$ORCH" view status | qgrep -q "orch view is running: http://127.0.0.1:"'

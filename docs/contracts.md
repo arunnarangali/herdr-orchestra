@@ -177,5 +177,28 @@ asks herdr, never takes the state lock and never writes.
   summary (`"empty": true`) when only an unread plan file exists.
 - Adding fields keeps `"view": 1`; renaming or removing one needs `"view": 2`.
 
-`/api/history` returns every line of `events.jsonl` (`{"events": [...]}`), for the page's replay. With
+`/api/history` returns every line of `events.jsonl` (`{"events": [...]}`), for the page's replay.
+
+## What a milestone changed (orch → views and tools)
+
+`orch changes Mn --json` prints it; `orch view` serves the same at `/api/changes?m=Mn`. Read-only git.
+
+```json
+{"id": "M2", "title": "Goals API", "status": "coding", "group": "building",
+ "kind": "live", "note": "live: what the coder has changed so far, unsaved files included",
+ "worker": "agy-3", "dir": "/home/me/app-wt/agy-3", "commit": null, "error": null,
+ "files": [{"path": "app/api/goals/route.ts", "old": null, "status": "A", "add": 177, "del": 0, "untracked": false}],
+ "more": 0, "totals": {"files": 11, "add": 1301, "del": 10}}
+```
+
+- `kind`: `live` (a coder holds it: its folder, unsaved and new files included, against where its work started),
+  `saved` (work kept between steps, e.g. waiting for review), `landed` (the one commit it landed as on the
+  feature branch, `commit`), `none` (nothing yet; `note` says why).
+- `status`: A added, M changed, D deleted, R renamed (`old` is the old name), T type changed. `untracked: true` is a
+  new file the coder has not added to git yet (shown as U). `add`/`del` are `null` for a binary file.
+- At most 500 files are listed; `more` counts the rest. `totals` counts all of them.
+
+`/api/diff?m=Mn&f=<path>` (and `orch changes Mn <path> --json`) returns `{"id", "path", "lines", "cut", "total",
+"error"}`: one file's diff, cut at 4000 lines. The path must be one of Mn's changed files, so no other file can be
+read through it. With
 `orch view --lan` every URL needs the `?t=<token>` the command printed.
