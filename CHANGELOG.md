@@ -2,6 +2,24 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.29.0] - 2026-11-27
+
+The lead now knows its own question picker by name, so /orch-plan's questions open as a click list in every agent that has one. Before, the playbook only said "Antigravity's own picker" and showed a plain-text example, so an Antigravity lead asked its questions (and "Keep this team?") as numbered text you had to answer by typing.
+
+Example: you start `/orch-plan` in Antigravity. `orch lead plan` now begins with `QUESTION PICKER you are Antigravity: ask ... with your built-in ask_question tool`, and the questions (where Goals live, storage, team) open as a numbered list you pick with the arrow keys, its suggestion first, with "Write-in..." for your own answer. The same goes for "Keep this team?", "Which step?" and "Which model?" after the plan.
+
+### Fixed
+- **`orch lead plan` names the lead's picker.** It finds which agent leads (its shell marks, or the kind herdr reports for the pane, which is how it finds Antigravity) and prints one `QUESTION PICKER` line: `AskUserQuestion` (Claude Code), `ask_question` (Antigravity), `request_user_input` (Codex), `orch_ask` (Pi), `question` (OpenCode), with each tool's limits. An agent with no known picker is told to ask in chat. When orch can't tell the agent, the line lists every name.
+- **Codex: orch checks whether the picker is on.** Codex refuses `request_user_input` outside Plan mode ("request_user_input is unavailable in Default mode") unless `default_mode_request_user_input` is on. orch already turns it on for a lead it opens. Now `orch lead plan` reads `~/.codex/config.toml` and, where Codex's sandbox shows it, the command that started this Codex. On: use the picker. Off (a Codex you opened yourself): ask in chat, and tell you how to get the picker (`orch team codex`, or `default_mode_request_user_input = true` under `[features]` in `~/.codex/config.toml`). Can't tell (Codex's Linux sandbox hides its own process): try the tool once, and fall back to chat if it is refused.
+- **Pi without orch's package** is told to ask in chat and to suggest `pi install npm:herdr-orchestra`.
+- The plan playbook points to the `QUESTION PICKER` line, names `ask_question` for Antigravity, says never to write the choices as plain text when a picker exists, and counts Codex's "unavailable in Default mode" as "no picker". "Keep this team?" uses the same picker.
+
+### Checked
+- Claude Code 2.1.332, Codex 0.172.0 and Pi 1.7.0 were started for real, with a fake model that calls each picker tool. Claude Code (in the lead's `acceptEdits` mode): the picker opened and the answer came back. Codex with orch's lead flag: the picker opened and the answer came back. Codex opened without it: the tool is listed but answers "unavailable in Default mode". Pi with orch's extension: `orch_ask` opened and saved `.orchestrate/questions.md`.
+
+### Not yet tried
+- **Antigravity was not run** (its download is blocked where this was built). The tool name `ask_question` comes from Antigravity's `/grill-me` docs and from other projects that show its questions (agy 1.5.x). Please try one `/orch-plan` with a question in Antigravity.
+
 ## [6.28.0] - 2026-11-27
 
 ### Changed

@@ -75,8 +75,8 @@ Discount on the whole order or on each item?
   Custom answer...
 ```
 
-- **Claude Code** uses its own picker (`AskUserQuestion`), **OpenCode** its `question` tool, and **Antigravity** its own picker.
-- **Codex** has one too (`request_user_input`), but only in Plan mode unless a setting is on. orch's start command for a Codex lead turns it on (`orch agents launch codex --role lead`, or the line `orch team codex` prints). Coders never get it, because nobody watches their panes.
+- **Claude Code** uses `AskUserQuestion`, **Antigravity** `ask_question` (the picker `/grill-me` uses), **OpenCode** its `question` tool. `orch lead plan` tells the lead the exact name for its tool (the `QUESTION PICKER` line), for the questions before the plan and for "Keep this team?" after it.
+- **Codex** has one too (`request_user_input`), but only in Plan mode unless a setting is on. orch's start command for a Codex lead turns it on (`orch agents launch codex --role lead`, or the line `orch team codex` prints). A Codex you opened yourself refuses it ("unavailable in Default mode"), so the lead asks in chat and tells you how to turn it on: let orch open the lead, or put `default_mode_request_user_input = true` under `[features]` in `~/.codex/config.toml`. Coders never get it, because nobody watches their panes.
 - **Pi** has no picker of its own, so orch's Pi package adds one: the `orch_ask` tool.
 
 Your answers are saved in `.orchestrate/questions.md` either way, and the lead goes straight on to the plan. Press Escape to stop: the lead pauses and asks again when you say so, and never guesses. With no picker (a headless run, or a lead started before this version) it asks in chat as above.
