@@ -34,6 +34,20 @@ After each wake-up the lead says in its chat, one short line per event, what hap
 
 After planning, the lead shows the plan as short cards from `orch plan show`, one per milestone in plain words, instead of the whole plan file.
 
+Then, and only then, it shows who builds what (`orch plan team`) and asks whether to keep it:
+
+```
+Step      What             Coder     Model        Thinking  Chosen
+M1        Discount in API  codex-2   gpt-6.2-sol  medium    by level (high)
+M2        Discount box     codex-1   gpt-6-luna   high      by level (small)
+M3        Update docs      codex-1   gpt-6-luna   high      by level (small)
+Reviewer                   reviewer  gpt-6.2-sol  medium
+
+Keep this team?   > Keep it   Change a step   Change the reviewer
+```
+
+Pick "Change a step" and it asks one thing at a time: which step, which model, which thinking level (only models your tool really has; never a blocked one). Without a picker you type it: `M3 sol low`. Your choice is locked: that step only goes to a coder on that model, and if no coder runs it, a new coder panel opens when the run starts. Later, say "M3 use luna high" in the lead's chat and it changes it.
+
 Routine recovery does not wake the lead: a failed check goes back to its coder, a rate-limited or vanished agent is benched and its work moves on, and a milestone out of fix rounds gets one fresh round on a stronger model.
 
 ## When a coder has a question

@@ -100,6 +100,7 @@ Notes from user:
 | `Repo:` | In a workspace, needed: the repo this milestone is built in |
 | `Why separate:` | Why this is its own milestone: parallel work, a foundation others build on, or too big for one sitting. Needed when the plan has more than one milestone; `orch sync` warns without it |
 | `Prefer:` | `any`, a worker kind (`codex`) or a worker name. A preference, not a lock; the tier comes first |
+| `Model:` | Written by `orch plan model` when the developer picks a model for this milestone, e.g. `Model: gpt-6.2-sol@low` (after `@`: the thinking level). A lock: only a coder on exactly that model takes it, and orch never moves it to another model (no stronger-model retry, `--to` and `--tier` refused). `orch sync` stops when no coder in `Workers` runs it |
 | `Tier:` | `small`, `medium` or `high`: the level of model the milestone needs. Leave it out and any coder may take it |
 | `Needs:` | What the work leans on: any of `reasoning`, `coding`, `architecture`, `long-context`, `tool-use`, `planning`, `speed` |
 | `Model why:` | One line: what in this milestone makes it that tier |
