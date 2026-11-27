@@ -3,7 +3,7 @@ title: "Use herdr-orchestra in Pi, step by step"
 description: "Install herdr-orchestra as a Pi package, set up the orch command, pick panes or subagent mode, and run your first plan from inside Pi."
 ---
 
-herdr-orchestra is also a [Pi](https://pi.dev) package. Inside Pi you get the `orch-plan`, `orch-run` and `orch-explain` skills, two commands (`/orch-setup` and `/orch-mode`), and a footer line that shows which mode you are in (`orch: panes` or `orch: subagent`).
+herdr-orchestra is also a [Pi](https://pi.dev) package. Inside Pi you get the `orch-plan`, `orch-run` and `orch-explain` skills, three commands (`/orch-setup`, `/orch-mode` and `/orch-board`), and a footer line that shows which mode you are in (`orch: panes` or `orch: subagent`).
 
 You can run orch from Pi in two ways:
 
@@ -55,6 +55,8 @@ It should print the same version as the package. If Pi still says the orch comma
 Pi may warn once that `orch-plan` / `orch-run` were found twice: the installer also puts them in `~/.agents/skills` for Codex, Amp and OpenCode. Pi keeps one copy and works normally.
 
 ## Step 4: pick a mode
+
+`/orch-board` opens the run board: a popup inside herdr, or the `orch view` page in your browser outside it.
 
 Type `/orch-mode` alone to see the current mode and where it came from. The footer shows it too.
 

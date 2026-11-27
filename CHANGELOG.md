@@ -2,6 +2,18 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.27.0] - 2026-11-27
+
+`/orch-board` in Pi: open the run board without leaving Pi.
+
+Example: you lead a run from Pi, inside herdr. Type `/orch-board` and the board opens as a popup in the repo you are in, the same popup the board key (`prefix+a`) opens. Close it with `q`. In a plain terminal (no herdr), `/orch-board` starts `orch view` in the background and shows its address, `http://127.0.0.1:...`.
+
+### Added
+- **`/orch-board`** (Pi). Inside herdr it opens the board popup with `--cwd` set to your repo. If herdr refuses (for example the plugin is not linked) it says why, points to `orch view plugin link`, and opens the browser page instead. Without herdr, or without the `orch` command, it says what to do (`/orch-setup`).
+- Subagent mode needed no change: `orch sub` already records each milestone's start and finish in `state.json`, so the board and `orch view` show them as in panes mode.
+
+### Not yet tried
+- With a real Pi window and real herdr: tested with a stand-in for Pi's API and a fake `herdr` command.
 ## [6.25.0] - 2026-11-27
 
 You choose the model and thinking level of each milestone and of the reviewer, right after the plan. Before, a milestone only had a level (small, medium, high) and went to any coder of that level; to change a model you edited `Workers:` in plan.md by hand, and nothing stopped orch from moving the milestone to another model later.

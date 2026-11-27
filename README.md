@@ -282,7 +282,7 @@ pi install npm:herdr-orchestra
 
 You can also install it straight from GitHub (same files, no npm needed): `pi install git:github.com/arunnarangali/herdr-orchestra` (add `@vX.Y.Z` to pin a release). Step-by-step setup: the [Pi page](https://herdr-orchestra.vercel.app/docs/pi/) of the docs.
 
-Pi then has the `orch-plan`, `orch-run` and `orch-explain` skills and two commands. The first time, Pi says the `orch` command is missing (or older than the package): type `/orch-setup` once and it runs this package's installer. Pi may warn once that `orch-plan` / `orch-run` were found twice (the installer also puts them in `~/.agents/skills` for Codex, Amp and OpenCode); it keeps one copy and works.
+Pi then has the `orch-plan`, `orch-run` and `orch-explain` skills and three commands (`/orch-setup`, `/orch-mode`, and `/orch-board`, which opens the run board). The first time, Pi says the `orch` command is missing (or older than the package): type `/orch-setup` once and it runs this package's installer. Pi may warn once that `orch-plan` / `orch-run` were found twice (the installer also puts them in `~/.agents/skills` for Codex, Amp and OpenCode); it keeps one copy and works.
 
 Runs have two modes. Nothing changes for anyone who never picks the second one.
 

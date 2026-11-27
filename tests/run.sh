@@ -1719,6 +1719,19 @@ else
   echo "  skip: this node cannot run TypeScript (needs 22.6+)"
 fi
 unset ORCH_CONFIG_FILE PI_CODING_AGENT_DIR ORCH_PI AI_AGENT PI_CODING_AGENT
+echo "48d. Pi: /orch-board opens the board popup in herdr, else the browser page (orch view)"
+if node -e 'process.exit(process.features && process.features.typescript ? 0 : 1)' 2>/dev/null; then
+  PB(){ (cd "$WORK" && NODE_NO_WARNINGS=1 PATH="$WORK/orchbin:$PATH" node "$ROOT/tests/pi-extension.mjs" "$@" 2>&1); }
+  mkdir -p "$WORK/orchbin" "$WORK/fakeherdr"; ln -sf "$ORCH" "$WORK/orchbin/orch"
+  printf '#!/bin/sh\necho "$@" >> "%s/fakeherdr/calls"\n' "$WORK" > "$WORK/fakeherdr/herdr"; chmod +x "$WORK/fakeherdr/herdr"
+  rm -f "$WORK/fakeherdr/calls"
+  out=$(env -u HERDR_ENV -u HERDR_PANE_ID bash -c "cd '$WORK' && NODE_NO_WARNINGS=1 HERDR_ENV=1 HERDR_BIN_PATH='$WORK/fakeherdr/herdr' PATH='$WORK/orchbin:$PATH' node '$ROOT/tests/pi-extension.mjs' orch-board 2>&1")
+  check "/orch-board inside herdr opens the board popup in this repo and does not start the browser page" 'grep -q "^NOTIFY info Board opened" <<<"$out" && grep -q "plugin pane open --plugin herdr-orchestra.board --entrypoint board --placement popup --cwd $WORK" "$WORK/fakeherdr/calls"'
+  printf '#!/bin/sh\necho "no such plugin" >&2; exit 1\n' > "$WORK/fakeherdr/herdr"
+  out=$(env -u HERDR_PANE_ID bash -c "cd '$WORK' && NODE_NO_WARNINGS=1 HERDR_ENV=1 HERDR_BIN_PATH='$WORK/fakeherdr/herdr' PATH='$WORK/orchbin:$PATH' node '$ROOT/tests/pi-extension.mjs' orch-board 2>&1")
+  check "…when herdr refuses, it says why, names \`orch view plugin link\` and falls back to the browser page" 'grep -q "^NOTIFY warning Herdr could not open the board popup: no such plugin" <<<"$out" && grep -q "orch view plugin link" <<<"$out"'
+  "$ORCH" view stop >/dev/null 2>&1 || true
+fi
 echo "48c. native question pickers: the lead asks in its agent's own picker (Pi: orch_ask), chat stays the fallback"
 out=$("$ORCH" lead plan 2>&1)
 check "the plan playbook has the native question rule: a picker when there is one, for every agent" 'grep -q "native question rule" <<<"$out" && for t in AskUserQuestion "\`question\` in OpenCode" request_user_input orch_ask Antigravity; do grep -q "$t" <<<"$out" || { echo "missing $t"; exit 1; }; done'
