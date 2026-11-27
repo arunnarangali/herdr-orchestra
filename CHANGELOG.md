@@ -2,6 +2,26 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.25.0] - 2026-11-27
+
+You choose the model and thinking level of each milestone and of the reviewer, right after the plan. Before, a milestone only had a level (small, medium, high) and went to any coder of that level; to change a model you edited `Workers:` in plan.md by hand, and nothing stopped orch from moving the milestone to another model later.
+
+Example: after `/orch-plan` shows the plan, the lead shows the team table (M1 codex-2 gpt-6.2-sol medium, M2 codex-1 gpt-6-luna high, Reviewer gpt-6.2-sol medium) and asks "Keep this team?". You pick "Change a step", then M2, gpt-6.2-sol, low. The lead runs `orch plan model M2 gpt-6.2-sol@low`: M2 is locked to Sol on low thinking, no coder ran that, so `codex-3 (codex: gpt-6.2-sol@low)` joins the team and `orch team up` opens its panel when you say go. Later, "M2 use luna high" in the lead's chat changes it again.
+
+### Added
+- `orch plan team`: one row per milestone and one for the reviewer, with its coder, model, thinking level and whether you chose it; then the models and thinking levels you can pick (your tool's own list, from `codex debug models` for Codex) and the ones never allowed.
+- `orch plan model <Mn|reviewer> <model>@<thinking>` (also `M3 gpt-6.2-sol low`): writes `Model:` on the milestone, or the model on the `Reviewer:` line. A new coder joins `Workers` when none runs that model. `auto` takes a milestone's lock off. It refuses a model the policy blocks (Astra) and a thinking level the tool doesn't have, and says what to do when the milestone is already being built or has landed, or the reviewer's panel is open on the old model.
+- The plan playbook: only after the plan is shown (full and quick runs), the lead shows the table and asks "Keep this team?" in its question picker, then one question at a time: which step, which model, which thinking. Without a picker the developer types `ok` or `M3 sol low`.
+- Registry key `efforts`: the thinking levels a tool accepts (Codex: low, medium, high, xhigh, max).
+
+### Changed
+- A milestone with `Model:` is a lock: only coders on exactly that model take it. orch never moves it to another model by itself: `orch escalate` says NO_ESCALATION, and `orch dispatch --to` a coder on another model or `--tier` is refused. The run playbook has a hard rule for the lead: the developer's model choices stay until the developer changes them.
+- `orch sync` stops when a `Model:` line names a model no coder in `Workers` runs (and names the command that adds one), or a blocked model.
+- `orch plan show` says "locked by you to <model>" on a locked milestone's card.
+
+### Not yet tried
+- With a real lead's question picker and real Codex panels: tested with orch's simulated agents.
+
 ## [6.24.0] - 2026-11-27
 
 Frontend and backend, in one repo or in two. Before, a run belonged to the one git repo you started it in: frontend and backend in separate repos could not be one run, two runs side by side both called their agents `codex-1`, and in a monorepo every milestone waited for the whole repo's tests.

@@ -158,7 +158,7 @@ Yes. Ask the lead, or run:
 orch dispatch M2 --to claude-1
 ```
 
-`--to` locks that milestone to that coder, which is useful for UI work you want one agent to own. The plan's `Prefer:` line is weaker: it only breaks ties. `--to` refuses a coder that has no agent open in herdr, or one you benched. See [Agents and roles](/docs/agents/).
+`--to` locks that milestone to that coder, which is useful for UI work you want one agent to own. The plan's `Prefer:` line is weaker: it only breaks ties. To lock a milestone to a model and thinking level rather than to one coder, pick it when the lead asks after the plan, or say "M3 use luna high" in the lead's chat (`orch plan model M3 gpt-6-luna@high`). `--to` refuses a coder that has no agent open in herdr, or one you benched. See [Agents and roles](/docs/agents/).
 
 ### I don't want one coder today (for example, no Claude). How?
 

@@ -2513,5 +2513,49 @@ out=$("$ORCH" sync 2>&1); code=$?
 check "a workspace sync never overwrites a repo's own run that is still going" '[ $code -ne 0 ] && grep -q "repo backend has its own run going (M1 not landed)" <<<"$out" && grep -q "^# Plan: own" "$W/backend/.orchestrate/plan.md"'
 check "the playbook tells the lead about sides and workspaces" 'grep -q "Check <side>:" "$ROOT/playbooks/plan.md" && grep -q "Repos:" "$ROOT/playbooks/plan.md" && grep -q "backend:M" "$ROOT/playbooks/plan.md"'
 cd "$WORK" || exit
+
+echo "62. the developer picks the model and thinking level of each milestone and of the reviewer, after the plan"
+newrepo mp
+printf '%b' '# Plan: Discount\nBranch: feature/mp\nCheck command: true\nIsolation: worktree\nMax parallel: 2\nWorkers: codex-1 (codex: gpt-6-luna@high), codex-2 (codex: gpt-6.2-sol@medium)\nReviewer: reviewer (codex: gpt-6.2-sol@medium)\n\n## [x] M1: Discount in API\nDepends on: none\nTier: high\nModel why: a contract.\nReview: yes\nOpen questions:\n- none\n\n## [x] M2: Update docs\nDepends on: none\nTier: small\nModel why: docs only.\nOpen questions:\n- none\n' > .orchestrate/plan.md
+"$ORCH" sync >/dev/null 2>&1
+out=$("$ORCH" plan team 2>&1); code=$?
+check "orch plan team: a row per milestone and the reviewer, with coder, model and thinking level" '[ $code -eq 0 ] && grep -q "^Step  *What  *Coder  *Model  *Thinking  *Chosen$" <<<"$out" && grep -q "^M1  *Discount in API  *codex-2  *gpt-6.2-sol  *medium  *by level (high)$" <<<"$out" && grep -q "^Reviewer  *checks the reviewed steps  *reviewer  *gpt-6.2-sol  *medium$" <<<"$out"'
+check "…and what the developer can pick: the models and thinking levels of the tool, never a denied one" 'grep -q "^You can pick (codex): models gpt-6-luna, gpt-6.2-sol · thinking low, medium, high, xhigh, max$" <<<"$out" && grep -q "^Never allowed: .*\*astra\*" <<<"$out" && ! grep -q "astra," <<<"$out"'
+out=$("$ORCH" plan model M2 gpt-6.2-sol low 2>&1); code=$?
+check "orch plan model locks a milestone; no coder ran that model, so a new one joins the team" '[ $code -eq 0 ] && grep -q "^LOCKED  M2 to gpt-6.2-sol on low thinking: only codex-3 takes it" <<<"$out" && grep -q "^NEW     coder codex-3 (codex: gpt-6.2-sol@low) joins the team for M2: .orch team up. opens its panel when the run starts" <<<"$out" && grep -q "^Workers: codex-1 (codex: gpt-6-luna@high), codex-2 (codex: gpt-6.2-sol@medium), codex-3 (codex: gpt-6.2-sol@low)$" .orchestrate/plan.md && grep -A1 "^Tier: small" .orchestrate/plan.md | qgrep -qx "Model: gpt-6.2-sol@low"'
+out=$("$ORCH" plan team 2>&1)
+check "the table shows the choice as locked by the developer" 'grep -q "^M2  *Update docs  *codex-3  *gpt-6.2-sol  *low  *locked by you$" <<<"$out"'
+check "orch plan show: only the coder on that model builds it" '"$ORCH" plan show | qgrep -q "^   Built by: codex-3 (gpt-6.2-sol@low) · locked by you to gpt-6.2-sol@low"'
+check "the coder's task never gets the Model line (orch's own)" 'grep -q "\"model\", \"tier\"" "$ORCH"'
+out=$("$ORCH" plan model M1 gpt-6.2-sol@medium 2>&1)
+check "a model a coder already runs: locked to that coder, nobody new" 'grep -q "^LOCKED  M1 to gpt-6.2-sol on medium thinking: only codex-2 takes it" <<<"$out" && ! grep -q "^NEW" <<<"$out"'
+out=$("$ORCH" plan model M1 gpt-6-astra@low 2>&1); code=$?
+check "a denied model is refused" '[ $code -ne 0 ] && grep -q "gpt-6-astra@low is not allowed by the model policy" <<<"$out" && ! grep -q astra .orchestrate/plan.md'
+out=$("$ORCH" plan model M1 gpt-6-luna@huge 2>&1); code=$?
+check "a thinking level the tool doesn't have is refused" '[ $code -ne 0 ] && grep -q "codex has no thinking level .huge.: pick one of low, medium, high, xhigh, max" <<<"$out"'
+out=$("$ORCH" plan model reviewer gpt-6-luna high 2>&1); code=$?
+check "orch plan model reviewer changes the reviewer's model" '[ $code -eq 0 ] && grep -q "^REVIEWER reviewer now runs gpt-6-luna on high thinking" <<<"$out" && grep -q "^Reviewer: reviewer (codex: gpt-6-luna@high)$" .orchestrate/plan.md'
+"$ORCH" start >/dev/null 2>&1
+out=$("$ORCH" escalate M2 "out of rounds" 2>&1); code=$?
+check "a locked milestone is never escalated to another model" '[ $code -eq 3 ] && grep -q "^NO_ESCALATION M2 (the developer locked it to gpt-6.2-sol@low" <<<"$out"'
+out=$("$ORCH" dispatch M2 --to codex-1 2>&1); code=$?
+check "dispatch --to a coder on another model is refused for a locked milestone" '[ $code -ne 0 ] && grep -q "M2 is locked to gpt-6.2-sol@low by the developer, and codex-1 runs gpt-6-luna@high" <<<"$out"'
+out=$("$ORCH" dispatch M2 --tier high 2>&1); code=$?
+check "…and so is --tier" '[ $code -ne 0 ] && grep -q "so --tier does not apply" <<<"$out" && ! python3 -c "import json,sys;sys.exit(not json.load(open(\".orchestrate/state.json\"))[\"tasks\"][\"M2\"].get(\"go\"))"'
+out=$("$ORCH" plan model M2 gpt-6-luna@high 2>&1)
+check "the developer changes it later: another lock, and the coder added for the old one is pointed out" 'grep -q "^LOCKED  M2 to gpt-6-luna on high thinking: only codex-1 takes it" <<<"$out" && grep -q "^NOTE    codex-3 (gpt-6.2-sol@low) stays in the team" <<<"$out" && [ "$(grep -c "^Model:" .orchestrate/plan.md)" = 2 ]'
+out=$("$ORCH" plan model M2 auto 2>&1); code=$?
+check "auto gives the milestone back to its level" '[ $code -eq 0 ] && grep -q "^UNLOCKED M2" <<<"$out" && [ "$(grep -c "^Model:" .orchestrate/plan.md)" = 1 ]'
+python3 - <<'PY'
+import re; p = ".orchestrate/plan.md"; s = open(p).read()
+open(p, "w").write(s.replace("Model: gpt-6.2-sol@medium", "Model: gpt-6-luna@low"))
+PY
+out=$("$ORCH" sync 2>&1); code=$?
+check "a Model line by hand that no coder runs stops sync, with the command that fixes it" '[ $code -eq 2 ] && grep -q "M1 has .Model: gpt-6-luna@low., but no coder in Workers runs gpt-6-luna@low — .orch plan model M1 gpt-6-luna@low. adds one" <<<"$out"'
+out=$("$ORCH" lead plan quick 2>&1)
+check "the plan playbook asks about models only after the plan is shown, in quick runs too" 'grep -q "^## Let the developer choose the models (from step 10)" <<<"$out" && grep -q "Keep this team?" <<<"$out" && grep -q "M3 sol low" <<<"$out" && grep -q "orch plan model reviewer" <<<"$out"'
+check "the run playbook keeps the developer's choices and says how to change them" '"$ORCH" lead run --section rules | qgrep -q "The developer.s model choices stay" && grep -q "M3 use luna high" "$ROOT/playbooks/run.md"'
+cd "$WORK" || exit
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

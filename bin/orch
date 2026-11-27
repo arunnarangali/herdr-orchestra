@@ -932,6 +932,8 @@ def eligible_workers(st, t):
     team reaches the tier, the strongest workers the team has, so a run never waits for a model nobody started."""
     if t.get("assign") in st["workers"] and not st["workers"][t["assign"]].get("off"):
         return [t["assign"]]
+    if t.get("model"):                 # `Model:` in plan.md: the developer chose this model, orch never picks another
+        return [n for n, w in st["workers"].items() if not w.get("off") and (w.get("model") or "") == t["model"]]
     need = need_rank(t)
     ranks = {n: rank(w.get("tier")) for n, w in st["workers"].items() if not w.get("off")}   # `orch bench <w> off`
     if not ranks:
@@ -1547,6 +1549,20 @@ def cmd_sync(args):
                 and rank(tier_of(reviewer)) < rank(tv)):
             warns.append(f"{tid} is {tv}-tier work reviewed by a {tier_of(reviewer)}-tier model ({models[reviewer]}) — "
                          f"a reviewer weaker than the coder misses design errors")
+    # `Model: gpt-6.2-sol@low` on a milestone: the developer locked it to coders running exactly that model
+    locks = {}
+    for t in tasks:
+        mv = (field(t, "model").split() or [""])[0].strip("`").lower()
+        if not mv or mv in ("any", "auto", "none"):
+            continue
+        locks[t["id"]] = mv
+        why = model_denied(cat, mv)
+        if why:
+            errors.append(f"{t['id']} has `Model: {mv}`, which the model policy does not allow (pattern {why!r}) — "
+                          f"pick another model (`orch plan team` lists them)")
+        elif t["enabled"] and not any(models.get(n) == mv for n in workers):
+            errors.append(f"{t['id']} has `Model: {mv}`, but no coder in Workers runs {mv} — "
+                          f"`orch plan model {t['id']} {mv}` adds one, or `orch plan model {t['id']} auto` unlocks it")
     if lead and models.get(lead[0]) and rank(tier_of(lead[0])) not in (0, 3):
         warns.append(f"the lead runs {models[lead[0]]!r} ({tier_of(lead[0])} tier) — planning and coordination are "
                      f"high-tier work")
@@ -1763,6 +1779,7 @@ def cmd_sync(args):
             "files": sorted(files[tid]),
             "parallel": field(t, "parallel", "").lower().startswith("allow"),
             "tier": tiers[tid], "needs": needs[tid], "model_why": field(t, "model why"), "role": field(t, "role"),
+            "model": locks.get(tid),          # locked by the developer: only coders on this model take it
             "estimate_s": estimates[tid],
             # for the developer (`orch plan show`): the milestone in plain words, and the plan's own reasons
             "plain": field(t, "plain"), "why_sep": field(t, "why separate"), "deps_text": field(t, "depends on"),
@@ -2784,14 +2801,8 @@ def cmd_pick(args):
     need(args, 1, "pick <Mn>")
     st = load()
     t = task(st, args[0])
-    pref = t["prefer"]
-    names = eligible_workers(st, t)
-    last = t.get("last_worker")
-    nr = need_rank(t)
     # the last coder first (its work is in its folder), then the tier asked for before a stronger (dearer) one
-    names.sort(key=lambda n: (0 if n == last else 1, (rank(st["workers"][n].get("tier")) or nr) - nr
-                              if nr else 0, 0 if pref in ("any", st["workers"][n]["kind"], n) else 1))
-    for n in names:
+    for n in pick_order(st, t):
         if worker_free(st, n, st["workers"][n]):
             print(n)
             return
@@ -4393,7 +4404,7 @@ WORKER_RULES = """## Rules for you (the coder)
 
 
 # plan.md lines that are for the lead and orch, not the coder: they stay in plan.md and task.json
-LEAD_ONLY_FIELDS = {"depends on", "why separate", "prefer", "tier", "needs", "model why", "estimate", "role", "door",
+LEAD_ONLY_FIELDS = {"depends on", "why separate", "prefer", "model", "tier", "needs", "model why", "estimate", "role", "door",
                     "review", "parallel", "plain", "side", "repo"}
 
 
@@ -4583,6 +4594,14 @@ def cmd_dispatch(args):
             die("--tier must be small, medium or high")
         for tid in args:
             t = task(st, tid)
+            lock = t.get("model")
+            if lock and opts.get("--to") and (st["workers"][opts["--to"]].get("model") or "") != lock:
+                die(f"{tid} is locked to {lock} by the developer, and {opts['--to']} runs "
+                    f"{st['workers'][opts['--to']].get('model') or 'another model'}. Only the developer changes the "
+                    f"lock: when they ask, `orch plan model {tid} <model>`")
+            if lock and opts.get("--tier"):
+                die(f"{tid} is locked to {lock} by the developer, so --tier does not apply. Only the developer "
+                    f"changes the lock: when they ask, `orch plan model {tid} <model>`")
             if t["status"] not in ("pending", "paused", "failed"):
                 die(f"{tid} is {t['status']} — only pending, paused or failed milestones can be dispatched"
                     + (" (answer its open questions in plan.md, then `orch sync`)" if t["status"] == "needs-answer" else ""))
@@ -4947,12 +4966,237 @@ def plan_steps(st, tids):
     return [[t for t in tids if level[t] == n] for n in range(1, max(level.values(), default=0) + 1)]
 
 
+PLAN_USAGE = ("usage: orch plan show  |  orch plan team  |  orch plan model <Mn|reviewer> <model>[@<thinking>] "
+              "(or `<model> <thinking>`; `auto` unlocks a milestone)")
+
+
+def pick_order(st, t):
+    """The coders that may take t, in the order `orch pick` tries them (free or not): its last coder, then the
+    closest tier, then its Prefer."""
+    pref, last, nr = t.get("prefer") or "any", t.get("last_worker"), need_rank(t)
+    names = eligible_workers(st, t)
+    names.sort(key=lambda n: (0 if n == last else 1, (rank(st["workers"][n].get("tier")) or nr) - nr
+                              if nr else 0, 0 if pref in ("any", st["workers"][n]["kind"], n) else 1))
+    return names
+
+
+def model_choices(kind):
+    """(models, thinking levels) a developer can pick for an agent of `kind`: the models the tool itself lists
+    (`codex debug models`) when orch asked it, else the catalog's. The policy's denied models never show."""
+    cat = models_catalog() or {}
+    reg = (registry(required=False) or {}).get(kind) or {}
+    models = []
+    cfg = (cat.get("discover") or {}).get(kind) or {}
+    if (cat.get("found") or {}).get(kind) and cfg.get("cmd"):
+        rows = _tool_models(kind, cfg["cmd"]) or []
+        models = [m["slug"].lower() for m in rows if m.get("visibility") != "hide" and not m.get("upgrade")
+                  and not LEGACY_RE.search(m.get("description") or "")]
+    if not models:
+        models = [split_effort(mid)[0] for mid, m in (cat.get("models") or {}).items() if kind in (m.get("kinds") or [])]
+    models = [m for m in dict.fromkeys(models) if not model_denied(cat, m)]
+    efforts = [str(e).lower() for e in reg.get("efforts") or []] if reg.get("effort_flag") else []
+    return models, efforts
+
+
+def _thinking(mid):
+    base, eff = split_effort(mid or "")
+    return (base or "?"), (eff or "default")
+
+
+def cmd_plan_team(st):
+    """orch plan team -> one row per milestone and one for the reviewer: which coder builds it, on which model and
+    thinking level, and whether the developer locked it. Then what can be picked instead."""
+    if run_mode(st) == "subagent":
+        print("SUBAGENT MODE: the subagents run on the models in your orch config (`/orch-mode` in Pi sets them), "
+              "not on a team of panels, so there is no team table to change here.")
+        return
+    tids = [t for t in st["order"] if st["tasks"][t]["status"] != "skipped"]
+    rows = []
+    for tid in tids:
+        t = st["tasks"][tid]
+        who = pick_order(st, t)
+        mid = t.get("model") or (st["workers"][who[0]].get("model") if who else None)
+        base, eff = _thinking(mid) if mid else ("?", "?")
+        how = ("locked by you" if t.get("model") else
+               f"by level ({t['tier']})" if t.get("tier") else "first free coder")
+        rows.append((tid, t["title"], " or ".join(who) if who else "NOBODY", base, eff, how))
+    if st.get("reviewer"):
+        ri = st.get("reviewer_info") or {}
+        base, eff = _thinking(ri.get("model")) if ri.get("model") else ("?", "?")
+        rows.append(("Reviewer", "checks the reviewed steps", st["reviewer"], base, eff,
+                     "" if ri.get("model") else "model not written in the plan"))
+    head = ("Step", "What", "Coder", "Model", "Thinking", "Chosen")
+    cut = lambda x: x if len(x) <= 30 else x[:29] + "…"
+    rows = [tuple(cut(str(c)) for c in r) for r in rows]
+    wid = [max(len(r[i]) for r in rows + [head]) for i in range(len(head))]
+    fmt = lambda r: "  ".join(c.ljust(wid[i]) for i, c in enumerate(r)).rstrip()
+    print(f"TEAM for {st.get('title') or st['branch']}: who builds each step, on which model and thinking level")
+    print(fmt(head))
+    for r in rows:
+        print(fmt(r))
+    if any(r[2] == "NOBODY" for r in rows):
+        print("WARN a step has no coder on its model: `orch plan model <Mn> <model>` adds one")
+    kinds = list(dict.fromkeys([w["kind"] for w in st["workers"].values()]
+                               + [(st.get("reviewer_info") or {}).get("kind")]))
+    for kind in [k for k in kinds if k]:
+        models, efforts = model_choices(kind)
+        if models:
+            print(f"You can pick ({kind}): models {', '.join(models)}"
+                  + (f" · thinking {', '.join(efforts)}" if efforts else " · no thinking setting"))
+    deny = (models_catalog() or {}).get("policy", {}).get("deny") or []
+    if deny:
+        print(f"Never allowed: {', '.join(deny)}")
+    print("Change one: orch plan model <Mn|reviewer> <model>@<thinking>   (`auto` gives a step back to its level)")
+
+
+def _plan_section(lines, tid):
+    i0 = next(i for i, ln in enumerate(lines) if (m := HEAD_RE.match(ln)) and m.group(2) == tid)
+    i1 = next((i for i in range(i0 + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return i0, i1
+
+
+def cmd_plan_model(args):
+    """orch plan model <Mn|reviewer> <model>[@<thinking>] -> the developer's choice, written into plan.md: `Model:`
+    on the milestone (a lock: only coders on that model take it, orch never moves it to another model), or the
+    model on the Reviewer line. When no coder runs that model, a new coder joins Workers; `orch team up` opens its
+    panel. `auto` takes a milestone's lock off again. Then `orch sync`."""
+    if len(args) == 3 and "@" not in args[1] and re.fullmatch(r"[A-Za-z]+", args[2]):
+        args = [args[0], f"{args[1]}@{args[2]}"]            # `M3 gpt-6.2-sol low` -> `M3 gpt-6.2-sol@low`
+    if len(args) != 2:
+        die(PLAN_USAGE)
+    target, mid = args[0], args[1].strip("`").lower()
+    is_rev = target.lower() == "reviewer"
+    if not is_rev and not re.fullmatch(r"M\d+", target):
+        die(PLAN_USAGE)
+    plan = ORCH / "plan.md"
+    if not plan.exists():
+        die("missing .orchestrate/plan.md — write the plan first")
+    text = plan.read_text()
+    cfg, tasks = parse_plan(text)
+    get = lambda k: " ".join(cfg.get(k, [])).strip()
+    if get("repos"):
+        die("this is a workspace of several repos: run `orch plan model` inside the repo the milestone belongs to")
+    if not is_rev and target not in {t["id"] for t in tasks}:
+        die(f"{target} is not in plan.md")
+    workers_s, rev_s, lead_s = get("workers"), get("reviewer"), get("lead")
+    workers, models = parse_agents(workers_s), parse_models(workers_s)
+    rname = None
+    if rev_s and not rev_s.lower().startswith("none"):
+        rm = re.match(r"([\w.-]+)\s*\(", rev_s)
+        rname = rm.group(1) if rm else None
+    lines = text.split("\n")
+    old_st = json.loads(STATE.read_text()) if STATE.exists() else {}
+    cat = models_catalog()
+    reg = registry(required=False) or {}
+    notes = []
+    if run_mode(old_st) == "subagent":
+        die("this plan is in subagent mode: its subagents run on the models in your orch config, not on panels "
+            "(`/orch-mode` in Pi sets them)")
+    old_lock = None if is_rev else (field(next(t for t in tasks if t["id"] == target), "model").split() or [""])[0].lower()
+    still = {(field(t, "model").split() or [""])[0].lower() for t in tasks if t["id"] != target}
+    if old_lock and old_lock != mid and old_lock not in still:
+        left = [n for n, m in models.items() if m == old_lock]
+        if left:
+            notes.append(f"NOTE    {', '.join(left)} ({old_lock}) stays in the team and may take other steps of its "
+                         f"level; take it out of Workers in plan.md if you don't want its panel")
+    if mid in ("auto", "any", "none"):
+        if is_rev:
+            die("the reviewer always runs a model: name one (`orch plan team` lists them)")
+        i0, i1 = _plan_section(lines, target)
+        lines = lines[:i0] + [ln for ln in lines[i0:i1] if not re.match(r"Model:\s", ln)] + lines[i1:]
+        plan.write_text("\n".join(lines))
+        print(f"UNLOCKED {target}: it goes to a coder of its level again")
+        for n in notes:
+            print(n)
+        cmd_sync([])
+        return
+    why = model_denied(cat, mid)
+    if why:
+        die(f"{mid} is not allowed by the model policy (pattern {why!r}) — `orch plan team` lists what you can pick")
+    base, eff = split_effort(mid)
+    team_kinds = list(dict.fromkeys(k for k, _ in workers.values()))
+    if is_rev:
+        if not rname:
+            die("the plan has no reviewer (`Reviewer: none`)")
+        kind = parse_agents(rev_s)[rname][0]
+    else:
+        same = [workers[n][0] for n, m in models.items() if m and split_effort(m)[0] == base and n in workers]
+        in_cat = [k for x, m in ((cat or {}).get("models") or {}).items() if split_effort(x)[0] == base
+                  for k in m.get("kinds") or []]
+        lead_kind = next(iter(parse_agents(lead_s).values()), (None,))[0]
+        kind = next((k for k in same + [k for k in in_cat if k in team_kinds] + [lead_kind] + team_kinds if k), None)
+        if not kind:
+            die("the plan has no Workers to add a coder to")
+    v = reg.get(kind) or {}
+    if eff and reg and not v.get("effort_flag"):
+        die(f"{kind} has no thinking setting orch can start it with: name the model without @{eff}")
+    efforts = [str(e).lower() for e in v.get("efforts") or []]
+    if eff and efforts and eff not in efforts:
+        die(f"{kind} has no thinking level {eff!r}: pick one of {', '.join(efforts)}")
+    choices, _ = model_choices(kind)
+    if choices and base not in choices:
+        notes.append(f"NOTE    {base} is not in the list {kind} gives ({', '.join(choices)}): check the name")
+    if cat and model_tier(cat, mid) is None:
+        notes.append(f"NOTE    {mid} has no level (small / medium / high) in the catalog: fine for your choice, "
+                     f"orch only can't compare it with the others")
+    hend = next((i for i, ln in enumerate(lines) if ln.startswith("## ")), len(lines))
+    if is_rev:
+        i = next(i for i in range(hend) if lines[i].startswith("Reviewer:"))
+        pane = parse_agents(rev_s)[rname][1]
+        lines[i] = f"Reviewer: {rname} ({kind}: {mid}" + (f" @pane:{pane}" if pane else "") + ")"
+        plan.write_text("\n".join(lines))
+        print(f"REVIEWER {rname} now runs {base} on {eff or 'its default'} thinking")
+        oldm = parse_models(rev_s).get(rname)
+        if oldm != mid and herdr_state(rname) is not None:
+            notes.append(f"NOTE    {rname}'s panel is open on {oldm or 'another model'}: quit the agent in that panel "
+                         f"(or close it), then `orch team up` opens it again on {mid}")
+    else:
+        who = [n for n, m in models.items() if m == mid and n in workers]
+        if not who:
+            same_kind = [n for n, (k, _) in workers.items() if k == kind]
+            pm = re.match(r"(.*?)(\d+)$", same_kind[0]) if same_kind else None
+            prefix = pm.group(1) if pm else f"{kind}-"
+            taken = set(workers) | ({rname} if rname else set()) | set(parse_agents(lead_s))
+            nums = [int(m.group(1)) for n in taken if (m := re.fullmatch(re.escape(prefix) + r"(\d+)", n))]
+            new = f"{prefix}{max(nums, default=0) + 1}"
+            i = next(i for i in range(hend) if lines[i].startswith("Workers:"))
+            lines[i] = lines[i].rstrip().rstrip(",") + f", {new} ({kind}: {mid})"
+            who = [new]
+            started = any((w or {}).get("dir") for w in (old_st.get("workers") or {}).values())
+            notes.append(f"NEW     coder {new} ({kind}: {mid}) joins the team for {target}: "
+                         + ("run `orch start` (it makes its folder), then `orch team up` opens its panel"
+                            if started else "`orch team up` opens its panel when the run starts (on go)"))
+        i0, i1 = _plan_section(lines, target)
+        sec = [ln for ln in lines[i0 + 1:i1] if not re.match(r"Model:\s", ln)]
+        at = next((k + 1 for k, ln in enumerate(sec) if ln.startswith("Tier:")), 0)
+        sec.insert(at, f"Model: {mid}")
+        lines = lines[:i0 + 1] + sec + lines[i1:]
+        plan.write_text("\n".join(lines))
+        print(f"LOCKED  {target} to {base} on {eff or 'its default'} thinking: only {' or '.join(who)} takes it, "
+              f"and orch never moves it to another model (to change it: `orch plan model {target} <model>`)")
+        ot = (old_st.get("tasks") or {}).get(target) or {}
+        if ot.get("status") in ACTIVE:
+            notes.append(f"NOTE    {target} is being worked on by {ot.get('worker')} now: your choice counts from its "
+                         f"next start. To move it now: `orch set {target} paused`, then `orch dispatch {target}`")
+        elif ot.get("status") == "merged":
+            notes.append(f"NOTE    {target} has already landed: for a change to it on this model, "
+                         f"`orch fix {target} \"<the change>\" --to {who[0]}`")
+    for n in notes:
+        print(n)
+    cmd_sync([])
+
+
 def cmd_plan(args):
     """orch plan show -> the plan for a person: one short card per milestone in plain words (from each milestone's
     `Plain:` line), what it waits for and why, who builds it on which model, how long it should take, and which
-    milestones run together. plan.md keeps every detail; this is the part a developer reads."""
+    milestones run together. plan.md keeps every detail; this is the part a developer reads.
+    orch plan team -> the model table; orch plan model -> the developer's choice of model for a step or the reviewer."""
+    if args[:1] == ["team"]:
+        return cmd_plan_team(load())
+    if args[:1] == ["model"]:
+        return cmd_plan_model(args[1:])
     if args[:1] != ["show"]:
-        die("usage: orch plan show")
+        die(PLAN_USAGE)
     st = load()
     tids = [t for t in st["order"] if st["tasks"][t]["status"] != "skipped"]
     print(f"PLAN in plain words: {st.get('title') or st['branch']} — {len(tids)} milestone(s) on {st['branch']}"
@@ -4979,7 +5223,9 @@ def cmd_plan(args):
             w = st["workers"][n]
             who.append(f"{n} ({w['model']})" if w.get("model") else n)
         bits = [f"Built by: {' or '.join(who) if who else 'the next free coder'}"]
-        if t.get("tier"):
+        if t.get("model"):
+            bits.append(f"locked by you to {t['model']}")
+        elif t.get("tier"):
             bits.append(f"{t['tier']} model")
         if t.get("estimate_s"):
             bits.append(f"about {_short_dur(t['estimate_s'])}")
@@ -5087,6 +5333,10 @@ def cmd_escalate(args):
     tid, reason = args[0], " ".join(args[1:])
     st = load()
     t = task(st, tid)
+    if t.get("model"):
+        print(f"NO_ESCALATION {tid} (the developer locked it to {t['model']}: only they change that, "
+              f"with `orch plan model {tid} <model>`)")
+        sys.exit(3)
     cur = rank(st["workers"].get(t.get("worker") or t.get("last_worker") or "", {}).get("tier"))
     above = sorted({rank(w.get("tier")) for w in st["workers"].values()} - set(range(0, max(cur, need_rank(t)) + 1)))
     if t.get("escalated") or not cur or not above:
@@ -8149,6 +8399,9 @@ USAGE = """usage: orch <command> [args]
   manual                   the manual tests: what to try by hand, numbered, from the summary's Manual verification
                            checklist (`orch finish` prints them too, and the lead posts them in its chat)
   plan show                the plan for a person: each milestone in plain words, who builds it, how long, the order
+  plan team                who builds each milestone and reviews, on which model and thinking level, and what you can pick
+  plan model <Mn|reviewer> <model>@<thinking>   the developer's choice: locks a milestone to that model (a coder
+                           on it joins the team when none runs it) or sets the reviewer's; `auto` unlocks a milestone
   events [--peek]          (lead) what you were woken for; reading acknowledges it
   dispatch <Mn>... [--to <worker>] [--tier <tier>]   (lead) start or restart milestones; starts the event manager
   check [Mn]               run the plan's check command in the main folder: CHECK PASS, or CHECK FAIL (exit 1)

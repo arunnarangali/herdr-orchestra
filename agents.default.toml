@@ -10,6 +10,8 @@
 #                 out when the tool has none or it is unverified, and choose the model inside the tool
 #   effort_flag   the launch option that sets how hard the model thinks, with {effort} where the level goes. A model
 #                 id written `<model>@<level>` (e.g. gpt-6.2-sol@low) starts on <model> with this option
+#   efforts       the thinking levels the tool accepts, in order; `orch plan team` offers them and `orch plan model`
+#                 refuses any other
 #   lead_flags    optional: options added only to the LEAD's start command (`orch team <kind>`, `orch agents launch
 #                 <kind> --role lead`), never to coders or the reviewer, whose panes run unattended
 #   launch_needs  parts the launch command must keep for orch to work in that tool; `orch doctor` says when your
@@ -72,6 +74,7 @@ launch_needs = ["sandbox_workspace_write.network_access=true", "sandbox_workspac
 lead_flags = "-c features.default_mode_request_user_input=true"
 model_flag = "--model"
 effort_flag = "-c model_reasoning_effort={effort}"
+efforts = ["low", "medium", "high", "xhigh", "max"]
 herdr_detect = true
 interrupt_keys = ["esc"]
 compact = "/compact"
