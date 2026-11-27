@@ -2570,5 +2570,29 @@ check "the plan playbook asks about models only after the plan is shown, in quic
 check "the run playbook keeps the developer's choices and says how to change them" '"$ORCH" lead run --section rules | qgrep -q "The developer.s model choices stay" && grep -q "M3 use luna high" "$ROOT/playbooks/run.md"'
 cd "$WORK" || exit
 
+echo "63. the lead is told its own question picker by name (Antigravity: ask_question), or that it has none"
+newrepo pk
+PK(){ env -u HERDR_PANE_ID "$@" "$ORCH" lead plan 2>&1 | sed -n '/^QUESTION PICKER/p'; }
+check "Claude Code: AskUserQuestion, with its limits, for every planning question incl. Keep this team?" 'PK AI_AGENT=claude-code_2-1 | qgrep -q "^QUESTION PICKER you are Claude Code: ask .* your \`AskUserQuestion\` tool (1 to 4 questions per call, 2 to 4 choices each" && PK AI_AGENT=claude | qgrep -q "Keep this team?\" / \"Which step?\" / \"Which model?\" after the plan"'
+check "Antigravity (also AI_AGENT=antigravity): ask_question by name, never the choices as plain text" 'PK AI_AGENT=agy | qgrep -q "^QUESTION PICKER you are Antigravity: .*built-in \`ask_question\` tool (the one /grill-me uses" && PK AI_AGENT=antigravity | qgrep -q "Do not write the choices as plain text when you have this tool"'
+check "Pi: orch_ask, and how to add it when the package is missing; OpenCode: question" 'PK AI_AGENT=pi | qgrep -q "^QUESTION PICKER you are Pi: .*\`orch_ask\` tool.*pi install npm:herdr-orchestra" && PK AI_AGENT=opencode | qgrep -q "^QUESTION PICKER you are OpenCode: .*your \`question\` tool"'
+check "an agent with no known picker asks in chat; an agent orch can't tell gets every name" 'PK AI_AGENT=amp | qgrep -q "^QUESTION PICKER you are amp, and orch knows no question picker for it: ask your planning questions in chat" && PK | qgrep -q "^QUESTION PICKER orch can.t tell which agent you are.*\`ask_question\` (Antigravity)"'
+check "…every line says what to do when the tool is missing or refuses: ask in chat (step 2a, point 3)" 'PK AI_AGENT=agy | qgrep -q "If the tool is missing or refuses .* ask in chat instead (step 2a, point 3)"'
+echo "$APP" > "$FH/pane-w5:p1.cwd"; echo agy > "$FH/pane-w5:p1.kind"
+check "Antigravity leaves no mark in its shell: orch asks herdr which agent runs in this pane" 'HERDR_PANE_ID=w5:p1 "$ORCH" lead plan 2>&1 | qgrep -q "^QUESTION PICKER you are Antigravity: "'
+rm -f "$FH/pane-w5:p1.cwd" "$FH/pane-w5:p1.kind"
+CXH="$WORK/pk-codex"; mkdir -p "$CXH"
+check "Codex, started some way orch can't see: try request_user_input once, then chat and how to turn it on" 'PK CODEX_HOME="$CXH" CODEX_THREAD_ID=t | qgrep -q "^QUESTION PICKER you are Codex (orch can.t see how this Codex was started): try your \`request_user_input\` tool (1 to 3 questions per call.*once. If it answers \"unavailable in Default mode\", the picker is off: ask in chat.*default_mode_request_user_input = true\` under \`\[features\]\` in ~/.codex/config.toml"'
+printf '[features]\ndefault_mode_request_user_input = true\n' > "$CXH/config.toml"
+check "Codex with the picker on in config.toml: use it" 'PK CODEX_HOME="$CXH" CODEX_THREAD_ID=t | qgrep -q "^QUESTION PICKER you are Codex and its picker is on (turned on in $CXH/config.toml): ask with your \`request_user_input\` tool"'
+rm "$CXH/config.toml"; mkdir -p "$WORK/pk-bin"; printf '#!/bin/sh\nexec "$ORCH" lead plan\n' > "$WORK/pk-bin/codex"; chmod +x "$WORK/pk-bin/codex"
+PKC(){ env -u HERDR_PANE_ID CODEX_HOME="$CXH" CODEX_THREAD_ID=t ORCH="$ORCH" sh -c "\"$WORK/pk-bin/codex\" $1 2>&1 | sed -n \"/^QUESTION PICKER/p\""; }
+check "Codex started by orch's lead command (-c features...=true or --enable): the picker is on" 'PKC "-c features.default_mode_request_user_input=true" | qgrep -q "picker is on (turned on in the command that started this Codex)" && PKC "--enable default_mode_request_user_input" | qgrep -q "picker is on"'
+check "Codex opened by hand (no flag): OFF, ask in chat, and tell the developer how to get the picker" 'PKC "--approve-for-me" | qgrep -q "^QUESTION PICKER OFF: you are Codex and its picker is off (this Codex was started without it.*would only answer \"unavailable in Default mode\". Ask your planning questions in chat.*let orch open the lead (\`orch team codex\`)" && PKC "-c features.default_mode_request_user_input=false" | qgrep -q "^QUESTION PICKER OFF"'
+check "the picker line comes with the start of the playbook only, not with the quick or full parts" '! AI_AGENT=agy "$ORCH" lead plan full 2>&1 | qgrep -q "^QUESTION PICKER" && ! AI_AGENT=agy "$ORCH" lead plan quick 2>&1 | qgrep -q "^QUESTION PICKER"'
+out=$("$ORCH" lead plan 2>&1; "$ORCH" lead plan full 2>&1)
+check "the playbook points to the picker line, names ask_question, and Keep this team? uses the same picker" 'grep -q "The \`QUESTION PICKER\` line at the top of this playbook names yours" <<<"$out" && grep -q "\`ask_question\` in Antigravity (the tool \`/grill-me\` uses)" <<<"$out" && grep -q "Never write the choices as plain text when you have a picker" <<<"$out" && grep -q "Keep this team?.*" <<<"$out" && grep -q "the tool the \`QUESTION PICKER\` line at the top of \`orch lead plan\` named, e.g. \`ask_question\` in Antigravity" <<<"$out"'
+cd "$WORK" || exit
+
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

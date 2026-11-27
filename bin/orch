@@ -8731,6 +8731,8 @@ def cmd_lead(args):
         if not part and not subagent:
             lead_self_name()
         guard_ensure(say_changes=False)     # no agent pushes to main: the repo refuses it from the start
+        if sub == "plan" and not part:
+            print(picker_note(lead_kind()), end="")
         if subagent and sub == "plan":
             print(SUBAGENT_PLAN_NOTE, end="")
         print(plan_playbook_part(pb.read_text(), part) if sub == "plan" else pb.read_text(), end="")
@@ -9715,6 +9717,120 @@ def asked_before_plan():
         return q.exists() and (not p.exists() or q.stat().st_mtime > p.stat().st_mtime)
     except OSError:
         return False
+
+
+CODEX_PICKER_FEATURE = "default_mode_request_user_input"
+
+
+def lead_kind():
+    """The lead's agent kind for `orch lead plan`: `--agent` / ORCH_AGENT / the agent's own shell marks first
+    (calling_agent), else the kind herdr reports for this pane (Antigravity leaves no mark orch knows in its shell,
+    but herdr detects it). None when neither can tell."""
+    kind = calling_agent()
+    if not kind and os.environ.get("HERDR_PANE_ID"):
+        with contextlib.suppress(Exception):
+            kind = ((herdr_panes() or {}).get(os.environ["HERDR_PANE_ID"]) or {}).get("kind")
+    names = {"antigravity": "agy", "gemini": "agy", "claude-code": "claude", "claude_code": "claude"}
+    return names.get(kind, kind) if kind else None
+
+
+def _ancestor_args():
+    """The command lines of the processes above this one (parent first, at most 12), from `ps` (Linux and macOS).
+    [] when ps is missing or fails."""
+    out, pid = [], os.getppid()
+    for _ in range(12):
+        if pid <= 1:
+            break
+        try:
+            r = subprocess.run(["ps", "-o", "ppid=,command=", "-p", str(pid)], text=True, capture_output=True,
+                               timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            break
+        line = r.stdout.strip()
+        if r.returncode != 0 or not line:
+            break
+        ppid, _, cmd = line.partition(" ")
+        out.append(cmd.strip())
+        try:
+            pid = int(ppid)
+        except ValueError:
+            break
+    return out
+
+
+def codex_picker_state():
+    """(state, where) for Codex's question picker (request_user_input): state is "on", "off" or "unknown". Codex
+    refuses the tool outside Plan mode ("request_user_input is unavailable in Default mode", checked with codex-cli
+    0.172) unless the feature default_mode_request_user_input is on: in ~/.codex/config.toml ([features] <f> = true)
+    or in the command that started this Codex (`-c features.<f>=true` or `--enable <f>`, which orch adds to a lead
+    it opens). That command is only visible when Codex's sandbox shows its own process (macOS, or no sandbox); in
+    the Linux sandbox it is hidden, so the answer is "unknown" and the lead tries the tool once."""
+    feat = re.escape(CODEX_PICKER_FEATURE)
+    cfg = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml"
+    with contextlib.suppress(Exception):
+        import tomllib
+        if (tomllib.loads(cfg.read_text()).get("features") or {}).get(CODEX_PICKER_FEATURE) is True:
+            return "on", f"turned on in {str(cfg).replace(str(Path.home()), '~', 1)}"
+    for cmd in _ancestor_args():
+        try:
+            toks = shlex.split(cmd)
+        except ValueError:
+            toks = cmd.split()
+        if not any(os.path.basename(t) in ("codex", "codex.js") for t in toks[:3]):
+            continue
+        if re.search(rf"--enable[= ]{feat}\b|features\.{feat}\s*=\s*true", cmd) \
+                and not re.search(rf"--disable[= ]{feat}\b|features\.{feat}\s*=\s*false", cmd):
+            return "on", "turned on in the command that started this Codex"
+        return "off", "this Codex was started without it, and ~/.codex/config.toml does not turn it on"
+    return "unknown", "orch can't see how this Codex was started"
+
+
+def picker_note(kind):
+    """The first lines of `orch lead plan`: this lead's own question picker by its exact tool name (step 2a), or
+    that it has none and asks in chat. Each name and limit was checked against the tool itself (see CHANGELOG
+    6.29.0); a lead orch can't identify gets the list of all of them."""
+    head = "QUESTION PICKER "
+    tail = ("Use it for every question while you plan: step 2a, `grill:`, and \"Keep this team?\" / \"Which step?\" "
+            "/ \"Which model?\" after the plan. If the tool is missing or refuses (an error such as \"unavailable\", \"not found\" or \"no_ui\"), ask "
+            "in chat instead (step 2a, point 3) and say why in one line.\n\n")
+    if kind == "claude":
+        return (f"{head}you are Claude Code: ask step 2a's questions with your `AskUserQuestion` tool (1 to 4 "
+                f"questions per call, 2 to 4 choices each, your suggestion first with \"(Recommended)\" in its "
+                f"label; Claude Code adds the typed answer itself). " + tail)
+    if kind == "codex":
+        state, where = codex_picker_state()
+        how = (f"\"For a click picker next time, let orch open the lead (`orch team codex`), or put "
+               f"`{CODEX_PICKER_FEATURE} = true` under `[features]` in ~/.codex/config.toml and restart Codex.\"")
+        use = (f"`request_user_input` tool (1 to 3 questions per call, 2 or 3 choices each, your suggestion first "
+               f"with \"(Recommended)\" in its label, no \"Other\" choice: Codex adds one)")
+        if state == "on":
+            return f"{head}you are Codex and its picker is on ({where}): ask with your {use}. " + tail
+        if state == "off":
+            return (f"{head}OFF: you are Codex and its picker is off ({where}), so `request_user_input` would only "
+                    f"answer \"unavailable in Default mode\". Ask your planning questions in chat (step 2a, point 3), "
+                    f"and add one line for the developer: {how}\n\n")
+        return (f"{head}you are Codex ({where}): try your {use} once. If it answers \"unavailable in Default "
+                f"mode\", the picker is off: ask in chat (step 2a, point 3), don't try it again this plan, and add one "
+                f"line for the developer: {how} " + tail)
+    if kind == "agy":
+        return (f"{head}you are Antigravity: ask step 2a's questions with your built-in `ask_question` tool (the one "
+                f"/grill-me uses: a numbered list of choices in the terminal, your suggestion first, plus "
+                f"\"Write-in...\" for a typed answer). Do not write the choices as plain text when you have this "
+                f"tool. " + tail)
+    if kind == "pi":
+        return (f"{head}you are Pi: ask step 2a's questions with the `orch_ask` tool (from orch's Pi package; it "
+                f"saves .orchestrate/questions.md itself). No `orch_ask` tool: the package is missing, so ask in "
+                f"chat and add one line for the developer: \"For a click picker, run `pi install "
+                f"npm:herdr-orchestra` and restart Pi.\" " + tail)
+    if kind == "opencode":
+        return f"{head}you are OpenCode: ask step 2a's questions with your `question` tool. " + tail
+    if kind:
+        return (f"{head}you are {kind}, and orch knows no question picker for it: ask your planning questions in "
+                f"chat (step 2a, point 3). If you do have a tool that shows the developer clickable choices, use it "
+                f"instead.\n\n")
+    return (f"{head}orch can't tell which agent you are. Use your own picker "
+            f"tool if you have one: `AskUserQuestion` (Claude Code), `request_user_input` (Codex), `ask_question` "
+            f"(Antigravity), `orch_ask` (Pi), `question` (OpenCode). " + tail)
 
 
 def _repo_state_path():
