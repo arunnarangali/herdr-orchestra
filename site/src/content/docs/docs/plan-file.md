@@ -85,13 +85,19 @@ Notes from user:
 | `Branch check:` | Optional. `auto` (default) skips the check on the feature branch when the merged files are exactly the ones already checked in the coder's folder (nothing else landed meanwhile). `always` runs it on every merge, for checks that depend on more than the files (the branch name, the time, a service) |
 | `Auto dispatch:` | Optional. `on` (default): a milestone that a landing unlocked starts at once, and the lead is told (`AUTO-DISPATCHED`). `off`: it waits for the lead's `orch dispatch` |
 | `Setup inputs:` | Optional. Extra files that make the setup command run again when they change, besides lockfiles |
+| `Check <side>:` | Optional, a monorepo with sides: `Check frontend: cd frontend && npm test`. A milestone with `Side: frontend` is checked with that command only; the whole `Check command` still runs on the finished branch |
+| `Repos:` | Only in a workspace (several git repos in one folder): `Repos: frontend, backend` (folders next to `.orchestrate/`) or `Repos: web=apps/web, api=../api`. `orch sync` there writes each repo's own plan; each repo is then its own run (worktrees, branch, check, PR). See [Frontend and backend](#frontend-and-backend) |
+| `Check <repo>:`, `Setup <repo>:` | In a workspace: that repo's check and setup commands (else `Check command:` / `Setup command:`) |
+| `Workers <repo>:`, `Reviewer <repo>:` | In a workspace, optional: that repo's own coders and reviewer. Without them each repo gets `Workers:` and `Reviewer:`, named after the repo (`frontend-claude-1`) |
 
 ## Milestone sections
 
 | Field | Meaning |
 |---|---|
 | `## [x] Mn: title` | Untick `[ ]` to skip the milestone |
-| `Depends on:` | `none`, or `M1 (what it needs from M1)`. The reason is required |
+| `Depends on:` | `none`, or `M1 (what it needs from M1)`. The reason is required. In a workspace it may name a milestone of another repo: that repo's plan shows it as `backend:M1` |
+| `Side:` | Optional, with `Check <side>:` lines: which side's check this milestone gets |
+| `Repo:` | In a workspace, needed: the repo this milestone is built in |
 | `Why separate:` | Why this is its own milestone: parallel work, a foundation others build on, or too big for one sitting. Needed when the plan has more than one milestone; `orch sync` warns without it |
 | `Prefer:` | `any`, a worker kind (`codex`) or a worker name. A preference, not a lock; the tier comes first |
 | `Tier:` | `small`, `medium` or `high`: the level of model the milestone needs. Leave it out and any coder may take it |
@@ -115,3 +121,48 @@ Notes from user:
 Optional section `## Glossary additions`: one line per new word the feature brings, `- **Discount**: money taken off an order total, in paise`. The milestone that introduces the word writes it into `docs/glossary.md` (it has an acceptance criterion for it and the file in its Likely files); `orch sync` warns when no milestone does, and `orch plan show` lists the words.
 
 Each section must stand alone: the coder receives it as written, plus the global instructions and the reports of the milestones it depends on.
+
+## Frontend and backend
+
+**One repo (a monorepo).** Each coder has its own worktree of the whole repo, and every milestone lands on the one feature branch (one PR). Give each side a quicker check if it has one:
+
+```markdown
+Check command: pnpm -r test
+Check frontend: cd frontend && pnpm test
+Check backend: cd backend && pytest -q
+
+## [x] M2: Orders endpoint
+Side: backend
+```
+
+**Separate repos (a workspace).** One plan in the folder that holds the repos:
+
+```markdown
+# Plan: Discounts
+Branch: feature/discounts
+Repos: frontend, backend
+Check frontend: npm test
+Check backend: pytest -q
+Workers: claude-1 (claude: sonnet)
+Reviewer: none
+
+## [x] M1: Orders endpoint
+Repo: backend
+Depends on: none
+
+## [x] M2: Orders screen
+Repo: frontend
+Depends on: M1 (the endpoint it calls)
+```
+
+```
+shop/.orchestrate/plan.md                  the plan above
+shop/backend/                              M1 lands on backend's feature/discounts
+shop/backend-wt/backend-claude-1/          the backend coder's worktree
+shop/frontend/                             M2 lands on frontend's feature/discounts, after M1 landed
+shop/frontend-wt/frontend-claude-1/        the frontend coder's worktree
+```
+
+Run orch in `shop/`: `orch sync` writes and syncs each repo's plan (don't edit those), milestone commands such as `orch dispatch M2` go to that milestone's repo, and `orch start`, `status`, `events`, `team up`, `autopilot` and `finish` run in every repo. `orch finish` opens one PR per repo.
+
+**Agent names.** herdr finds agents by name, so two runs on one machine can't share one: `orch sync` refuses a name another going run uses, and `orch team <kind>` names the team after the repo (`frontend-codex-1`) while another run is going (`--prefix <name>` to choose).

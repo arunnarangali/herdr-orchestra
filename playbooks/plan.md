@@ -20,13 +20,14 @@ Feature request = the user's message that asked you to run this playbook.
 ## 1. Preflight (stop and report if any check fails)
 - **Lines above this playbook about a version.** `UPDATED herdr-orchestra X -> Y`: orch updated itself before this plan; tell the developer in one line and carry on. `herdr-orchestra Y is out (you have X)`: tell the developer once, with the command it names (`orch update`), and carry on with the plan. Never run `orch update` yourself: it is the developer's call. A `WARN auto-update ... failed` line: pass it on and carry on.
 - `orch lead check` prints `OK`. If it fails, show the user its message (it says how to fix it), then stop. Do not test `$HERDR_ENV` yourself: some agents (Hermes) run their shell tool outside the pane's environment, so it can be empty inside a real Herdr pane.
-- Inside a git repo, and `git status --porcelain` is empty. If not, ask the user to commit or stash first.
+- Inside a git repo, and `git status --porcelain` is empty. If not, ask the user to commit or stash first. A folder that is not a git repo but holds the repos the feature needs (for example `frontend/` and `backend/`, each its own git repo) is fine: that is a **workspace** (step 9a); then each of those repos must be clean.
 - `mkdir -p .orchestrate`.
 
 ## 2. Research (read-only, before planning anything)
 - Read `AGENTS.md` / `CLAUDE.md` / `README` and any spec the request points to.
 - Map the parts of the codebase the feature touches: entry points, the modules and files involved, existing patterns to follow (how similar features are built), data models and tables, tests and how they run.
-- **Monorepo?** (workspaces in `package.json`/`pnpm-workspace.yaml`/`turbo.json`/`nx.json`, or folders like `apps/*`, `packages/*`, `backend/` + `frontend/`, `server/` + `client/`): list each app/package the feature touches, what it owns (API, web UI, mobile, shared types), and how each one is checked. For a feature that spans backend and frontend, understand BOTH sides well enough to write the contract between them: endpoints, request/response fields, where the shared types live.
+- **Monorepo?** (workspaces in `package.json`/`pnpm-workspace.yaml`/`turbo.json`/`nx.json`, or folders like `apps/*`, `packages/*`, `backend/` + `frontend/`, `server/` + `client/`): list each app/package the feature touches, what it owns (API, web UI, mobile, shared types), and how each one is checked. For a feature that spans backend and frontend, understand BOTH sides well enough to write the contract between them: endpoints, request/response fields, where the shared types live. When each side has its own quicker check (e.g. `cd frontend && npm test`), note it for a `Check <side>:` line (step 9a).
+- **Several repos?** Frontend and backend in separate git repos under one folder (a workspace): research each repo the feature touches, its check and setup commands, and the contract between them (step 9a).
 - Find the **shared hotspot files** this feature will need to change: `package.json`/lockfiles, `pubspec.yaml`, `go.mod`, routes/router, `App.tsx`, nav/menu, global store, `docker-compose.yml`, `Makefile`, shared types.
 - **The repo's own rules**, when it has them (in `docs/`, or the folder a `Docs:` plan header names): `glossary.md` (the words the project uses for things, and words to avoid), `adr/*.md` (decisions already made, and why), `coding-standards.md`. Use the glossary's words in the plan. Don't plan against a decision record; if the feature needs to change one, that is a question for the developer (step 2a).
 - Use web docs only for facts the repo can't answer (a library's API, a protocol).
@@ -264,6 +265,39 @@ Git: the run makes ONE branch, `Branch:` (use `feature/<slug>`, or `fix/<slug>` 
 
 Optional header line `Docs: <folder>` names the folder with the repo's glossary.md, adr/ and coding-standards.md (default `docs`). Optional header lines: `Scope: strict` sends a milestone back when its coder changes files outside `Likely files` (default `warn`: listed in the summary); `Budget: 3h` stops autopilot when its running time is used up; `Risk hold: off` lets risky changes (deleted files, migrations, CI config, secrets files, unlisted dependency changes, very large diffs) land without `orch approve`; `Setup inputs: <globs>` names the files that mean "run the setup command again" (default: lockfiles and manifests); `Lead mode: off` makes the event manager dispatch by itself and stop for the developer instead of waking you (default with a `Lead:` line: `events`). Speed lines (leave them out unless the developer asks; the defaults are the fast ones): `Parallel checks: 2` runs two check commands at once (default 1; only when the machine has room for two); `Early review: off` sends a review only after the check passed (default `on`: the reviewer reads while the check runs); `Branch check: always` runs the check again on the feature branch even when the files are exactly the ones already checked in the coder's folder (default `auto`: skipped then); `Auto dispatch: off` makes a milestone that a landing unlocked wait for your `orch dispatch` (default `on`: it starts at once and you get `AUTO-DISPATCHED`).
 
+## 9a. Frontend and backend: a check per side, or separate repos
+**One repo with both sides (a monorepo).** Each coder still gets its own worktree of the whole repo, and every milestone lands on the one feature branch (one PR). When a side has a quicker check of its own, add a header line per side and say on each milestone which side it is:
+```
+Check command: pnpm -r test                 (the whole repo: still run before orch finish)
+Check frontend: cd frontend && pnpm test
+Check backend: cd backend && pytest -q
+...
+## [x] M2: Orders endpoint
+Side: backend
+```
+A milestone with `Side:` is checked (in its coder's folder and when it lands) with that side's command only; one without `Side:` gets `Check command`. The whole `Check command` still runs on the finished branch.
+
+**Frontend and backend in separate repos (a workspace).** When the feature needs two or more git repos that sit in one folder, write ONE plan in that folder's `.orchestrate/plan.md`, list the repos, and give every milestone its repo:
+```
+Repos: frontend, backend                    (folders next to .orchestrate/; or `web=apps/web, api=../api`)
+Check frontend: npm test
+Check backend: pytest -q
+Setup frontend: npm ci
+Setup backend: pip install -r requirements.txt
+Workers: claude-1 (claude: sonnet)          (each repo gets these coders, named after it: frontend-claude-1, backend-claude-1)
+Workers frontend: web-1 (codex: gpt-6.2-sol@low)   (optional: this repo's own coders instead)
+Reviewer: reviewer (claude: opus)           (each repo gets its own: frontend-reviewer, backend-reviewer)
+...
+## [x] M1: Orders endpoint
+Repo: backend
+## [x] M2: Orders screen
+Repo: frontend
+Depends on: M1 (the endpoint it calls)
+```
+`orch sync` in the workspace folder writes each repo's own plan (do not edit those) and syncs it. Each repo is then an ordinary run: its coders work in their own worktrees of that repo (`backend-wt/backend-claude-1`), each milestone lands on that repo's feature branch after that repo's check, and `orch finish` opens one PR per repo. A milestone can wait for one in another repo (above, M2 waits for M1 although they are in different repos; the repo's plan shows it as `backend:M1`). Milestone ids count across the whole workspace. You stay in the workspace folder: `orch dispatch M2`, `orch answer M2 ...` and the other milestone commands go to that milestone's repo by themselves; `orch start`, `orch status`, `orch events`, `orch team up`, `orch autopilot` and `orch finish` work on every repo. Write the contract under **Interfaces** in both milestones, exactly the same, since the two repos never see each other's code.
+
+Agent names are how herdr finds an agent, so two runs on one machine must not share one: `orch sync` refuses a name another going run uses, and `orch team <kind>` names the team after the repo (`app-codex-1`) while another run is going.
+
 Rules for every milestone:
 - **Role**: from step 6, on every milestone. The standard to work to, never a how-to.
 - **Plain**: on every milestone, one sentence a person who never opens the code understands: what they will get, not how it is built. "the screen where you see and add categories", not "CategoryList component with a POST /categories call". `orch plan show` puts it on that milestone's card.
@@ -281,7 +315,7 @@ Rules for every milestone:
 - **Review**: `yes` for UI, API contracts, auth, payments and schema; `no` for mechanical milestones.
 - **Door**: most changes are easy to undo: if they are wrong, a revert fixes it and nobody is hurt. Write `Door: one-way (why)` only on a milestone that git can't take back once it runs: a migration that changes real data, a public API or event other apps or teams depend on, deleting data, sending emails or messages, charging money, publishing a package. Example: `Door: one-way (adds a column to orders, 2M rows in production)`. Such a milestone always waits for the developer's `orch approve` before it lands, even when no file looks risky, and its coder is asked for proof that it is safe (a dry run on a copy, a rollback test). Never mark everything one-way: the label tells the developer where to look hardest. orch measures how much each milestone could break by itself (risky files, how many milestones build on it, its size); you don't write that.
 - **ZERO GUESSWORK**: missing business rules, undefined data shapes, and auth or security trade-offs go under **Open questions** with 2–3 concrete options. `orch sync` marks such milestones `needs-answer`, and their dependents wait.
-- Each section must stand alone: autopilot hands it to the coder (without the lines only orch uses: `Depends on`, `Why separate`, `Prefer`, `Tier`, `Needs`, `Model why`, `Estimate`, `Review`, `Parallel`, `Door`; `Role` goes at the top as the coder's role), together with the global instructions and the reports of merged dependencies.
+- Each section must stand alone: autopilot hands it to the coder (without the lines only orch uses: `Depends on`, `Why separate`, `Prefer`, `Tier`, `Needs`, `Model why`, `Estimate`, `Review`, `Parallel`, `Door`, `Side`, `Repo`; `Role` goes at the top as the coder's role), together with the global instructions and the reports of merged dependencies.
 
 ## 10. Validate and show the plan
 - Run `orch sync`. Fix every ERROR. Fix or consciously accept every WARN: a word the glossary says to avoid, a new word or decision record no milestone writes down, missing dependency reasons, hotspot files in parallel milestones, "how" in a milestone, overlap, a milestone without `Why separate` or `Estimate`, independent milestones in shared mode, coders left idle by a fully sequential plan, a tier no coder reaches, a model outside the catalog.

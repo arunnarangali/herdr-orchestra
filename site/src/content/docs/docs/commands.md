@@ -67,7 +67,7 @@ Run `orch` with no arguments for the full help.
 | `orch lead whoami` | The lead's own pane; names it `lead` (or prints the rename command when it can't tell which pane is yours) |
 | `orch agents` | The agent registry: kinds, installed or not, roles, launch commands |
 | `orch agents launch <kind> [--model <id>]` | The command that starts `<kind>` with edits auto-approved, on a model |
-| `orch team <kind> [--coders N] [--models a,b] [--no-reviewer]` | The plan's team built from one tool: coders over its catalog tiers and a reviewer, as `Workers:` / `Reviewer:` lines |
+| `orch team <kind> [--coders N] [--models a,b] [--no-reviewer] [--prefix <name>]` | The plan's team built from one tool: coders over its catalog tiers and a reviewer, as `Workers:` / `Reviewer:` lines. While another run is going on this machine, the names start with the repo's name (`app-codex-1`); `--prefix` picks the start |
 | `orch team up [--dry-run]` | Open a pane for every agent in the plan that herdr can't find, in its folder, on its model, and name it |
 | `orch agents sync [kind...]` | Install the skills for every installed agent |
 | `orch agents check` | Check the skills are installed |
