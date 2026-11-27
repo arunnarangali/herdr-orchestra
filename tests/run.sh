@@ -2476,7 +2476,7 @@ Open questions:
 - none
 '
 printf '%s' "${WSPLAN/Repo: frontend/}" > "$W/.orchestrate/plan.md"
-cd "$W"
+cd "$W" || exit
 out=$("$ORCH" sync 2>&1); code=$?
 check "in a workspace every milestone needs its repo" '[ $code -ne 0 ] && grep -q "M6 needs .Repo: <one of frontend, backend>." <<<"$out"'
 printf '%s' "${WSPLAN/Repo: frontend/Repo: mobile}" > "$W/.orchestrate/plan.md"
@@ -2512,6 +2512,6 @@ printf '# Plan: own\nBranch: feature/own\nCheck command: true\nIsolation: shared
 out=$("$ORCH" sync 2>&1); code=$?
 check "a workspace sync never overwrites a repo's own run that is still going" '[ $code -ne 0 ] && grep -q "repo backend has its own run going (M1 not landed)" <<<"$out" && grep -q "^# Plan: own" "$W/backend/.orchestrate/plan.md"'
 check "the playbook tells the lead about sides and workspaces" 'grep -q "Check <side>:" "$ROOT/playbooks/plan.md" && grep -q "Repos:" "$ROOT/playbooks/plan.md" && grep -q "backend:M" "$ROOT/playbooks/plan.md"'
-cd "$WORK"
+cd "$WORK" || exit
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]
