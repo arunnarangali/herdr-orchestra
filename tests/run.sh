@@ -2181,6 +2181,22 @@ check "…each milestone has its plain description, or its title when the plan h
 check "…the agents and the recent status changes are in it" 'python3 -c "import json,sys;d=json.loads(sys.argv[1]);sys.exit(not ({a[\"name\"] for a in d[\"agents\"]}=={\"claude-1\",\"codex-1\",\"reviewer\"} and d[\"recent\"] and d[\"recent\"][0][\"ts\"]>=d[\"recent\"][-1][\"ts\"]))" "$out"'
 out=$("$ORCH" board --once --no-color)
 check "orch board draws the milestones with their descriptions and who needs you" 'grep -q "M4 Totals .*NEEDS YOU" <<<"$out" && grep -q "the money model every other part uses" <<<"$out" && grep -q "3 of 4 landed · 1 needs you" <<<"$out" && grep -q "^AGENTS" <<<"$out"'
+# the live board as herdr's popup runs it: in a terminal. Herdr closes a popup the moment its program ends
+INPTY="python3 -I $ROOT/tests/sim/inpty.py"; BSH="$ROOT/view/herdr-plugin/board.sh"
+out=$(PATH="$ROOT/bin:$PATH" $INPTY q 2 4 sh "$BSH")
+check "the board popup stays open in a terminal and draws the run until q" '[[ "$out" == *"M4 Totals"* && "$out" == *"EXIT 0" ]] && grep -q "closed by .q. after" "$ORCH_SHARE/board-last-close.log"'
+out=$(PATH="$ROOT/bin:$PATH" $INPTY "\\x1b[I" 0.1 2.5 sh "$BSH")
+check "…what a terminal sends as the popup opens does not close it" '[[ "$out" == *RUNNING ]]'
+cp .orchestrate/state.json "$WORK/state.keep"
+python3 -c "import json;p='.orchestrate/state.json';d=json.load(open(p));d['lead']='oops';json.dump(d,open(p,'w'))"
+out=$(PATH="$ROOT/bin:$PATH" $INPTY "" 0 2.5 sh "$BSH")
+check "…a run it cannot draw: the board stays open, names the error and saves the traceback" '[[ "$out" == *"could not draw this run: TypeError"* && "$out" == *RUNNING ]] && grep -q "Traceback" "$ORCH_SHARE/board-error.log"'
+cp "$WORK/state.keep" .orchestrate/state.json
+mkdir -p "$WORK/crashbin"; printf '#!/bin/sh\necho "Traceback: boom" >&2; exit 1\n' > "$WORK/crashbin/orch"; chmod +x "$WORK/crashbin/orch"
+out=$(PATH="$WORK/crashbin:$PATH" $INPTY "" 0 2.5 sh "$BSH")
+check "…orch board ending with an error keeps the popup open with the error and where it is saved" '[[ "$out" == *"orch board stopped by itself (exit 1"* && "$out" == *"Traceback: boom"* && "$out" == *"Press any key to close"* && "$out" == *RUNNING ]] && grep -q "boom" "$ORCH_SHARE/board-error.log"'
+out=$(PATH="$WORK/crashbin:$PATH" $INPTY x 1 3 sh "$BSH")
+check "…and a key closes it" '[[ "$out" == *"EXIT 1" ]]'
 check "orch status says the live view is off and how to start it" '"$ORCH" status | qgrep -q "^live view: off — \`orch view\`"'
 out=$(ORCH_VIEW_PORT=47900 "$ORCH" view --bg 2>&1); code=$?
 VU=$(python3 -c "import json;print(json.load(open('.orchestrate/view.json'))['url'])" 2>/dev/null)
@@ -2223,6 +2239,22 @@ m=tomllib.load(open(\"$ROOT/view/herdr-plugin/herdr-plugin.toml\",\"rb\"))
 sys.exit(not (m[\"id\"]==\"herdr-orchestra.board\" and m[\"min_herdr_version\"]==\"0.7.4\" and m[\"panes\"][0][\"placement\"]==\"popup\" and m[\"actions\"][0][\"id\"]==\"open\"))"'
 "$ORCH" view plugin unlink >/dev/null 2>&1
 check "…and unlinks it" 'grep -q "^plugin unlink herdr-orchestra.board$" "$FH/team.log"'
+# an installed orch links the stable `current` folder, not its own version folder (which updates leave behind)
+PS="$WORK/pshare"; mkdir -p "$PS/6.0.0"; cp -r "$ROOT/bin" "$ROOT/view" "$ROOT/VERSION" "$PS/6.0.0/"; ln -sfn "$PS/6.0.0" "$PS/current"
+pso(){ ORCH_SHARE="$PS" "$PS/current/bin/orch" "$@"; }
+: > "$FH/team.log"; pso view plugin link >/dev/null 2>&1
+check "an installed orch links the board plugin at current/view/herdr-plugin, so updates reach the popup" 'grep -q "^plugin link $PS/current/view/herdr-plugin$" "$FH/team.log" && ! grep -q "6.0.0/view" "$FH/team.log"'
+check "…it unlinks first, so a link to another folder is replaced, not refused" '[ "$(head -1 "$FH/team.log")" = "plugin unlink herdr-orchestra.board" ]'
+pso view plugin unlink >/dev/null 2>&1; : > "$FH/team.log"; rm -f "$FH/plugins"
+out=$(pso view plugin refresh 2>&1)
+check "orch view plugin refresh does nothing when the plugin was never linked" '[ -z "$out" ] && ! grep -q "^plugin link" "$FH/team.log"'
+echo "herdr-orchestra.board  $PS/5.0.0/view/herdr-plugin" > "$FH/plugins"
+out=$(pso view plugin refresh 2>&1)
+check "…a link made by an older version (herdr lists it, orch left no note) is moved to current" 'grep -q "^plugin link $PS/current/view/herdr-plugin$" "$FH/team.log" && grep -q "re-linked" <<<"$out"'
+rm -f "$FH/plugins"; : > "$FH/team.log"; pso view plugin refresh >/dev/null 2>&1
+check "…after that orch remembers the link and refreshes it on its own" 'grep -q "^plugin link $PS/current/view/herdr-plugin$" "$FH/team.log"'
+pso view plugin unlink >/dev/null 2>&1
+check "the installer refreshes the board plugin link after every install and update" 'grep -q "orch\" view plugin refresh" "$ROOT/install.sh"'
 # the popup must start in the repo of the pane you were in (herdr starts it in the plugin's own folder otherwise)
 OPEN="$ROOT/view/herdr-plugin/open.sh"; mkdir -p "$APP/sub" "$WORK/elsewhere"
 popen(){ : > "$FH/team.log"; HERDR_BIN_PATH="$HERDR" HERDR_PLUGIN_CONTEXT_JSON="$1" sh "$OPEN" >/dev/null 2>&1; grep "^plugin pane open" "$FH/team.log"; }
@@ -2235,7 +2267,7 @@ check "…a coder's worktree pane finds the run in the main repo and keeps the w
 git -C "$APP" worktree remove --force "$WORK/wt-board" 2>/dev/null
 check "…the repo with the run is chosen over another repo (the pane's folder is not the run's repo)" '[[ "$(popen "{\"focused_pane_cwd\":\"$ROOT\",\"workspace_cwd\":\"$APP\"}")" == *"--cwd $APP" ]]'
 check "…no folder in the context: it still opens, without --cwd" 'o=$(popen "{}"); [[ "$o" == *"--placement popup" && "$o" != *"--cwd"* ]]'
-check "the popup program names the folder it is in when that is not a repo" 'o=$(cd "$WORK/elsewhere" && PATH="$ROOT/bin:$PATH" sh "$ROOT/view/herdr-plugin/board.sh" 2>&1 | head -1); [[ "$o" == "This folder ($WORK/elsewhere) is not a git repo"* ]]'
+check "the popup program names the folder it is in when that is not a repo" 'o=$(cd "$WORK/elsewhere" && ORCH_BOARD_HOLD_S=0 PATH="$ROOT/bin:$PATH" sh "$ROOT/view/herdr-plugin/board.sh" 2>&1 | head -1); [[ "$o" == "This folder ($WORK/elsewhere) is not a git repo"* ]]'
 python3 - <<'PY'
 import json; p=".orchestrate/state.json"; s=json.load(open(p)); s["orch_mode"]="subagent"; json.dump(s,open(p,"w"))
 PY

@@ -196,6 +196,8 @@ if ! "$CUR/bin/orch" agents sync; then
   install_commands "${OC_CMDS[0]}" opencode-commands     # one folder only: OpenCode reads both, two = listed twice
   rm -f "${OC_CMDS[1]}/orch-plan.md" "${OC_CMDS[1]}/orch-run.md" "${OC_CMDS[1]}/orch-explain.md"
 fi
+# the board popup plugin: a link made by an older version points at that version's folder; move it to `current`
+ORCH_SHARE="$SHARE" "$CUR/bin/orch" view plugin refresh 2>/dev/null || true
 
 # clean up files from pre-repo kit versions
 rm -f "$HOME/.opencode/commands/orchestrate.md" "$HOME/.config/opencode/orch/orch-wait.sh" "$BIN/orch-wait.sh" 2>/dev/null || true

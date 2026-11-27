@@ -10,6 +10,7 @@ case "$1 $2" in
                 echo "${*}" >> "$FH/meta.log";;
   "agent focus") echo "focus $3" >> "$FH/team.log";;
   "plugin link"|"plugin unlink"|"plugin pane") echo "plugin ${*:2}" >> "$FH/team.log";;
+  "plugin list") cat "$FH/plugins" 2>/dev/null; true;;   # $FH/plugins: what herdr has linked (from an older orch)
   "agent get")  [ -f "$FH/$3.gone" ] || [ -f "$FH/$3.missing" ] && { echo "no such agent $3" >&2; exit 1; }
                 [ -f "$FH/$3.shell" ] && { echo "{\"name\":\"$3\",\"pane_id\":\"$(cat "$FH/$3.paneid" 2>/dev/null)\",\"agent\":null}"; exit 0; }
                 echo "{\"name\":\"$3\",\"workspace_id\":\"w1\",\"pane_id\":\"$(cat "$FH/$3.paneid" 2>/dev/null)\",\"status\":\"$(cat "$FH/$3.status" 2>/dev/null || echo idle)\"}";;

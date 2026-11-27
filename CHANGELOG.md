@@ -2,6 +2,28 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.30.0] - 2026-11-27
+
+The board key (`prefix+a`) now always runs the board popup of the version you have installed, and the popup never vanishes without saying why.
+
+Example: you linked the board plugin on 6.11.0 and later updated to 6.27.0. Pressing `prefix+a` still said "This folder is not a git repo with an orch run", because herdr kept running the 6.11.0 popup, from before the 6.22.0 fix. Now the next install or `orch update` moves the link by itself, and the popup opens in your repo.
+
+### Fixed
+- **The board plugin link no longer sticks to an old version.** `orch view plugin link` gave herdr the folder of the version running at that moment (`~/.local/share/herdr-orchestra/6.11.0/view/herdr-plugin`). Every update installs into a new folder, so herdr never saw newer popups. orch now links the stable `current/view/herdr-plugin` folder, and unlinks first so an old link is replaced instead of refused.
+- **Installs and updates refresh an existing link.** The installer runs the new `orch view plugin refresh`: if the board plugin is linked (orch now remembers it, and asks `herdr plugin list` for links made by older versions) it is re-linked to `current`. Nothing happens when it was never linked, and a failure never stops the install.
+
+- **The board popup no longer disappears silently.** Herdr closes a popup the moment its program ends, so any error in `orch board` made the popup flash and close before you could read it. Now:
+  - if drawing the run fails, the board stays open, shows the error in one line and tries again when the run changes; the full traceback is saved in `~/.local/share/herdr-orchestra/board-error.log`;
+  - if `orch board` ends by itself (a crash, or orch missing, or the folder is not a repo), the popup stays open with the error and where it is saved, until you press a key;
+  - keys a terminal sends while the popup opens (focus or size replies) are ignored for the first half second, and Esc only closes the board when it is the Esc key, not the start of an escape sequence;
+  - every close is noted in `~/.local/share/herdr-orchestra/board-last-close.log` (which key, after how long), so "it closed by itself" can be checked.
+- `orch board` draws once only when it has no terminal for input or output (before, only output was checked, and a popup without a keyboard crashed).
+
+### If you linked the plugin before 6.30.0
+Run `orch view plugin unlink` and then `orch view plugin link` once (or just update to 6.30.0). Restart herdr if the popup still shows the old text.
+
+### Not yet tried
+- On real herdr: tested with the simulated herdr and in a real terminal (pty) only, including the popup cases above. The output of `herdr plugin list` is assumed to contain the plugin id; if it does not, the one-time unlink and link above still fixes it.
 ## [6.29.0] - 2026-11-27
 
 The lead now knows its own question picker by name, so /orch-plan's questions open as a click list in every agent that has one. Before, the playbook only said "Antigravity's own picker" and showed a plain-text example, so an Antigravity lead asked its questions (and "Keep this team?") as numbered text you had to answer by typing.
