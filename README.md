@@ -6,7 +6,9 @@
 npx herdr-orchestra@latest
 ```
 
-[![npm](https://img.shields.io/npm/v/herdr-orchestra)](https://www.npmjs.com/package/herdr-orchestra) [![Website](https://img.shields.io/badge/website-herdr--orchestra.vercel.app-f5a524)](https://herdr-orchestra.vercel.app/)
+[![status: beta](https://img.shields.io/badge/status-beta-orange)](#beta) [![npm](https://img.shields.io/npm/v/herdr-orchestra)](https://www.npmjs.com/package/herdr-orchestra) [![Website](https://img.shields.io/badge/website-herdr--orchestra.vercel.app-f5a524)](https://herdr-orchestra.vercel.app/)
+
+> <a id="beta"></a>**Beta.** herdr-orchestra is in active development. Commands, plan format and behaviour may still change between versions, so check the [changelog](CHANGELOG.md) when you update.
 
 **Website and docs: [herdr-orchestra.vercel.app](https://herdr-orchestra.vercel.app/)** · [Install](#install) · [Quick start](https://herdr-orchestra.vercel.app/docs/quick-start/)
 
