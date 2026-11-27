@@ -15,6 +15,7 @@
 //
 // Commands:  /orch-mode [panes|subagent]       show or switch the mode; `subagent` also sets it up (below)
 //            /orch-setup [--mode panes|subagent] install the `orch` command from this package (needed once)
+//            /orch-board                         open the run board: a popup in herdr, else `orch view` in the browser
 //
 // Tool:      orch_ask                            the lead's clickable questions before it writes the plan (/orch-plan
 //                                                step 2a): one picker per question, answers saved in
@@ -452,6 +453,40 @@ export default function orchMode(pi: ExtensionAPI) {
       // No mode named: the saved one (in subagent mode the installer sets the agents up again, which is harmless)
       const want = named ?? ((await readMode(pi, ctx.cwd)).mode === "subagent" ? "subagent" : undefined);
       await setUp(ctx, want, true);
+    },
+  });
+
+  pi.registerCommand("orch-board", {
+    description: "Open the herdr-orchestra run board: a popup inside herdr, or `orch view` (the browser page) outside it",
+    handler: async (_args, ctx) => {
+      const insideHerdr = process.env.HERDR_ENV === "1" || !!process.env.HERDR_PANE_ID;
+      if (insideHerdr) {
+        // the same call the board key (prefix+a) makes; --cwd so the popup opens in this repo, not the plugin's folder
+        const herdr = process.env.HERDR_BIN_PATH || "herdr";
+        const r = await pi.exec(
+          herdr,
+          ["plugin", "pane", "open", "--plugin", "herdr-orchestra.board", "--entrypoint", "board", "--placement", "popup", "--cwd", ctx.cwd],
+          { cwd: ctx.cwd, timeout: 15000 },
+        );
+        if (r.code === 0) {
+          ctx.ui.notify("Board opened in a herdr popup. Close it with q.", "info");
+          return;
+        }
+        ctx.ui.notify(
+          "Herdr could not open the board popup" +
+            ((r.stderr || r.stdout).trim() ? `: ${(r.stderr || r.stdout).trim().split("\n")[0]}` : "") +
+            ". If the plugin is not linked, run `orch view plugin link`. Opening the browser page instead.",
+          "warning",
+        );
+      }
+      const o = await orchState(pi);
+      if (!o.path) {
+        ctx.ui.notify("The `orch` command is not installed yet. Type /orch-setup once, then /orch-board again.", "warning");
+        return;
+      }
+      const r = await pi.exec(o.path, ["view", "--bg"], { cwd: ctx.cwd, timeout: 20000 });
+      const out = (r.stdout + r.stderr).trim();
+      ctx.ui.notify(out || (r.code === 0 ? "orch view started." : "orch view failed."), r.code === 0 ? "info" : "error");
     },
   });
 }
