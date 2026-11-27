@@ -317,6 +317,21 @@ A subagent run: `/orch-plan` as usual (the plan's team is `Workers: coder (pi)`,
 - **worktree**: each coder works in `../<repo>-wt/<name>`, independent tasks run in parallel, and each task is squash-merged when it passes checks and review. Start each coder inside its own worktree.
 - **shared**: everyone works in your folder, one milestone at a time. Two agents in one folder would overwrite each other's files and mix their changes, so this is only safe sequentially. Use it when every milestone depends on the previous one.
 
+### Frontend and backend
+**One repo (a monorepo).** Each coder gets its own worktree of the whole repo, and every milestone lands on the one feature branch, so you get one PR. When a side has a quicker check of its own, add `Check frontend: cd frontend && npm test` (one line per side) and `Side: frontend` on its milestones: that milestone is checked with its side's command only, and the plan's whole `Check command` still runs on the finished branch.
+
+**Separate repos in one folder (a workspace).** Put one plan in the folder that holds them, with `Repos: frontend, backend` in the header and `Repo: backend` on every milestone (per repo, optionally: `Check backend:`, `Setup backend:`, `Workers backend:`, `Reviewer backend:`):
+```
+~/work/shop/.orchestrate/plan.md     the one plan (Repos: frontend, backend)
+~/work/shop/backend/                 backend repo, on feature/discounts: M1 lands here
+~/work/shop/backend-wt/backend-claude-1    the backend coder's worktree
+~/work/shop/frontend/                frontend repo, on its own feature/discounts: M2 lands here
+~/work/shop/frontend-wt/frontend-claude-1  the frontend coder's worktree
+```
+`orch sync` in `~/work/shop` writes each repo's own plan, so each repo is an ordinary run with its own coders (named after the repo), worktrees, feature branch, check and PR. `Depends on: M1` works across repos: the frontend's M2 starts when the backend's M1 has landed. One lead stays in the workspace folder: milestone commands (`orch dispatch M2`) go to that milestone's repo, and `orch start`, `status`, `events`, `team up`, `autopilot` and `finish` run in every repo. Inside one repo, orch works on that repo's run only.
+
+**Two runs on one machine.** herdr finds agents by name, so `orch sync` refuses a name another going run already uses, and `orch team <kind>` names the team after the repo (`frontend-codex-1`) while another run is going (`--prefix <name>` to choose).
+
 ### Watch a run: browser, board and Herdr's sidebar
 Three views show a run while it goes; none of them changes it.
 

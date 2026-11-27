@@ -17,6 +17,9 @@ export ORCH_NO_UPDATE_CHECK=1 ORCH_TTY=/dev/null ORCH_SHARE="$WORK/share"
 export ORCH_MODELS_DISCOVER=0
 # ...nor asks GitHub whether main is protected (section 55 tests the asking with a fake gh)
 export ORCH_GUARD_GITHUB=0
+# ...nor takes a run another section left going for a run of the developer's that uses the same agent names
+# (section 61 tests that check)
+export ORCH_NAME_CHECK=0
 # ...nor into their orch config (mode) or their Pi agents folder
 export ORCH_CONFIG_FILE="$WORK/config/config.json" PI_CODING_AGENT_DIR="$WORK/pi-agent" ORCH_PI="$WORK/pibin/pi"
 # ...nor takes the agent running the tests (Claude Code, Pi, Codex) as the agent under test: each test says its agent
@@ -2400,5 +2403,115 @@ l = importlib.machinery.SourceFileLoader(\"orch\", \"$ROOT/bin/orch\"); m = impo
 st = {\"workers\": {\"c\": {}}, \"reviewer\": \"r\", \"reviewer_info\": {}, \"lead\": {\"name\": \"lead\", \"kind\": \"claude\"}}
 assert [n for n, _, _ in m.compact_agents(st)] == [\"c\", \"r\"]"'
 
+echo "61. frontend and backend: a check per side, names two runs can share a machine with, a workspace of several repos"
+# a monorepo's sides: `Check web:` + `Side: web` checks only that side; the whole check still runs before finish
+newrepo sides
+printf '# Plan: t\nBranch: feature/sd\nCheck command: test ! -f broken.txt\nCheck web: test -f shared.txt\nIsolation: worktree\nMax parallel: 1\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M1: UI\nSide: web\nDepends on: none\nOpen questions:\n- none\n\n## [x] M4: Totals\nDepends on: none\nOpen questions:\n- none\n' > .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "a plan with a side syncs; the side is saved on the milestone" '[ $code -eq 0 ] && python3 -c "import json; st=json.load(open(\".orchestrate/state.json\")); assert st[\"sides\"]=={\"web\":\"test -f shared.txt\"} and st[\"tasks\"][\"M1\"][\"side\"]==\"web\" and st[\"tasks\"][\"M4\"][\"side\"] is None"'
+out=$("$ORCH" check M1 2>&1)
+check "orch check M1 runs only its side's check" 'grep -q "^CHECK PASS M1 .*: test -f shared.txt$" <<<"$out"'
+check "...and a side's pass is not taken as the whole check (orch finish runs that one)" 'python3 -c "import json; assert not json.load(open(\".orchestrate/state.json\")).get(\"green_tree\")"'
+out=$("$ORCH" check M4 2>&1)
+check "a milestone with no side gets the whole check" 'grep -q "^CHECK PASS M4 .*: test ! -f broken.txt$" <<<"$out" && python3 -c "import json; assert json.load(open(\".orchestrate/state.json\")).get(\"green_tree\")"'
+"$ORCH" start >/dev/null 2>&1; "$ORCH" prepare M1 claude-1 >/dev/null 2>&1; "$ORCH" write-task M1 >/dev/null 2>&1
+check "the coder's task names its side's check command" 'grep -q "\"check\": \"test -f shared.txt\"" "$APP/../app-wt/claude-1/.orch-task/M1/task.json" && grep -q "test -f shared.txt" "$APP/../app-wt/claude-1/.orch-task/M1/task.md" && ! grep -q "^Side:" "$APP/../app-wt/claude-1/.orch-task/M1/task.md"'
+sed -i 's/^Side: web/Side: mobile/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "an unknown side is refused with the sides there are" '[ $code -ne 0 ] && grep -q "M1 has .Side: mobile., but the plan has no .Check mobile:. line (sides: web)" <<<"$out"'
+# two runs on one machine: agent names another going run uses are refused; orch team picks names with the repo's name
+newrepo other; OTHER=$APP
+printf "$P1" > .orchestrate/plan.md; printf '## [x] M1: a\nDepends on: none\nOpen questions:\n- none\n' >> .orchestrate/plan.md
+sed -i 's/^Workers: claude-1 (claude)/Lead: lead (claude)\nWorkers: claude-1 (claude)/' .orchestrate/plan.md
+"$ORCH" sync >/dev/null 2>&1
+export ORCH_NAME_CHECK=1 ORCH_SHARE_KEEP="$ORCH_SHARE" ORCH_SHARE="$WORK/share61"   # only the run this section starts
+mkdir -p "$ORCH_SHARE/active"; printf '{"root": "%s"}' "$OTHER" > "$ORCH_SHARE/active/other.json"
+flock "$OTHER/.orchestrate/driver.lock" sleep 60 & HOLDER=$!
+sleep 0.3
+newrepo clash
+printf "$P1" > .orchestrate/plan.md; printf '## [x] M1: a\nDepends on: none\nOpen questions:\n- none\n' >> .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "a name another going run uses is refused, with the folder of that run and a new name to use" '[ $code -ne 0 ] && grep -q "claude-1: this name is already used by the run in $OTHER, which is going now" <<<"$out" && grep -q "e.g. .app-claude-1." <<<"$out"'
+sed -i 's/^Workers: claude-1 (claude)/Workers: app-claude-1 (claude)/' .orchestrate/plan.md
+check "...a name of its own is fine" '"$ORCH" sync >/dev/null 2>&1'
+sed -i 's/^Workers: app-claude-1 (claude)/Lead: lead (claude)\nWorkers: app-claude-1 (claude)/' .orchestrate/plan.md
+out=$("$ORCH" sync 2>&1); code=$?
+check "two separate runs can't share a lead name either" '[ $code -ne 0 ] && grep -q "^ERROR.*lead: this name is already used" <<<"$out"'
+out=$(PATH="$FAKEBIN:$PATH" "$ORCH" team claude --coders 1 2>&1)
+check "orch team names the team after the repo while another run uses the plain names" 'grep -q "^NOTE: another run ($OTHER) is going" <<<"$out" && grep -q "^Workers: app-claude-1 (claude: opus)$" <<<"$out" && grep -q "^Reviewer: app-reviewer (claude: opus)$" <<<"$out" && grep -q "^Lead: app-lead (claude" <<<"$out"'
+out=$(PATH="$FAKEBIN:$PATH" "$ORCH" team claude --coders 1 --prefix web 2>&1)
+check "orch team --prefix picks the names" 'grep -q "^Workers: web-claude-1 (claude: opus)$" <<<"$out"'
+kill $HOLDER 2>/dev/null; wait $HOLDER 2>/dev/null; rm -f "$ORCH_SHARE/active/other.json"
+out=$(PATH="$FAKEBIN:$PATH" "$ORCH" team claude --coders 1 2>&1)
+check "with no other run going, orch team keeps the plain names" 'grep -q "^Workers: claude-1 (claude: opus)$" <<<"$out" && ! grep -q "^NOTE: another run" <<<"$out"'
+export ORCH_NAME_CHECK=0 ORCH_SHARE="$ORCH_SHARE_KEEP"
+# a workspace: two repos in one folder, one plan, each repo its own run, worktrees, branch, check and PR
+W="$WORK/shop"; export FH="$WORK/shop-fh"; mkdir -p "$W/.orchestrate" "$FH"
+for r in frontend backend; do mkdir -p "$W/$r"; (cd "$W/$r" && git init -q -b main && git config user.email t@t && git config user.name t && echo base > shared.txt && git add . && git commit -qm init)
+  echo "$W/$r-wt/$r-claude-1" > "$FH/$r-claude-1.dir"; echo "$W/$r" > "$FH/$r-reviewer.dir"; done
+WSPLAN='# Plan: Discounts
+Branch: feature/disc
+Repos: frontend, backend
+Check command: true
+Check backend: test ! -f broken.txt
+Check frontend: test -f shared.txt
+Isolation: worktree
+Max parallel: 1
+Workers: claude-1 (claude)
+Reviewer: none
+
+## Global instructions
+Use INR.
+
+## [x] M5: API
+Repo: backend
+Depends on: none
+Open questions:
+- none
+
+## [x] M6: UI
+Repo: frontend
+Depends on: M5 (the endpoint)
+Open questions:
+- none
+'
+printf '%s' "${WSPLAN/Repo: frontend/}" > "$W/.orchestrate/plan.md"
+cd "$W"
+out=$("$ORCH" sync 2>&1); code=$?
+check "in a workspace every milestone needs its repo" '[ $code -ne 0 ] && grep -q "M6 needs .Repo: <one of frontend, backend>." <<<"$out"'
+printf '%s' "${WSPLAN/Repo: frontend/Repo: mobile}" > "$W/.orchestrate/plan.md"
+out=$("$ORCH" sync 2>&1); code=$?
+check "...one of the repos the plan names" '[ $code -ne 0 ] && grep -q "M6 has .Repo: mobile., but .Repos:. names only frontend, backend" <<<"$out"'
+printf '%s' "$WSPLAN" > "$W/.orchestrate/plan.md"
+out=$("$ORCH" sync 2>&1); code=$?
+check "orch sync in the workspace writes one plan per repo and syncs each" '[ $code -eq 0 ] && grep -q "^== frontend ($W/frontend): M6" <<<"$out" && grep -q "^== backend ($W/backend): M5" <<<"$out" && [ "$(grep -c "^OK: 1 tasks" <<<"$out")" = 2 ]'
+check "each repo's plan has its milestones, its check, its coders (named after the repo) and the shared sections" 'grep -q "^Workspace: $W$" frontend/.orchestrate/plan.md && grep -q "^Check command: test -f shared.txt$" frontend/.orchestrate/plan.md && grep -q "^Check command: test ! -f broken.txt$" backend/.orchestrate/plan.md && grep -q "^Workers: frontend-claude-1 (claude)$" frontend/.orchestrate/plan.md && grep -q "^Use INR.$" backend/.orchestrate/plan.md && ! grep -q "M5: API" frontend/.orchestrate/plan.md && ! grep -q "^Repos:" frontend/.orchestrate/plan.md'
+check "a dependency on another repo's milestone is written repo:Mn" 'grep -q "^Depends on: backend:M5 (the endpoint)$" frontend/.orchestrate/plan.md'
+out=$("$ORCH" check M5 2>&1)
+check "a command for a milestone goes to its repo" 'grep -q "^CHECK PASS M5 .*: test ! -f broken.txt$" <<<"$out"'
+out=$("$ORCH" ready 2>&1)
+check "orch ready in the workspace asks every repo; the UI waits for the API" 'grep -q "^== frontend" <<<"$out" && grep -q "^WAIT M6 waits for another repo: backend M5 (pending)$" <<<"$out" && grep -q "^READY M5 API$" <<<"$out"'
+timeout 120 "$ORCH" autopilot > "$WORK/ws.log" 2>&1; code=$?
+check "orch autopilot in the workspace runs every repo's event manager until all is done" '[ $code -eq 0 ] && [ "$(grep -c "ALL_DONE on feature/disc" "$WORK/ws.log")" = 2 ]'
+check "the UI started only after the API landed in the backend" 'grep -q "waiting for another repo: M6 waits for backend M5" "$WORK/ws.log" && python3 -c "
+import json; h = lambda r, m: json.load(open(\"$W/\" + r + \"/.orchestrate/state.json\"))[\"tasks\"][m][\"history\"]
+landed = min(e[\"ts\"] for e in h(\"backend\", \"M5\") if e[\"to\"] == \"merged\")
+started = min(e[\"ts\"] for e in h(\"frontend\", \"M6\") if e[\"to\"] == \"coding\")
+assert landed <= started, (landed, started)"'
+check "each repo's milestone landed on that repo's own feature branch, checked with its own check" 'git -C backend log --format=%s feature/disc | qgrep -qx API && git -C frontend log --format=%s feature/disc | qgrep -qx UI && ! git -C frontend log --format=%s feature/disc | qgrep -qx API && grep -q "M6 check passed .*(test -f shared.txt)" "$WORK/ws.log" && grep -q "M5 check passed .*(test ! -f broken.txt)" "$WORK/ws.log"'
+check "each side's coder worked in its own worktree of its own repo" '[ -f "$W/backend-wt/backend-claude-1/e.txt" ] && [ -f "$W/frontend-wt/frontend-claude-1/g.txt" ] && [ ! -f "$W/frontend-wt/frontend-claude-1/e.txt" ]'
+out=$("$ORCH" status 2>&1)
+check "orch status in the workspace shows every repo" 'grep -q "^== frontend" <<<"$out" && grep -q "^== backend" <<<"$out" && grep -q "M6 .*merged .*deps=backend:M5" <<<"$out"'
+out=$("$ORCH" finish --no-push 2>&1)
+check "orch finish in the workspace finishes every repo and removes its coder folders" '[ ! -e "$W/frontend-wt" ] && [ ! -e "$W/backend-wt" ] && [ "$(grep -c "^== " <<<"$out")" = 2 ]'
+out=$(cd "$W/frontend" && "$ORCH" status 2>&1)
+check "inside one repo, orch works on that repo's run only" '! grep -q "^== " <<<"$out" && grep -q "^  M6 " <<<"$out" && ! grep -q "^  M5 " <<<"$out"'
+# a repo with its own run still going is not overwritten
+printf '# Plan: own\nBranch: feature/own\nCheck command: true\nIsolation: shared\nWorkers: claude-1 (claude)\nReviewer: none\n\n## [x] M1: a\nDepends on: none\nOpen questions:\n- none\n' > "$W/backend/.orchestrate/plan.md"
+(cd "$W/backend" && "$ORCH" sync >/dev/null 2>&1)
+out=$("$ORCH" sync 2>&1); code=$?
+check "a workspace sync never overwrites a repo's own run that is still going" '[ $code -ne 0 ] && grep -q "repo backend has its own run going (M1 not landed)" <<<"$out" && grep -q "^# Plan: own" "$W/backend/.orchestrate/plan.md"'
+check "the playbook tells the lead about sides and workspaces" 'grep -q "Check <side>:" "$ROOT/playbooks/plan.md" && grep -q "Repos:" "$ROOT/playbooks/plan.md" && grep -q "backend:M" "$ROOT/playbooks/plan.md"'
+cd "$WORK"
 echo; echo "passed $pass, failed $fail"
 [ $fail -eq 0 ]

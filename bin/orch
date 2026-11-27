@@ -1190,7 +1190,8 @@ def is_dirty(path):
 
 # ---------------------------------------------------------------- plan parsing
 HEAD_RE = re.compile(r"^## \[( |x|X)\]\s*(M\d+)\s*:\s*(.+?)\s*$")
-FIELD_RE = re.compile(r"^([A-Z][A-Za-z ]+):\s*(.*)$")
+# a key is words; its last word may also hold digits, dots, dashes (`Check web-app:`, `Workers api2:`)
+FIELD_RE = re.compile(r"^([A-Z][A-Za-z ]*(?: [A-Za-z0-9][\w.-]*)?):\s*(.*)$")
 
 
 def parse_plan(text):
@@ -1241,6 +1242,9 @@ def parse_dur(s):
 def field(t, key, default=""):
     vals = t["fields"].get(key)
     return " ".join(vals).strip() if vals else default
+
+
+EXT_DEP_RE = re.compile(r"\b([A-Za-z][\w.-]*):(M\d+)\b")
 
 
 def split_ids(s):
@@ -1343,6 +1347,14 @@ def cmd_sync(args):
     workers = parse_agents(get("workers"))
     if not workers:
         errors.append("plan header needs `Workers: claude-1 (claude), codex-1 (codex)`")
+    # a monorepo's sides: `Check frontend: cd web && pnpm test` + `Side: frontend` on a milestone checks only that side
+    sides = {k[len("check "):].strip(): " ".join(v).strip() for k, v in cfg.items()
+             if k.startswith("check ") and k != "check command" and " ".join(v).strip()}
+    workspace = get("workspace") or None          # written by `orch sync` in a workspace of several repos
+    ws_repos = workspace_repos(Path(workspace)) if workspace else {}
+    if workspace and not ws_repos:
+        errors.append(f"`Workspace: {workspace}` names a folder with no workspace plan (.orchestrate/workspace.json) — "
+                      f"run `orch sync` in that folder")
     rev = get("reviewer", "none")
     rm = re.match(r"([\w.-]+)\s*\(", rev)
     reviewer = None if rev.lower().startswith("none") or not rm else rm.group(1)
@@ -1392,7 +1404,28 @@ def cmd_sync(args):
         errors.append(f"duplicate task ids: {sorted(dupes)}")
     by_id = {t["id"]: t for t in tasks}
     # "Depends on: M1 (uses the API types M1 defines), M2 (needs the table)": reasons in parentheses
-    deps = {t["id"]: split_ids(re.sub(r"\([^)]*\)", "", field(t, "depends on", "none"))) for t in tasks}
+    deps = {t["id"]: split_ids(EXT_DEP_RE.sub("", re.sub(r"\([^)]*\)", "", field(t, "depends on", "none"))))
+            for t in tasks}
+    # "Depends on: backend:M2 (the endpoint)": a milestone of another repo in the same workspace
+    ext_deps = {}
+    for t in tasks:
+        for repo_, mid in EXT_DEP_RE.findall(re.sub(r"\([^)]*\)", "", field(t, "depends on", "none"))):
+            if repo_.lower() not in ws_repos:
+                errors.append(f"{t['id']} depends on {repo_}:{mid}, but " + (
+                    f"the workspace has no repo {repo_!r} (repos: {', '.join(ws_repos)})" if ws_repos else
+                    "this run is not part of a workspace of several repos (write the repo:Mn form only there)"))
+                continue
+            ext_deps.setdefault(t["id"], []).append({"repo": repo_.lower(), "path": ws_repos[repo_.lower()],
+                                                     "id": mid})
+    side_of = {}
+    for t in tasks:
+        sd = field(t, "side").split()[0].lower() if field(t, "side") else None
+        if sd and sd not in sides:
+            errors.append(f"{t['id']} has `Side: {sd}`, but the plan has no `Check {sd}:` line"
+                          + (f" (sides: {', '.join(sides)})" if sides else
+                             " — add one, e.g. `Check frontend: cd frontend && npm test`"))
+        side_of[t["id"]] = sd if sd in sides else None
+    errors += name_clashes(workers, reviewer, lead[0] if lead else None, workspace)
     for t in tasks:
         raw = field(t, "depends on", "none")
         for d in deps[t["id"]]:
@@ -1665,6 +1698,8 @@ def cmd_sync(args):
         "budget_s": budget_s,
         "estimate_s": feature_est,
         "check": get("check command"),
+        "sides": sides,
+        "workspace": workspace,
         "setup": get("setup command", "none"),
         "reviewer": reviewer,
         "reviewer_info": ({"kind": rev_kind, "pane": rev_pane, "detect": detect(rev_kind, rev_pane, "Reviewer"),
@@ -1733,6 +1768,7 @@ def cmd_sync(args):
             "plain": field(t, "plain"), "why_sep": field(t, "why separate"), "deps_text": field(t, "depends on"),
             # hard to undo: always held for `orch approve`, with the coder's proof (None = easy to undo)
             "door": "one-way" if tid in doors else None, "door_why": doors.get(tid) or None,
+            "side": side_of.get(tid), "ext_deps": ext_deps.get(tid) or [],
         }
         if status != st["tasks"][tid]["status"]:
             move(st, tid, status, {"skipped": "unticked in plan.md", "needs-answer": "open questions in plan.md"}
@@ -2314,13 +2350,25 @@ def review_findings(tid, k):
     return blockers, sugg, known
 
 
-def run_check(st, cwd):
-    """(passed, last 60 lines, seconds) for the plan's check command in cwd."""
-    if not st.get("check"):
+def check_for(st, tid=None):
+    """The check command for milestone tid: its side's (`Side: frontend` + `Check frontend: ...`), else the plan's."""
+    side = (st.get("tasks", {}).get(tid) or {}).get("side") if tid else None
+    return (st.get("sides") or {}).get(side) or st.get("check") or ""
+
+
+def full_check(st, tid=None):
+    """True when tid is checked with the plan's whole check command (not only its side's)."""
+    return check_for(st, tid) == (st.get("check") or "")
+
+
+def run_check(st, cwd, tid=None):
+    """(passed, last 60 lines, seconds) for the check command of milestone tid (else the plan's) in cwd."""
+    cmd = check_for(st, tid)
+    if not cmd:
         return True, "", 0
     t0 = time.time()
     try:
-        r = subprocess.run(st["check"], shell=True, cwd=cwd, text=True, capture_output=True, timeout=CHECK_TIMEOUT_S)
+        r = subprocess.run(cmd, shell=True, cwd=cwd, text=True, capture_output=True, timeout=CHECK_TIMEOUT_S)
         ok, tail = r.returncode == 0, "\n".join((r.stdout + r.stderr).splitlines()[-60:])
     except subprocess.TimeoutExpired:
         ok, tail = False, f"check command timed out after {CHECK_TIMEOUT_S // 60} min"
@@ -2344,9 +2392,10 @@ def tree_of(d):
         return None
 
 
-def note_green(st, d, ok):
-    """Remember the tree a passing check ran on in the main folder (a failing one forgets it)."""
-    if Path(d).resolve() != ROOT.resolve():
+def note_green(st, d, ok, tid=None):
+    """Remember the tree a passing check ran on in the main folder (a failing one forgets it). Only the plan's whole
+    check counts: a side's check (`Side:`) covers part of the repo, so `orch finish` must still run the whole one."""
+    if Path(d).resolve() != ROOT.resolve() or (ok and not full_check(st, tid)):
         return
     st["green_tree"] = tree_of(d) if ok else None
 
@@ -2599,7 +2648,43 @@ def cmd_start(args):
 
 
 def deps_met(st, t):
-    return all(st["tasks"][d]["status"] == "merged" for d in t["deps"])
+    return all(st["tasks"][d]["status"] == "merged" for d in t["deps"]) and not ext_waits(t)
+
+
+def ext_status(e):
+    """Status of a milestone in another repo of the workspace (`Depends on: backend:M2`), read from that repo's run."""
+    try:
+        return json.loads((Path(e["path"]) / ".orchestrate" / "state.json").read_text())["tasks"][e["id"]]["status"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return "unknown"
+
+
+def ext_waits(t):
+    """The milestones in other repos that t still waits for: [(dep, its status)]."""
+    out = []
+    for e in t.get("ext_deps") or []:
+        s_ = ext_status(e)
+        if s_ != "merged":
+            out.append((e, s_))
+    return out
+
+
+def run_alive(path):
+    """True while the event manager of the run in path (another repo of the workspace) holds its lease."""
+    p = Path(path) / ".orchestrate" / "driver.lock"
+    if not p.exists():
+        return False
+    with open(p, "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(f, fcntl.LOCK_UN)
+    return False
+
+
+def ext_line(waits):
+    return ", ".join(f"{e['repo']} {e['id']} ({s_})" for e, s_ in waits)
 
 
 def active_count(st):
@@ -2631,6 +2716,8 @@ def fix_jobs(st):
 def cmd_ready(args):
     st = load()
     cand = [tid for tid in st["order"] if st["tasks"][tid]["status"] == "pending" and deps_met(st, st["tasks"][tid])]
+    ext_wait = [f"WAIT {tid} waits for another repo: {ext_line(ext_waits(st['tasks'][tid]))}" for tid in st["order"]
+                if st["tasks"][tid]["status"] == "pending" and ext_waits(st["tasks"][tid])]
     # milestones that share Likely files run one after the other unless one says `Parallel: allow`
     busy = {}
     for tid, t in st["tasks"].items():
@@ -2668,7 +2755,7 @@ def cmd_ready(args):
         print(f"FIX {tid} {st['tasks'][tid]['status']} {st['tasks'][tid]['title']}")
     for tid in out:
         print(f"READY {tid} {st['tasks'][tid]['title']}")
-    for line in waits:
+    for line in waits + ext_wait:
         print(line)
 
 
@@ -3024,7 +3111,7 @@ def cmd_needs_fix(args):
     t["job"] = {"file": f"review-fix-{k}.md", "body":
                 f"# Review findings for {tid}: {t['title']} (round {k})\n\n"
                 "The reviewer found the problems below. You own the fix: investigate each one and decide how to "
-                f"solve it. Keep every acceptance criterion in {TASK_DIR}/{tid}/task.md, then run `{st['check']}`.\n"
+                f"solve it. Keep every acceptance criterion in {TASK_DIR}/{tid}/task.md, then run `{check_for(st, tid)}`.\n"
                 "If you think a finding is wrong, explain why in your report instead of changing code for it.\n\n"
                 + "\n".join(blockers) + "\n"}
     move(st, tid, "needs-fix")
@@ -3118,7 +3205,7 @@ def cmd_review(args):
         + (", the words listed above" if rules["glossary"] else "") +
         "? A `rules` finding names the rule it breaks in `rule`. Only written rules count: a matter of taste is at "
         "most a suggestion.\n"
-        f"The check command (`{st['check']}`) runs on this work by itself: don't report what lint, type checks or "
+        f"The check command (`{check_for(st, tid)}`) runs on this work by itself: don't report what lint, type checks or "
         "tests already catch.\n"
         "Do NOT edit any code. Never commit, push or merge: no agent ever pushes to main or merges a PR, even when "
         "asked.\n"
@@ -3402,7 +3489,7 @@ def merge_check_needed(st, tid):
     run on the same files and can only say the same thing."""
     t = st["tasks"][tid]
     chk = t.get("chk") or {}
-    if st["isolation"] != "worktree" or not st.get("check") or not chk.get("ok") or not chk.get("tree"):
+    if st["isolation"] != "worktree" or not check_for(st, tid) or not chk.get("ok") or not chk.get("tree"):
         return True
     if st.get("branch_check") == "always":    # the check depends on more than the files (the folder, the branch)
         return True
@@ -3428,7 +3515,7 @@ def cmd_merge(args):
     ok, tail = ensure_root_setup(st)
     secs = 0
     if ok:
-        ok, tail, secs = run_check(st, ROOT)
+        ok, tail, secs = run_check(st, ROOT, tid)
     with state_lock():
         st2 = load()
         t = st2["tasks"][tid]
@@ -3441,7 +3528,7 @@ def cmd_merge(args):
             st2["merging"] = None
             _integration_failed(st2, tid, tail)
         git("commit", "-q", "-m", commit_message(st2, tid), cwd=ROOT)
-        note_green(st2, ROOT, True)
+        note_green(st2, ROOT, True, tid)
         fault("after-merge-commit")
         git("update-ref", "-d", task_ref(st2, tid), cwd=ROOT, check=False)
         _finish(st2, tid)
@@ -3486,7 +3573,7 @@ def _merge_start(tid):
                     f"Other milestones landed on `{st['branch']}` while you worked, and they conflict with "
                     f"yours in: {', '.join(files) or 'see git status'}.\n"
                     f"In this folder run `git merge --no-commit {st['branch']}`, resolve every conflict so BOTH "
-                    f"sides keep working (you own the resolution), then run `{st['check']}`. Do not commit.\n"}
+                    f"sides keep working (you own the resolution), then run `{check_for(st, tid)}`. Do not commit.\n"}
         save(st)
         who = t["worker"] if holds(st, tid) else "any free coder"
         print(f"CONFLICT {tid} files={','.join(files)} -> conflict job queued for {who} (`orch send-job {tid}`)")
@@ -3504,7 +3591,7 @@ def _merge_start(tid):
               f"(nothing else landed meanwhile), so the check was not run again")
         fault("after-check")
         git("commit", "-q", "-m", commit_message(st, tid), cwd=ROOT)
-        note_green(st, ROOT, True)
+        note_green(st, ROOT, True, tid)
         fault("after-merge-commit")
     git("update-ref", "-d", task_ref(st, tid), cwd=ROOT, check=False)
     _finish(st, tid)
@@ -3546,9 +3633,9 @@ def _integration_failed(st, tid, tail):
     n = t["fix"]
     t["job"] = {"file": f"integration-fix-{n}.md", "body":
                 f"# {tid} fails the check once merged onto `{st['branch']}` (round {n})\n\n"
-                f"Your milestone passes `{st['check']}` on its own, but fails once it is merged with what landed on "
+                f"Your milestone passes `{check_for(st, tid)}` on its own, but fails once it is merged with what landed on "
                 f"`{st['branch']}` since you started. In this folder run `git merge --no-commit {st['branch']}`, find "
-                f"the cause and fix it (you decide how, and keep both sides working), then run `{st['check']}`. "
+                f"the cause and fix it (you decide how, and keep both sides working), then run `{check_for(st, tid)}`. "
                 f"Don't commit, and don't weaken or skip tests.\n\n```\n{tail}\n```\n"}
     move(st, tid, "needs-fix", f"fails the check on {st['branch']} once merged (round {n})")
     t["wait"] = None
@@ -3844,7 +3931,7 @@ def cmd_status(args):
                  else ""))
     for tid in st["order"]:
         t = st["tasks"][tid]
-        print(f"  {tid:<4} {t['status']:<15} deps={','.join(t['deps']) or '-':<10} "
+        print(f"  {tid:<4} {t['status']:<15} deps={','.join(t['deps'] + [e['repo'] + ':' + e['id'] for e in t.get('ext_deps') or []]) or '-':<10} "
               f"worker={t.get('worker') or '-':<10} "
               + (f"tier={t['tier'] if rank(t.get('min_tier')) <= rank(t.get('tier')) else t['min_tier'] + '^'} "
                  if need_rank(t) else "") + t["title"]
@@ -3875,6 +3962,10 @@ def cmd_status(args):
         print(f"ALL_DONE — run `orch finish` to push {st['branch']} and open a PR into {st.get('base')}")
     elif lead_on(st) and (undispatched(st) or any(event_open(st, e) for e in st["lead_events"])):
         pass
+    elif not any(t["status"] in ACTIVE for t in st["tasks"].values()) and (ext := [
+            f"{k} waits for {ext_line(ext_waits(t))}" for k, t in st["tasks"].items()
+            if t["status"] == "pending" and ext_waits(t)]):
+        print("WAITING FOR ANOTHER REPO — " + "; ".join(ext))
     elif not any(t["status"] in ACTIVE for t in st["tasks"].values()) and not any(
             t["status"] == "pending" and deps_met(st, t) for t in st["tasks"].values()):
         print("STUCK — nothing running and nothing ready; resolve paused/needs-answer/failed tasks with the developer")
@@ -4303,7 +4394,7 @@ WORKER_RULES = """## Rules for you (the coder)
 
 # plan.md lines that are for the lead and orch, not the coder: they stay in plan.md and task.json
 LEAD_ONLY_FIELDS = {"depends on", "why separate", "prefer", "tier", "needs", "model why", "estimate", "role", "door",
-                    "review", "parallel", "plain"}
+                    "review", "parallel", "plain", "side", "repo"}
 
 
 def coder_section(text, drop_criteria):
@@ -4378,7 +4469,7 @@ def cmd_write_task(args):
     if contract["previous_work"]:
         parts += ["## Earlier work", f"An earlier attempt ({contract['previous_work']['by'] or 'another coder'}) left "
                   "work in this folder. Look at it first and continue from it unless it is wrong.", ""]
-    parts += [f"## Check command\n`{st['check']}`", "", WORKER_RULES]
+    parts += [f"## Check command\n`{check_for(st, tid)}`", "", WORKER_RULES]
     out = d / TASK_DIR / tid / "task.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(parts))
@@ -4414,7 +4505,7 @@ def task_contract(st, tid):
         "files_allowed": t.get("files") or [], "scope": st.get("scope", "warn"),
         "tier": t.get("tier"), "needs": t.get("needs") or [], "role": t.get("role") or None,
         "interfaces": items("interfaces"), "constraints": items("constraints"), "out_of_scope": items("out of scope"),
-        "depends_on": deps, "check": st["check"], "attempt": t.get("attempt", 0) + 1, "lost_attempts": t.get("lost", 0),
+        "depends_on": deps, "check": check_for(st, tid), "attempt": t.get("attempt", 0) + 1, "lost_attempts": t.get("lost", 0),
         "previous_work": {"by": t.get("last_worker")} if work_ref(st, tid) else None,
         "result_format": RESULT_FORMAT,
     }
@@ -5274,8 +5365,8 @@ def _autopilot(args):
             save(s_)
 
     def check(cwd, tid=None, where="worktree"):
-        ok, tail, secs = run_check(st, cwd)
-        patch_state(lambda s_: note_green(s_, cwd, ok))
+        ok, tail, secs = run_check(load(), cwd, tid)
+        patch_state(lambda s_: note_green(s_, cwd, ok, tid))
         if tid:
             patch_state(lambda s_: s_["tasks"][tid].setdefault("checks", []).append(
                 {"where": where, "ok": ok, "secs": secs, "ts": now()}))
@@ -5531,7 +5622,7 @@ def _autopilot(args):
         s_ = load()
         t_ = s_["tasks"][tid]
         k = t_["attempt"]
-        if not s_.get("check"):
+        if not check_for(s_, tid):
             check_done(tid, k, d, None, 0, "", 0)
             return True
         if check_slots() <= 0:
@@ -5541,7 +5632,7 @@ def _autopilot(args):
         end_wait(tid, "check slot")
         tree0 = tree_of(d)
         patch_state(lambda s2: s2["tasks"][tid].update(checking={"since": now(), "where": "worktree"}))
-        bg_start(f"check-{tid}-{k}", tid, "check", s_["check"], d, True,
+        bg_start(f"check-{tid}-{k}", tid, "check", check_for(s_, tid), d, True,
                  lambda code, out, secs: check_done(tid, k, d, tree0, code, out, secs), CHECK_TIMEOUT_S)
         return True
 
@@ -5553,20 +5644,20 @@ def _autopilot(args):
         def upd(s2):
             t2 = s2["tasks"][tid]
             t2.pop("checking", None)
-            if s2.get("check"):
+            if check_for(s2, tid):
                 t2.setdefault("checks", []).append({"where": "worktree", "ok": ok, "secs": secs, "ts": now()})
             # the tree is kept only when the check left the files as it found them: then a branch that gets exactly
             # these files needs no second check (merge_check_needed)
             t2["chk"] = {"attempt": k, "ok": ok, "tail": tail, "tree": tree if tree and tree == tree0 else None,
                          "used": False}
-            note_green(s2, d, ok)
+            note_green(s2, d, ok, tid)
         patch_state(upd)
-        if s_check := load().get("check"):
+        if s_check := check_for(load(), tid):
             say(f"{tid} check {'passed' if ok else 'FAILED'} in {_fmt_secs(secs)} ({s_check})")
 
     def early_review_ok(tid, t):
         s_ = load()
-        return (s_.get("early_review", True) and bool(s_.get("check")) and bool(s_.get("reviewer"))
+        return (s_.get("early_review", True) and bool(check_for(s_, tid)) and bool(s_.get("reviewer"))
                 and t["review"] and not t.get("review_ok") and not t.get("pre_conflict") and holds(s_, tid))
 
     def check_fix(tid, tail, blockers=()):
@@ -5579,7 +5670,7 @@ def _autopilot(args):
         say(f"{tid} checks failed -> fix round {n}" + (f" (with the reviewer's {len(blockers)} blocker(s))"
                                                         if blockers else ""))
         write_and_send(tid, f"fix-{n}.md",
-                       f"# Checks failing for {tid} (round {n})\n\nThe check command `{st['check']}` "
+                       f"# Checks failing for {tid} (round {n})\n\nThe check command `{check_for(st, tid)}` "
                        f"failed. Diagnose the cause and fix it; you decide how. Don't change unrelated "
                        f"code, and don't weaken or skip tests to make them pass.\n\n"
                        f"```\n{tail}\n```\n"
@@ -5775,7 +5866,7 @@ def _autopilot(args):
                         f"# {tid} changed files outside its scope (round {n})\n\n"
                         f"This milestone may change only: {', '.join(allowed)}. It also changed: "
                         f"{', '.join(new)}.\nUndo those changes, or, if the task truly can't be done without them, "
-                        f"leave them and explain why in your report. Then run `{st['check']}`.\n"),
+                        f"leave them and explain why in your report. Then run `{check_for(st, tid)}`.\n"),
                         f"still outside its scope after {MAX_FIX} fix rounds: {', '.join(new)}")
                     return False
                 if new:
@@ -5798,7 +5889,7 @@ def _autopilot(args):
                     + "\n".join(f"- {c['id']}: {c.get('evidence', '')}" for c in unmet)
                     + (f"\n\nAlready deferred by the developer (leave them; keep them `met: false`): "
                        f"{', '.join(skipped)}." if skipped else "")
-                    + f"\n\nFinish them (you decide how), run `{st['check']}`, and write a new result.\n"
+                    + f"\n\nFinish them (you decide how), run `{check_for(st, tid)}`, and write a new result.\n"
                     "If one truly can't be met in this repo (for example an outside API or service it needs does not "
                     "exist), don't try again: set status `question`, say which criterion and why, and offer to "
                     "build the rest and defer that one. The developer decides.\n"),
@@ -6112,6 +6203,8 @@ def _autopilot(args):
     last_tick = time.time()
     slept = sleep_meter()
     waiting_since = None       # set while nothing runs and the run waits for the lead or the developer
+    ext_told = None            # what was last said about waiting for another repo of the workspace
+    ext_since = time.time()
     seen = {"procs": time.time(), "check": 0.0, "present": None, "told": False}
 
     def watch_herdr():
@@ -6312,6 +6405,23 @@ def _autopilot(args):
             run("poll", str(int(min(30, max(1, POLL_STEP_S * 3)))), ok=(0, 10))
             continue
         waiting_since = None
+        # a workspace of several repos: a milestone here waits for one in another repo (its own run lands it)
+        ext = {k: ext_waits(v) for k, v in tasks.items() if v["status"] == "pending" and v.get("ext_deps")
+               and all(tasks[d]["status"] == "merged" for d in v["deps"])}
+        ext = {k: w for k, w in ext.items() if w and not any(s_ in ("failed", "skipped") for _, s_ in w)}
+        if not active and not ready and ext:
+            line = "; ".join(f"{k} waits for {ext_line(w)}" for k, w in ext.items())
+            if line != ext_told:
+                say(f"waiting for another repo: {line}", True)
+                ext_told, ext_since = line, time.time()
+            idle = sorted({e["repo"] for w in ext.values() for e, _ in w if not run_alive(e["path"])})
+            if idle and time.time() - ext_since > LEAD_IDLE_MAX_S:
+                say(f"STOPPED — still waiting for another repo after {LEAD_IDLE_MAX_S // 60} min, and the event manager "
+                    f"of {', '.join(idle)} is not running: {line}. Everything is kept: start it there (`orch autopilot` "
+                    f"in the workspace starts every repo's)", True)
+                sys.exit(3)
+            run("poll", str(int(min(30, max(1, POLL_STEP_S * 3)))), ok=(0, 10))
+            continue
         if not active and not ready:
             bg_reap()        # a background merge that just ended (held, failed) says so before we stop
             waiting = [f"  {k} {v['status']}: {v.get('reason') or ''}" for k, v in tasks.items()
@@ -6795,8 +6905,15 @@ def cmd_team(args):
     orch team up [--dry-run] -> open a herdr pane for every agent in the plan that herdr cannot find."""
     if args and args[0] == "up":
         return team_up(args[1:])
-    usage = "usage: orch team <kind> [--coders N] [--models a,b] [--no-reviewer]  |  orch team up [--dry-run]"
-    rest, coders, models, reviewer = list(args), None, None, True
+    usage = ("usage: orch team <kind> [--coders N] [--models a,b] [--no-reviewer] [--prefix <name>]  |  "
+             "orch team up [--dry-run]")
+    rest, coders, models, reviewer, prefix = list(args), None, None, True, None
+    if "--prefix" in rest:
+        i = rest.index("--prefix")
+        prefix = rest[i + 1] if len(rest) > i + 1 else die(usage)
+        del rest[i:i + 2]
+        if not re.fullmatch(r"[A-Za-z0-9][\w.-]*", prefix):
+            die("--prefix takes a plain name, e.g. --prefix frontend")
     if "--no-reviewer" in rest:
         rest.remove("--no-reviewer")
         reviewer = False
@@ -6832,17 +6949,23 @@ def cmd_team(args):
     top = cands[-1][0] if cands else None
     no_flag = not v.get("model_flag")
     fmt = lambda name, m: f"{name} ({kind}: {m})" if m and not no_flag else f"{name} ({kind})"
-    workers = [fmt(f"{kind}-{i + 1}", m) for i, m in enumerate(picked)]
+    if prefix is None:                     # another run is going on this machine: names it doesn't use
+        prefix, busy_in = team_prefix([f"{kind}-{i + 1}" for i in range(len(picked))] + ["reviewer", "lead"])
+        if prefix:
+            print(f"NOTE: another run ({busy_in}) is going and uses these names, so this team's names start with "
+                  f"{prefix}- (herdr finds agents by name; `--prefix <name>` picks another)")
+    pre = f"{prefix}-" if prefix else ""
+    workers = [fmt(f"{pre}{kind}-{i + 1}", m) for i, m in enumerate(picked)]
     tier = {mid: t for mid, t in cands}
     print(f"TEAM from {kind}: {len(workers)} coder(s)" + (", 1 reviewer" if reviewer and "reviewer" in roles else ""))
     for i, m in enumerate(picked):
-        print(f"  {kind + '-' + str(i + 1):<12} {m or 'its default model'}" + (f"  ({tier[m]} tier)" if m in tier else ""))
+        print(f"  {pre + kind + '-' + str(i + 1):<12} {m or 'its default model'}" + (f"  ({tier[m]} tier)" if m in tier else ""))
     if reviewer and "reviewer" in roles:
-        print(f"  {'reviewer':<12} {top or 'its default model'}" + (f"  ({tier[top]} tier)" if top in tier else ""))
+        print(f"  {pre + 'reviewer':<12} {top or 'its default model'}" + (f"  ({tier[top]} tier)" if top in tier else ""))
     print("\nPlan header lines:")
-    print(f"Lead: lead ({kind}: <the model your own pane runs>)")
+    print(f"Lead: {pre}lead ({kind}: <the model your own pane runs>)")
     print("Workers: " + ", ".join(workers))
-    print("Reviewer: " + (fmt("reviewer", top) if reviewer and "reviewer" in roles else "none"))
+    print("Reviewer: " + (fmt(f"{pre}reviewer", top) if reviewer and "reviewer" in roles else "none"))
     if not cands and not models:
         print(f"\nNOTE: the model catalog has no allowed model for {kind}, so every pane starts on its default model "
               f"(add models in {user_models_file()} to get tiers)")
@@ -6852,7 +6975,7 @@ def cmd_team(args):
         print(f"\nNOTE: the strongest allowed {kind} model is {top} ({tier.get(top)} tier): high-tier milestones go to "
               f"it, and `orch sync` will say so")
     if top and v.get("model_flag") and "lead" in roles:
-        print(f"\nYour own lead pane on the strongest level (start it like this, then write `Lead: lead ({kind}: {top})`):"
+        print(f"\nYour own lead pane on the strongest level (start it like this, then write `Lead: {pre}lead ({kind}: {top})`):"
               f"\n  {launch_cmd(kind, v, top, strict=False, role='lead')}")
     print(f"\nCheck these are models your {kind} really reaches (`--models a,b` to choose others).")
     print("\nThese panes don't exist yet. After `orch sync` and `orch start`, `orch team up` opens each one in its "
@@ -8003,8 +8126,9 @@ USAGE = """usage: orch <command> [args]
   lead run --section <EVENT|ALL_DONE|rules>   one part of the run playbook (orch events prints these for you)
   lead check               preflight: is this agent in a Herdr pane / can it reach herdr?
   lead whoami              show the lead's own herdr pane and name it as the plan's `Lead:` (default `lead`)
-  team <kind> [--coders N] [--models a,b] [--no-reviewer]
+  team <kind> [--coders N] [--models a,b] [--no-reviewer] [--prefix <name>]
                            the plan's team built from one installed tool: coders + reviewer on its catalog models
+                           (named after the repo, e.g. app-codex-1, while another run is going on this machine)
   team up [--dry-run] [--mode panes|subagent]
                            open a herdr pane for every agent in the plan herdr can't find, in its folder, and name it
                            (subagent mode: no panes; sets up the Pi coder/reviewer subagents instead)
@@ -8041,7 +8165,9 @@ USAGE = """usage: orch <command> [args]
   guard [status|--print]   install the pre-push guard: no agent ever pushes to main/master/the default branch
                            (orch start installs it too); status: report it and whether GitHub protects main
   doctor [kind...]         check installed agents against the real tool: version, launch flags, skills, herdr
-  sync                     parse .orchestrate/plan.md -> state.json (validates deps, cycles, overlaps)
+  sync                     parse .orchestrate/plan.md -> state.json (validates deps, cycles, overlaps). In a workspace
+                           (plan header `Repos: frontend, backend`): writes and syncs each repo's own plan; then
+                           milestone commands go to that milestone's repo, the others run in every repo
   start                    create/switch to the feature branch (plan `Branch:`); create worker worktrees (worktree mode)
   status [--json]          table of workers + tasks; prints ALL_DONE or STUCK when relevant. --json: the run summary
                            both views read (milestones with their plain description, agents, counts, time, cost)
@@ -8977,6 +9103,71 @@ def update_notice(network=True):
         pass
 
 
+def workspace_repos(ws):
+    """{name: absolute path} of the repos in a workspace (its .orchestrate/workspace.json, written by `orch sync`)."""
+    try:
+        d = json.loads((Path(ws) / ".orchestrate" / "workspace.json").read_text())
+        return {str(k).lower(): str(v) for k, v in (d.get("repos") or {}).items()}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def run_names(root):
+    """(workers + reviewer, lead name, workspace) of the run in root, from its state; None when it can't be read."""
+    try:
+        st = json.loads((Path(root) / ".orchestrate" / "state.json").read_text())
+    except (OSError, ValueError):
+        return None
+    names = set(st.get("workers") or {}) | ({st["reviewer"]} if st.get("reviewer") else set())
+    return names, (st.get("lead") or {}).get("name"), st.get("workspace")
+
+
+def name_clashes(workers, reviewer, lead, workspace):
+    """Errors for agent names another run on this machine uses right now: herdr finds agents by name, so two runs
+    with a `codex-1` each would send work to the same pane. A shared lead is fine inside one workspace."""
+    if os.environ.get("ORCH_NAME_CHECK", "1") == "0":
+        return []
+    mine = set(workers) | ({reviewer} if reviewer else set()) | ({lead} if lead else set())
+    errs = []
+    here = ROOT.resolve() if ROOT else None
+    for root in active_runs():
+        if here and Path(root).resolve() == here:
+            continue
+        got = run_names(root)
+        if not got:
+            continue
+        theirs, their_lead, their_ws = got
+        if their_lead and not (workspace and their_ws == workspace and their_lead == lead):
+            theirs = theirs | {their_lead}
+        clash = sorted(mine & theirs)
+        if clash:
+            errs.append(f"{', '.join(clash)}: {'this name is' if len(clash) == 1 else 'these names are'} already used "
+                        f"by the run in {root}, which is going now. herdr finds agents by name, so both runs would "
+                        f"send work to the same pane. Rename {'it' if len(clash) == 1 else 'them'} in this plan, e.g. "
+                        f"`{(ROOT.name if ROOT else 'app')}-{clash[0]}` (`orch team <kind>` picks such names by "
+                        f"itself while another run is going)")
+    return errs
+
+
+def team_prefix(names):
+    """(prefix, the other run's folder) when a run going on this machine uses one of names, else (None, None).
+    The prefix is this repo's folder name."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel"], text=True, capture_output=True, timeout=10)
+        here = Path(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else Path.cwd()
+    except (OSError, subprocess.TimeoutExpired):
+        here = Path.cwd()
+    if os.environ.get("ORCH_NAME_CHECK", "1") == "0":
+        return None, None
+    for root in active_runs():
+        if Path(root).resolve() == here.resolve():
+            continue
+        got = run_names(root)
+        if got and (got[0] | ({got[1]} if got[1] else set())) & set(names):
+            return re.sub(r"[^\w.-]", "-", here.name) or "run", root
+    return None, None
+
+
 def active_runs():
     """Repos whose event manager is running on this machine right now (each manager signs in under active/)."""
     live = []
@@ -9610,6 +9801,302 @@ SUBAGENT_PLAN_NOTE = """SUBAGENT MODE (Pi, one window). This replaces every herd
 """
 
 
+# ---------------------------------------------------------------- a workspace of several repos (frontend + backend)
+# A folder (a git repo or not) whose .orchestrate/plan.md has `Repos: frontend, backend` is a workspace. Every
+# milestone names its repo (`Repo: backend`). `orch sync` there writes one normal plan per repo (in that repo's own
+# .orchestrate/), so each repo is an ordinary run: its own worktrees (`<repo>-wt/<coder>`), its own feature branch,
+# its own check, its own PR. One lead drives all of them from the workspace folder; orch sends each command to the
+# repo its milestone belongs to, or to every repo. A milestone may wait for one of another repo: `backend:M2`.
+WS_GENERATED = "<!-- written by `orch sync` from the workspace plan {plan}: edit that file, not this one -->"
+WS_PER_REPO = ("check ", "setup ", "workers ", "reviewer ")
+
+
+def ws_plan_repos(ws, cfg):
+    """{name: absolute path} from the header `Repos: frontend, backend` (or `Repos: web=apps/web, api=../api`)."""
+    out = {}
+    for item in re.split(r"[,\s]+", " ".join(cfg.get("repos", []))):
+        if not item:
+            continue
+        name, _, rel = item.partition("=")
+        rel = rel or name
+        out[(name if _ else Path(rel).name).lower()] = str((Path(ws) / rel).resolve())
+    return out
+
+
+def _git_top(d):
+    try:
+        r = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(d), text=True,
+                           capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return Path(r.stdout.strip()).parent.resolve() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def find_workspace(start):
+    """The workspace folder start is in (its .orchestrate/plan.md has `Repos:`), unless start is inside one of its
+    repos or their coder folders: commands there belong to that repo's own run. None when there is no workspace."""
+    p = Path(start).resolve()
+    for d in [p, *p.parents]:
+        plan = d / ".orchestrate" / "plan.md"
+        if not plan.is_file():
+            continue
+        try:
+            cfg, _ = parse_plan(plan.read_text())
+        except OSError:
+            return None
+        if not cfg.get("repos"):
+            return None                       # the nearest plan is an ordinary run's
+        repos = [Path(r).resolve() for r in ws_plan_repos(d, cfg).values()]
+        top = _git_top(p)
+        if top and top in repos:
+            return None
+        if any(p == r or r in p.parents for r in repos):
+            return None
+        return d
+    return None
+
+
+def _fields(lines):
+    """Header lines -> [(key or None, [lines])]: a `Key: value` line with its continuation lines, or another line."""
+    out = []
+    for line in lines:
+        fm = FIELD_RE.match(line.strip())
+        if fm and not line.startswith((" ", "\t", "-")):
+            out.append((fm.group(1).strip().lower(), [line]))
+        elif out and out[-1][0] and line.strip() and line.startswith((" ", "\t", "-")):
+            out[-1][1].append(line)
+        else:
+            out.append((None, [line]))
+    return out
+
+
+def _prefix_agents(value, repo):
+    """`claude-1 (claude: sonnet), codex-1 (codex)` -> `frontend-claude-1 (claude: sonnet), frontend-codex-1 (codex)`."""
+    return re.sub(r"([\w.-]+)(\s*\()", lambda m: (m.group(1) if m.group(1).lower().startswith(repo + "-")
+                                                  else f"{repo}-{m.group(1)}") + m.group(2), value)
+
+
+def ws_repo_plan(ws, text, repo, task_repo, all_repos):
+    """The plan for one repo of the workspace: the shared header, that repo's check, setup, coders and reviewer, its
+    milestones (a dependency on another repo's milestone written `backend:M2`) and every other section."""
+    lines = text.splitlines()
+    first = next((i for i, l in enumerate(lines) if l.startswith("## ")), len(lines))
+    head = _fields(lines[:first])
+    get = {k: " ".join(x.split(":", 1)[1].strip() if j == 0 else x.strip() for j, x in enumerate(ls)).strip()
+           for k, ls in head if k}
+    out = [WS_GENERATED.format(plan=Path(ws) / ".orchestrate" / "plan.md")]
+    for k, ls in head:
+        if k and (k in ("repos", "workers", "reviewer", "check command", "setup command", "workspace")
+                  or (k.startswith(WS_PER_REPO) and k.split(" ", 1)[1] in all_repos)
+                  or k.startswith(("workers ", "reviewer "))):
+            continue
+        out += ls
+    while out and not out[-1].strip():
+        out.pop()
+    out.append(f"Workspace: {ws}")
+    chk = get.get(f"check {repo}") or get.get("check command")
+    if chk:
+        out.append(f"Check command: {chk}")
+    out.append(f"Setup command: {get.get(f'setup {repo}') or get.get('setup command') or 'none'}")
+    out.append(f"Workers: {get.get(f'workers {repo}') or _prefix_agents(get.get('workers', ''), repo)}")
+    rev = get.get(f"reviewer {repo}") or get.get("reviewer") or "none"
+    out.append(f"Reviewer: {rev if rev.lower().startswith('none') or get.get(f'reviewer {repo}') else _prefix_agents(rev, repo)}")
+    out.append("")
+    sec, keep = [], True
+
+    def flush():
+        if keep:
+            out.extend(sec)
+    for line in lines[first:]:
+        if line.startswith("## "):
+            flush()
+            sec = [line]
+            m = HEAD_RE.match(line)
+            keep = not m or task_repo.get(m.group(2)) == repo
+            continue
+        sec.append(line)
+    flush()
+    # a dependency on a milestone of another repo: `M2` -> `backend:M2` (only inside `Depends on:`)
+    res, in_dep = [], False
+    for line in out:
+        fm = FIELD_RE.match(line.strip())
+        if fm and not line.startswith((" ", "\t", "-")):
+            in_dep = fm.group(1).strip().lower() == "depends on"
+        elif line.startswith("## "):
+            in_dep = False
+        if in_dep:
+            line = re.sub(r"(?<![\w:])(M\d+)\b", lambda m: m.group(1) if task_repo.get(m.group(1), repo) == repo
+                          else f"{task_repo[m.group(1)]}:{m.group(1)}", line)
+        res.append(line)
+    return "\n".join(res).rstrip() + "\n"
+
+
+def ws_runs(ws):
+    """[(name, path)] of the repos that have a run of this workspace (their plan says `Workspace: <ws>`)."""
+    out = []
+    for name, path in workspace_repos(ws).items():
+        plan = Path(path) / ".orchestrate" / "plan.md"
+        try:
+            if f"Workspace: {ws}" in plan.read_text():
+                out.append((name, path))
+        except OSError:
+            pass
+    return out
+
+
+def ws_sync(ws):
+    plan = Path(ws) / ".orchestrate" / "plan.md"
+    text = plan.read_text()
+    cfg, tasks = parse_plan(text)
+    repos = ws_plan_repos(ws, cfg)
+    errors = []
+    for name, path in repos.items():
+        if _git_top(path) != Path(path).resolve():
+            errors.append(f"repo {name}: {path} is not the top folder of a git repo")
+    task_repo = {}
+    for t in tasks:
+        r = field(t, "repo").split()[0].lower() if field(t, "repo") else None
+        if not r:
+            if t["enabled"]:
+                errors.append(f"{t['id']} needs `Repo: <one of {', '.join(repos)}>`: in a workspace every milestone "
+                              f"belongs to one repo")
+            continue
+        if r not in repos:
+            errors.append(f"{t['id']} has `Repo: {r}`, but `Repos:` names only {', '.join(repos)}")
+            continue
+        task_repo[t["id"]] = r
+    ids = [t["id"] for t in tasks]
+    for d in sorted({i for i in ids if ids.count(i) > 1}):
+        errors.append(f"duplicate task id {d}: milestone ids are counted across the whole workspace")
+    deps = {t["id"]: split_ids(re.sub(r"\([^)]*\)", "", field(t, "depends on", "none"))) for t in tasks}
+    color = {}
+
+    def dfs(n, stack):
+        color[n] = 1
+        for d in deps.get(n, []):
+            if d not in deps:
+                errors.append(f"{n} depends on unknown task {d}")
+            elif color.get(d) == 1:
+                errors.append("dependency cycle across repos: " + " -> ".join(stack + [n, d]))
+            elif not color.get(d):
+                dfs(d, stack + [n])
+        color[n] = 2
+    for n in deps:
+        if not color.get(n):
+            dfs(n, [])
+    used = sorted(set(task_repo.values()), key=list(repos).index)
+    for name in used:
+        p = Path(repos[name]) / ".orchestrate" / "plan.md"
+        if p.exists() and f"Workspace: {ws}" not in p.read_text():
+            try:
+                ost = json.loads((p.parent / "state.json").read_text())
+                left = [k for k, v in ost.get("tasks", {}).items() if v.get("status") not in ("merged", "skipped")]
+            except (OSError, ValueError):
+                left = []
+            if left:
+                errors.append(f"repo {name} has its own run going ({', '.join(left[:4])} not landed): finish it there "
+                              f"first (`orch status` in {repos[name]})")
+    if errors:
+        for e in errors:
+            print("ERROR:", e)
+        sys.exit(1)
+    (Path(ws) / ".orchestrate" / "workspace.json").write_text(json.dumps(
+        {"repos": repos, "tasks": task_repo, "plan": str(plan)}, indent=1) + "\n")
+    for name in repos:
+        if name not in used:
+            print(f"WARN: repo {name} has no milestone in this plan, so it gets no run")
+    code = 0
+    for name in used:
+        d = Path(repos[name]) / ".orchestrate"
+        d.mkdir(exist_ok=True)
+        p = d / "plan.md"
+        if p.exists() and f"Workspace: {ws}" not in p.read_text():
+            shutil.copyfile(p, d / "plan.before-workspace.md")
+            print(f"SAVED {name}'s own old plan as {d / 'plan.before-workspace.md'}")
+        p.write_text(ws_repo_plan(str(ws), text, name, task_repo, list(repos)))
+        print(f"== {name} ({repos[name]}): " + ", ".join(k for k, v in task_repo.items() if v == name))
+        sys.stdout.flush()
+        r = subprocess.run([sys.executable, os.path.abspath(__file__), "sync"], cwd=repos[name])
+        code = max(code, r.returncode)
+    sys.exit(code)
+
+
+WS_TASK_FREE = {"autopilot", "events", "status", "start", "finish", "resume", "stop", "team", "report", "story",
+                "manual", "doctor", "cleanup", "ready", "guard", "plan", "mode", "check"}
+
+
+def workspace_main(ws, cmd, args):
+    """Carry out one orch command in a workspace: in the repo its milestone belongs to, or in every repo."""
+    me = [sys.executable, os.path.abspath(__file__)]
+    if cmd == "sync":
+        ws_sync(ws)
+    runs = ws_runs(ws)
+    if not runs:
+        die(f"{ws} is a workspace of several repos (its plan has `Repos:`), and no repo has a run of it yet — "
+            f"run `orch sync` here")
+    info = json.loads((Path(ws) / ".orchestrate" / "workspace.json").read_text())
+    repo_of = info.get("tasks") or {}
+    paths = dict(runs)
+
+    def one(name, a, header=True):
+        if header:
+            print(f"== {name} ({paths[name]})")
+            sys.stdout.flush()
+        return subprocess.run(me + [cmd, *a], cwd=paths[name]).returncode
+    if cmd in ("view", "board"):
+        die(f"`orch {cmd}` shows one repo's run: run it inside one of the repos ({', '.join(paths.values())})")
+    if cmd == "sub":
+        die("subagent mode works in one folder, one milestone at a time: a workspace of several repos runs in panes "
+            f"mode. For subagent mode, plan and run inside one repo ({', '.join(paths.values())})")
+    mids = [a for a in args if re.fullmatch(r"M\d+", a)]
+    if mids:
+        unknown = [m for m in mids if m not in repo_of]
+        if unknown:
+            die(f"{', '.join(unknown)}: no such milestone in the workspace plan (`orch status` lists them)")
+        groups = {}
+        for m in mids:
+            groups.setdefault(repo_of[m], []).append(m)
+        code = 0
+        for name, ms in groups.items():
+            a = [x for x in args if not re.fullmatch(r"M\d+", x) or x in ms]
+            code = max(code, one(name, a, header=len(groups) > 1))
+        sys.exit(code)
+    if cmd == "bench" and args:
+        for name, path in runs:
+            got = run_names(path)
+            if got and args[0] in got[0]:
+                sys.exit(one(name, args, header=False))
+        die(f"no repo of the workspace has a coder named {args[0]}")
+    if cmd == "autopilot":                # one event manager per repo, side by side
+        procs = []
+        for name, path in runs:
+            print(f"== {name}: event manager started ({path})")
+            sys.stdout.flush()
+            procs.append(subprocess.Popen(me + [cmd, *args], cwd=path))
+        sys.exit(max(p.wait() for p in procs))
+    code = 0
+    for name, _ in runs:
+        code = max(code, one(name, args))
+    if cmd == "events":
+        left = {}
+        for name, path in runs:
+            try:
+                st = json.loads((Path(path) / ".orchestrate" / "state.json").read_text())
+                left[name] = [k for k, v in st["tasks"].items() if v["status"] not in ("merged", "skipped")]
+            except (OSError, ValueError, KeyError):
+                left[name] = ["?"]
+        done = [n for n, l in left.items() if not l]
+        if done and len(done) < len(left):
+            print(f"\nWORKSPACE: {', '.join(done)} has landed every milestone; still going: "
+                  + ", ".join(f"{n} ({', '.join(l)})" for n, l in left.items() if l)
+                  + ". An ALL_DONE above is for that repo only: write the summaries when every repo is done.")
+        elif done:
+            print(f"\nWORKSPACE: every repo has landed all its milestones. Each repo gets its own PR: finish the "
+                  f"summary in each repo's .orchestrate/summary.md ({', '.join(paths.values())}), then `orch finish` "
+                  f"here runs it in every repo.")
+    sys.exit(code)
+
+
 def subagent_ready_or_die(st):
     if run_mode(st) != "subagent":
         die("this run is in panes mode — `orch sub` is for subagent mode (`orch mode subagent`); "
@@ -9627,20 +10114,22 @@ def cmd_check(args):
     st = load()
     if args:
         task(st, args[0])
-    if not st.get("check"):
+    tid = args[0] if args else None
+    cmd = check_for(st, tid)
+    if not cmd:
         print("CHECK NONE: the plan has no `Check command`")
         return
-    ok, tail, secs = run_check(st, ROOT)
+    ok, tail, secs = run_check(st, ROOT, tid)
     if not driver_alive():
         with state_lock():
             st = load()
-            note_green(st, ROOT, ok)          # `orch finish` reuses a pass on exactly these files
+            note_green(st, ROOT, ok, tid)     # `orch finish` reuses a pass on exactly these files
             save(st)
     label = f" {args[0]}" if args else ""
     if ok:
-        print(f"CHECK PASS{label} ({secs}s): {st['check']}")
+        print(f"CHECK PASS{label} ({secs}s): {cmd}")
         return
-    print(f"CHECK FAIL{label} ({secs}s): {st['check']}\n" + "\n".join(tail.splitlines()[-30:]))
+    print(f"CHECK FAIL{label} ({secs}s): {cmd}\n" + "\n".join(tail.splitlines()[-30:]))
     sys.exit(1)
 
 
@@ -9846,6 +10335,9 @@ if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         print(USAGE)
         sys.exit(0 if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h", "help") else 2)
+    _ws = find_workspace(Path.cwd())
+    if _ws is not None:                    # a workspace of several repos: each repo is its own run
+        workspace_main(_ws, sys.argv[1], sys.argv[2:])
     ROOT = main_root()
     ORCH = ROOT / ".orchestrate"
     ORCH.mkdir(exist_ok=True)

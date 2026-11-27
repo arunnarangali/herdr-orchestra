@@ -2,6 +2,28 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.24.0] - 2026-11-27
+
+Frontend and backend, in one repo or in two. Before, a run belonged to the one git repo you started it in: frontend and backend in separate repos could not be one run, two runs side by side both called their agents `codex-1`, and in a monorepo every milestone waited for the whole repo's tests.
+
+Example: `~/work/shop/` holds two git repos, `frontend/` and `backend/`. The lead writes one plan in `~/work/shop/.orchestrate/plan.md` with `Repos: frontend, backend`, M1 (`Repo: backend`, the endpoint) and M2 (`Repo: frontend`, the screen, `Depends on: M1`). The backend coder builds M1 in `backend-wt/backend-claude-1`, it lands on backend's `feature/discounts` after backend's check; then the frontend coder builds M2 in `frontend-wt/frontend-claude-1`, and it lands on frontend's own `feature/discounts`. `orch finish` opens one PR in each repo.
+
+### Added
+- **A workspace of several repos.** A plan whose header says `Repos: frontend, backend` (folders next to `.orchestrate/`, or `web=apps/web`) gives every milestone a `Repo:`. `orch sync` there writes each repo's own plan and syncs it, so each repo is an ordinary run: its own coders and reviewer (named after the repo: `frontend-claude-1`), worktrees, feature branch, check and PR. Per repo, optionally: `Check <repo>:`, `Setup <repo>:`, `Workers <repo>:`, `Reviewer <repo>:`.
+- **Dependencies across repos.** `Depends on: M1` works when M1 is in another repo (the repo's plan shows `backend:M1`). The waiting repo's event manager stays up and says `waiting for another repo: M2 waits for backend M1`; `orch ready` and `orch status` say it too. It gives up after the usual idle time only when the other repo's event manager is not running.
+- **One lead for every repo.** In the workspace folder, milestone commands (`orch dispatch M2`, `orch answer`, `orch set`, `orch approve`, `orch check M1`) go to that milestone's repo, and the others (`orch start`, `status`, `events`, `team up`, `autopilot`, `finish`, `resume`, `stop`) run in every repo. `orch autopilot` there runs every repo's event manager side by side. Inside one repo, orch works on that repo's run only.
+- **A check per side in a monorepo.** `Check frontend: cd frontend && npm test` in the header and `Side: frontend` on a milestone: that milestone is checked in its coder's folder and when it lands with its side's command only. The plan's whole `Check command` still runs on the finished branch (a side's pass is never reused for it).
+- `orch team <kind> --prefix <name>` starts every name of the team with `<name>-`.
+
+### Fixed
+- **Two runs on one machine could send work to the same pane.** herdr finds agents by name, and every run called them `codex-1`, `reviewer`, `lead`. `orch sync` now refuses a name another going run uses (it names that run's folder and suggests `<repo>-codex-1`), and `orch team <kind>` names the team after the repo while another run is going. One lead shared by the repos of a workspace is fine.
+
+### Changed
+- A plan header key may now end in a word with digits, dots or dashes (`Check web-app:`, `Workers api2:`).
+
+### Not yet tried
+- With real agents and real repos: tested with orch's simulated agents (two repos, a dependency across them, both branches and worktrees, the checks per side). Subagent mode (Pi) stays one folder: plan and run it inside one repo.
+
 ## [6.23.0] - 2026-11-27
 
 Subagent mode now belongs to Pi only. Before, `orch setup --mode subagent` saved one machine-wide `"mode": "subagent"`, so every lead got Pi's subagent steps, even Antigravity, Claude Code or Codex.
