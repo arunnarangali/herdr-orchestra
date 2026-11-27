@@ -2,6 +2,29 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.31.0] - 2026-11-28
+
+See what each milestone changed, like GitLens shows it: the files by folder with `+/-` counts and A/M/D marks, and each file's diff. In the board popup and in the browser view.
+
+Example: M2 "Goals API" is being built by agy-3. On the board (`prefix+a`), press `f`: you see `app/api/goals/route.ts +177 −0 A`, `lib/app-navigation.ts +5 −1 M`, `lib/hooks/use-goals.ts +229 −0 U` (new, not added to git yet) and so on, updating every 2 seconds while agy-3 works. Press Enter on a file for its coloured diff, q to go back. In `orch view`, click M2 and the same list is in its card; click a file for its diff.
+
+### Added
+- **Board: changed files and diffs.** `↑`/`↓` now pick a milestone as well as an agent. `f` (or `Enter` on a milestone) opens its changed files; `Enter` on a file opens its diff (`↑`/`↓`, `space`, `u` scroll); `←`/`→` switch milestone; `q` goes back one screen, and closes the board only from the main screen.
+- **Browser view: changed files and diffs.** The card of the milestone you click lists its changed files; a file opens its diff in a panel (Esc closes). New read-only routes `/api/changes?m=Mn` and `/api/diff?m=Mn&f=<path>` (in docs/contracts.md); they keep the page's host and `--lan` token checks.
+- **`orch changes [Mn [file]] [--json]`**: the same in any terminal, for you or the lead.
+- What is shown: a milestone being built shows the coder's folder against where its work started, unsaved and new files included (and against the branch it merges in while resolving a conflict); work waiting for review or a fix shows what was handed in; a landed milestone shows its commit on the feature branch; a milestone not started says "no changes yet". In a shared folder (subagent mode, `Isolation: shared`) it is the main folder's unsaved files.
+- orch now saves the commit each milestone lands as (`landed` in state.json). Runs from older versions are found by the commit's `Milestone: Mn` line.
+
+### Safe by design
+- It only reads git: `GIT_OPTIONAL_LOCKS=0` (git does not even refresh its index), no external diff tools, a 15 second limit per git call, at most 500 files and 4000 diff lines. A test checks that the coder's files, its git index and the repo's git objects are exactly the same after the board, `orch changes` and a diff were used on its folder.
+- A diff can only show a file the milestone changed: no other file can be read through the board or the page.
+- Escape codes inside a file (or a file name) are never sent to the terminal.
+- An error while reading changes stays on screen with "[q] back" and is saved in `board-error.log`, like the 6.30.0 board errors; the popup never closes by itself.
+- The popup still starts in the pane's repo (6.22.0) and runs from the `current` install (6.30.0); nothing about how it opens changed. A workspace of several repos works per repo, as the board always did.
+
+### Not yet tried
+- On real herdr: tested with the simulated herdr and in a real terminal (pty) with real git repos and worktrees, including the popup keys above, and the page in a real browser (Chromium). Not yet seen with real coders working.
+
 ## [6.30.0] - 2026-11-27
 
 The board key (`prefix+a`) now always runs the board popup of the version you have installed, and the popup never vanishes without saying why.

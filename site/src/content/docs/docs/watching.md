@@ -27,6 +27,7 @@ It opens your browser. The page updates by itself the moment the run changes.
 - **The run ring** on top: the five stops of a run (lead, coders, checks, reviewer, waiting for you), with how many milestones are at each.
 - **The milestone graph**: one box per milestone, arrows for "needs this first", coloured by where it is. Red means it needs you.
 - **Click a milestone** for its description, the question it asks, the exact command to answer it (`orch answer M6 "..."`), its steps so far and its files.
+- **Changed files**: the card of the milestone you click lists the files it changed, by folder, with `+177 −0` and a letter (A added, M changed, D deleted, R renamed, U new and not added to git yet). Click a file for its diff. While a coder works on it you see its changes so far, unsaved files included, refreshed every few seconds; a landed milestone shows exactly what it added to the feature branch.
 - **Agents**: every coder, the reviewer and the lead, with model, tier and what they hold.
 - **Time and cost**: time so far against the lead's estimate, each milestone against its own estimate (and why one took longer), and tokens and cost per model when the agents report them.
 - **Replay**: press *Replay* and drag the slider to watch the run again step by step. Works for a finished run too.
@@ -48,7 +49,16 @@ On a phone the graph becomes a list ("after M1" says what each milestone waits f
 
 ## orch board (terminal)
 
-`orch board` draws the same run as text and redraws when it changes: milestones as a tree with their descriptions, the agents, and the last events. `↑`/`↓` pick an agent, `Enter` jumps to its Herdr pane, `w` starts the browser view, `q` closes. `orch board --once` prints it one time.
+`orch board` draws the same run as text and redraws when it changes: milestones as a tree with their descriptions, the agents, and the last events. `↑`/`↓` pick a milestone or an agent, `Enter` on an agent jumps to its Herdr pane, `w` starts the browser view, `q` closes. `orch board --once` prints it one time.
+
+**What a milestone changed.** Press `f` (or `Enter` on a milestone) to see its changed files, by folder, with `+177 −0` and a letter (A added, M changed, D deleted, R renamed, U new and not added to git yet). `Enter` on a file shows its diff in colour (`↑`/`↓` scroll, `space`/`u` page). `←`/`→` move to the next or previous milestone; `q` goes back one screen. `f` opens the milestone you picked, the picked agent's, or else the one being built.
+
+- **Being built**: what the coder has changed in its folder so far, unsaved files included, refreshed every 2 seconds, so you can watch it work.
+- **Waiting for review or a fix**: the work it handed in.
+- **Landed**: exactly what it added to the feature branch (its commit).
+- **Not started**: "no changes yet".
+
+It only reads git (it never touches the coder's files, its git index or a branch), so looking can't disturb a run. `orch changes` prints the same in any terminal: `orch changes` (one line per milestone), `orch changes M2` (its files), `orch changes M2 lib/goals.ts` (one file's diff), `--json` for tools.
 
 Open it in a Herdr split or tab. To open it as a popup with one key, link the small Herdr plugin that comes with orch (Herdr 0.7.4 or newer):
 

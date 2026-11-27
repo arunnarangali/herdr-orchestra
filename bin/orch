@@ -173,7 +173,7 @@ def state_lock():
 # usable while autopilot drives: reads, and the lead's requests (the event manager carries them out)
 LEASE_FREE = {"status", "ready", "pick", "report", "approve", "autopilot", "events", "dispatch", "answer", "defer",
               "fix", "team", "resume", "bench", "stop", "doctor", "plan", "story", "check", "free", "manual", "view",
-              "board"}
+              "board", "changes"}
 _LEASE = None
 
 
@@ -3485,6 +3485,7 @@ def cmd_commit(args):
 def _finish(st, tid):
     t = st["tasks"][tid]
     move(st, tid, "merged", "")
+    note_landed(st, tid)           # the commit it landed as, for `orch changes` / the board / `orch view`
     t["wait"] = None
     if (st.get("merging") or {}).get("tid") == tid:
         st["merging"] = None
@@ -7834,6 +7835,23 @@ def serve_view(port, lan, token, opened):
                 return self._send(200, page.read_text(), "text/html; charset=utf-8")
             if u.path == "/api/state":
                 return self._send(200, json.dumps(view_model()), "application/json")
+            if u.path in ("/api/changes", "/api/diff"):     # read-only git; a file must be one the milestone changed
+                try:
+                    st = _board_state()
+                    tid = q.get("m", [""])[0]
+                    if tid not in st.get("tasks", {}):
+                        return self._send(404, json.dumps({"error": f"no milestone {tid!r} in this run"}),
+                                          "application/json")
+                    if u.path == "/api/changes":
+                        return self._send(200, json.dumps(milestone_changes(st, tid)), "application/json")
+                    path = q.get("f", [""])[0]
+                    lines, err = file_diff(st, tid, path)
+                    cut = len(lines) > CHANGES_MAX_DIFF
+                    return self._send(200, json.dumps({"id": tid, "path": path, "lines": lines[:CHANGES_MAX_DIFF],
+                                                       "cut": cut, "total": len(lines), "error": err}),
+                                      "application/json")
+                except Exception as e:  # noqa: BLE001 - the page shows it; the server keeps serving
+                    return self._send(500, json.dumps({"error": f"{type(e).__name__}: {e}"}), "application/json")
             if u.path == "/api/history":
                 return self._send(200, json.dumps({"events": view_events()}), "application/json")
             if u.path == "/api/stream":
@@ -8259,6 +8277,274 @@ _GROUP_ICON = {"landed": "✔", "building": "●", "checking": "●", "review": 
                "waiting": "○", "skipped": "-"}
 
 
+# ---- what each milestone changed: `orch changes`, the board's changed-files screen and `orch view`. Only reads git:
+# never the index, never a ref, never a file (GIT_OPTIONAL_LOCKS=0 stops even git's own index refresh), so looking
+# can't disturb a coder or a merge. Every git call has a time limit, so a huge repo can't freeze the board.
+CHANGES_MAX_FILES = 500          # files listed per milestone; the rest are counted
+CHANGES_MAX_DIFF = 4000          # lines of one file's diff
+CHANGES_MAX_READ = 2_000_000     # bytes read of a new file nobody added to git yet (to count its lines)
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def _rgit(d, *args, timeout=15):
+    """Read-only git in folder d: bytes out, None when it fails or takes too long."""
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_PAGER="cat", LC_ALL="C", GIT_TERMINAL_PROMPT="0")
+    try:
+        r = subprocess.run(["git", "-c", "core.quotepath=off", "-c", "color.ui=never", *args], cwd=str(d), env=env,
+                           capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _rsha(d, ref):
+    out = _rgit(d, "rev-parse", "-q", "--verify", ref + "^{commit}")
+    return out.decode().strip() if out else None
+
+
+def landed_commit(st, tid):
+    """The commit Mn landed as on the feature branch: recorded when it merged, else (runs from before 6.31) found by
+    its `Milestone: Mn` line among the branch's own commits. None when it landed with no changes."""
+    t = st["tasks"].get(tid) or {}
+    if t.get("landed") and _rsha(ROOT, t["landed"]):
+        return _rsha(ROOT, t["landed"])
+    br = st.get("branch")
+    if not br or not _rsha(ROOT, br):
+        return None
+    rng = [f"{st['base']}..{br}"] if st.get("base") and _rsha(ROOT, st["base"]) else [br, "-n", "200"]
+    out = _rgit(ROOT, "log", "--format=%H", "-E", f"--grep=^Milestone: {re.escape(tid)}$", *rng)
+    shas = out.decode().split() if out else []
+    return shas[0] if shas else None
+
+
+def note_landed(st, tid):
+    """Remember the commit Mn just landed as (the main folder's HEAD, when that is Mn's commit)."""
+    head = _rsha(ROOT, "HEAD")
+    body = _rgit(ROOT, "log", "-1", "--format=%B", "HEAD") if head else None
+    if body and re.search(rf"(?m)^Milestone: {re.escape(tid)}$", body.decode(errors="replace")):
+        st["tasks"][tid]["landed"] = head
+
+
+def changes_source(st, tid):
+    """Where Mn's changes are right now, in one of four shapes:
+    live   a coder works on it: its folder (unsaved files included) against where its work started
+    saved  work kept between steps (waiting for review, a fix, a merge): the hidden ref against where it started
+    landed merged: the one commit it landed as on the feature branch
+    none   nothing to show yet, with why"""
+    t = st["tasks"].get(tid)
+    if t is None:
+        return {"kind": "none", "why": f"no milestone {tid} in this run"}
+    status = t.get("status", "pending")
+    if status == "skipped":
+        return {"kind": "none", "why": "skipped: it changes nothing"}
+    if status == "merged":
+        sha = landed_commit(st, tid)
+        if not sha:
+            return {"kind": "none", "why": "landed, with no file changes (or its commit is no longer on the branch)"}
+        parent = _rsha(ROOT, sha + "^") or EMPTY_TREE
+        return {"kind": "landed", "pairs": [(parent, sha)], "dir": str(ROOT), "commit": sha}
+    shared = st.get("isolation") == "shared"
+    d = t.get("dir") or (str(ROOT) if shared else None)
+    owns = holds(st, tid) or (shared and status in ACTIVE and st.get("tree_task") in (None, tid))
+    if owns and d and Path(d).is_dir():
+        if shared:
+            base = _rsha(d, "HEAD")
+        else:
+            base = (_rsha(d, "MERGE_HEAD")         # resolving a conflict: against the branch it merges in
+                    or (_rgit(d, "merge-base", "HEAD", st["branch"]) or b"").decode().strip() or _rsha(d, "HEAD"))
+        if base:
+            others = [x for x, o in st["tasks"].items() if x != tid and o.get("status") in ACTIVE
+                      and o.get("dir") == d] if shared else []
+            return {"kind": "live", "dir": d, "base": base, "worker": t.get("worker"),
+                    "shared_with": others}
+    ref = work_ref(st, tid)
+    if ref:
+        sha = _rsha(ROOT, ref)
+        if sha and shared and _rsha(ROOT, sha + "^2"):        # a stash: files git knew, plus the new ones (3rd parent)
+            pairs = [(_rsha(ROOT, sha + "^1"), sha)]
+            if _rsha(ROOT, sha + "^3"):
+                pairs.append((EMPTY_TREE, _rsha(ROOT, sha + "^3")))
+            return {"kind": "saved", "pairs": pairs, "dir": str(ROOT)}
+        if sha:
+            mb = (_rgit(ROOT, "merge-base", st["branch"], sha) or b"").decode().strip() or _rsha(ROOT, sha + "^")
+            return {"kind": "saved", "pairs": [(mb or EMPTY_TREE, sha)], "dir": str(ROOT)}
+    if status == "pending":
+        return {"kind": "none", "why": "not started yet: no changes yet"}
+    return {"kind": "none", "why": "no changes yet"}
+
+
+def _parse_numstat(raw):
+    """`git diff --numstat -z -M` -> [(path, old_path|None, add|None, del|None)] (None counts: a binary file)."""
+    out, parts, i = [], raw.decode(errors="replace").split("\0"), 0
+    while i < len(parts):
+        rec = parts[i]
+        i += 1
+        if not rec:
+            continue
+        f = rec.split("\t", 2)
+        if len(f) < 3:
+            continue
+        a, dl, path = f
+        old = None
+        if path == "" and i + 1 < len(parts):            # a rename: the old and the new name follow
+            old, path = parts[i], parts[i + 1]
+            i += 2
+        out.append((path, old, None if a == "-" else int(a), None if dl == "-" else int(dl)))
+    return out
+
+
+def _parse_status(raw):
+    """`git diff --name-status -z -M` -> {path: letter} (A added, M changed, D deleted, R renamed, T type)."""
+    out, parts, i = {}, raw.decode(errors="replace").split("\0"), 0
+    while i < len(parts):
+        s = parts[i]
+        i += 1
+        if not s:
+            continue
+        if s[0] in "RC" and i + 1 < len(parts):
+            out[parts[i + 1]] = s[0]
+            i += 2
+        elif i < len(parts):
+            out[parts[i]] = s[0]
+            i += 1
+    return out
+
+
+def _skip_path(p):
+    return p.startswith((TASK_DIR + "/", ".orchestrate/")) or p in (TASK_DIR, ".orchestrate")
+
+
+def _new_file_lines(path):
+    """(lines, binary) of a file git does not know yet, reading at most CHANGES_MAX_READ bytes."""
+    try:
+        with open(path, "rb") as fh:
+            b = fh.read(CHANGES_MAX_READ)
+    except OSError:
+        return 0, False
+    if b"\0" in b[:8000]:
+        return None, True
+    return b.count(b"\n") + (1 if b and not b.endswith(b"\n") else 0), False
+
+
+def milestone_files(src):
+    """The files a changes_source() changed: (files, error). Each file: {path, old, status, add, del, untracked}."""
+    files, seen = [], set()
+    if src["kind"] == "none":
+        return [], None
+    if src["kind"] == "live":
+        d, base = src["dir"], src["base"]
+        pairs = [((base,), d)]
+    else:
+        d = src["dir"]
+        pairs = [((a, b), d) for a, b in src["pairs"]]
+    for revs, where in pairs:
+        ns = _rgit(where, "diff", "--no-ext-diff", "--no-textconv", "-M", "-z", "--numstat", *revs, "--")
+        st_ = _rgit(where, "diff", "--no-ext-diff", "--no-textconv", "-M", "-z", "--name-status", *revs, "--")
+        if ns is None or st_ is None:
+            return files, f"git could not compare {' and '.join(r[:12] for r in revs)} in {where}"
+        letters = _parse_status(st_)
+        for path, old, a, dl in _parse_numstat(ns):
+            if _skip_path(path) or path in seen:
+                continue
+            seen.add(path)
+            files.append({"path": path, "old": old, "status": letters.get(path, "M"), "add": a, "del": dl,
+                          "untracked": False})
+    if src["kind"] == "live":
+        raw = _rgit(src["dir"], "ls-files", "-z", "--others", "--exclude-standard")
+        for path in (raw or b"").decode(errors="replace").split("\0"):
+            if not path or _skip_path(path) or path in seen:
+                continue
+            seen.add(path)
+            n, binary = _new_file_lines(os.path.join(src["dir"], path)) if len(files) < CHANGES_MAX_FILES else (0, False)
+            files.append({"path": path, "old": None, "status": "A", "add": n, "del": None if binary else 0,
+                          "untracked": True})
+    files.sort(key=lambda f: (os.path.dirname(f["path"]), os.path.basename(f["path"])))
+    return files, None
+
+
+def milestone_changes(st, tid):
+    """Mn's changed files as one dict (the shape `orch changes --json` and `orch view` use)."""
+    t = st["tasks"].get(tid) or {}
+    src = changes_source(st, tid)
+    files, err = milestone_files(src)
+    more = max(0, len(files) - CHANGES_MAX_FILES)
+    shown = files[:CHANGES_MAX_FILES]
+    words = {"live": "live: what the coder has changed so far, unsaved files included",
+             "saved": "saved work, not landed yet",
+             "landed": "landed: what it added to the feature branch",
+             "none": src.get("why", "no changes yet")}
+    note = words[src["kind"]]
+    if src.get("shared_with"):
+        note += f" (the folder is shared with {', '.join(src['shared_with'])}: their unsaved files show here too)"
+    return {"id": tid, "title": t.get("title", tid), "status": t.get("status", "pending"),
+            "group": VIEW_GROUPS.get(t.get("status"), "waiting"), "kind": src["kind"], "note": note,
+            "worker": t.get("worker") if src["kind"] == "live" else None,
+            "dir": src.get("dir"), "commit": src.get("commit"), "error": err,
+            "files": shown, "more": more,
+            "totals": {"files": len(files), "add": sum(f["add"] or 0 for f in files),
+                       "del": sum(f["del"] or 0 for f in files)}}
+
+
+def file_diff(st, tid, path):
+    """The diff of one file Mn changed: (lines, error). The path must be one of Mn's changed files, so nothing else
+    (another folder, a file outside the repo) can be read through it."""
+    src = changes_source(st, tid)
+    files, err = milestone_files(src)
+    f = next((x for x in files if x["path"] == path), None)
+    if f is None:
+        return [], err or f"{path} is not one of {tid}'s changed files (any more)"
+    paths = [path] + ([f["old"]] if f.get("old") else [])
+    if f["untracked"]:
+        full = os.path.join(src["dir"], path)
+        n, binary = _new_file_lines(full)
+        head = [f"new file {path} (not added to git yet)"]
+        if binary:
+            return head + ["Binary file: not shown."], None
+        try:
+            with open(full, "rb") as fh:
+                text = fh.read(CHANGES_MAX_READ).decode(errors="replace")
+        except OSError as e:
+            return head, f"could not read {path}: {e}"
+        body = ["+" + ln for ln in text.splitlines()]
+        return head + [f"@@ -0,0 +1,{n} @@"] + body, None
+    if src["kind"] == "live":
+        out = _rgit(src["dir"], "diff", "--no-ext-diff", "--no-textconv", "-M", src["base"], "--", *paths)
+    else:
+        out = None
+        for a, b in src["pairs"]:
+            got = _rgit(src["dir"], "diff", "--no-ext-diff", "--no-textconv", "-M", a, b, "--", *paths)
+            if got:
+                out = got
+                break
+    if out is None:
+        return [], f"git could not show the diff of {path}"
+    lines = out.decode(errors="replace").splitlines()
+    return lines or [f"{path}: no line changes (mode or name only)"], None
+
+
+def changes_tree_lines(ch, width=100, color=True, sel=None):
+    """The changed files as a folder tree with +/- counts and A/M/D marks; returns (lines, row of each file)."""
+    def c(k, s):
+        return f"\x1b[{_C[k]}m{s}\x1b[0m" if color and k else s
+    out, rows, last_dir = [], [], None
+    num_w = 16
+    for i, f in enumerate(ch["files"]):
+        d = os.path.dirname(f["path"])
+        if d != last_dir:
+            out.append(c("d", (d + "/") if d else "./"))
+            last_dir = d
+        name = os.path.basename(f["path"]) + (f"  ← {f['old']}" if f.get("old") else "")
+        plain = "binary" if f["add"] is None else f"+{f['add']} −{f['del'] or 0}"
+        nums = c("d", "binary") if f["add"] is None else c("g", f"+{f['add']}") + " " + c("r", f"−{f['del'] or 0}")
+        mark = "U" if f["untracked"] else f["status"]       # U: new, not added to git yet (as VS Code marks it)
+        room = max(10, min(64, width - num_w - 8))
+        name = name if len(name) <= room else "…" + name[-(room - 1):]
+        out.append(("› " if sel == i else "  ") + "  " + name.ljust(room) + " " * max(1, num_w - len(plain)) + nums
+                   + "  " + c({"A": "g", "D": "r"}.get(f["status"], "a"), mark))
+        rows.append(len(out) - 1)
+    return out, rows
+
+
 def _fmt_min(s):
     if s is None:
         return "?"
@@ -8290,11 +8576,8 @@ def render_board(vm, width=100, color=True, sel=None, note=""):
     out += notes
     out += ["", c("d", "MILESTONES")]
     ms = {m["id"]: m for m in vm["milestones"]}
-    kids = {}
-    for m in vm["milestones"]:
-        for d in m["deps"][:1]:
-            kids.setdefault(d, []).append(m["id"])
-    shown = set()
+    rows = board_rows(vm)
+    picked = rows[sel] if sel is not None and sel < len(rows) else None
     name_w = max(18, min(34, width - 52))
 
     def line(m, pre, sub):
@@ -8307,34 +8590,22 @@ def render_board(vm, width=100, color=True, sel=None, note=""):
             word = "waits for " + ",".join(d for d in m["deps"] if ms.get(d, {}).get("group") != "landed") \
                 if any(ms.get(d, {}).get("group") != "landed" for d in m["deps"]) else "ready"
         head = cut(f"{pre}{_GROUP_ICON[g]} {m['id']} {m['title']}", name_w + 8)
-        out.append(head.ljust(name_w + 9).replace(_GROUP_ICON[g], c(_GROUP_C[g], _GROUP_ICON[g]), 1)
+        out.append(("›" if picked == ("m", m["id"]) else " ")
+                   + head.ljust(name_w + 9).replace(_GROUP_ICON[g], c(_GROUP_C[g], _GROUP_ICON[g]), 1)
                    + c(_GROUP_C[g], word.ljust(16) if g != "needs_you" else "NEEDS YOU".ljust(16))
                    + c("d", f"{who}  {extra}".rstrip()))
         if m["desc"] and m["desc"] != m["title"]:
-            out.append(sub + c("d", cut(m["desc"], width - len(sub) - 1)))
+            out.append(" " + sub + c("d", cut(m["desc"], width - len(sub) - 2)))
         if m["group"] == "needs_you" and (m.get("question") or m.get("reason")):
-            out.append(sub + c("r", cut(f"\"{m.get('question') or m.get('reason')}\"", width - len(sub) - 1)))
+            out.append(" " + sub + c("r", cut(f"\"{m.get('question') or m.get('reason')}\"", width - len(sub) - 2)))
 
-    def walk(tid, prefix, last, depth):
-        if tid in shown:
-            return
-        shown.add(tid)
-        conn = "" if depth == 0 else ("└─ " if last else "├─ ")
-        cont = prefix + ("" if depth == 0 else ("   " if last else "│  "))
-        line(ms[tid], prefix + conn, cont + "   ")
-        ch = [k for k in kids.get(tid, []) if k not in shown]
-        for i, k in enumerate(ch):
-            walk(k, cont, i == len(ch) - 1, depth + 1)
-    for m in vm["milestones"]:
-        if not any(d in ms for d in m["deps"][:1]):
-            walk(m["id"], "", True, 0)
-    for m in vm["milestones"]:
-        walk(m["id"], "", True, 0)
+    for tid, pre, sub in board_tree(vm):
+        line(ms[tid], pre, sub)
     out += ["", c("d", "AGENTS")]
     for i, a in enumerate(vm["agents"]):
         busy = a.get("task") or a["role"] == "lead"
         col = "a" if a["role"] == "lead" else ("p" if a["role"] == "reviewer" else "b") if a.get("task") else "d"
-        mark = "›" if sel == i else " "
+        mark = "›" if picked == ("a", i) else " "
         out.append(f"{mark}{c(col, '◆' if a['role'] == 'lead' else '●' if busy else '○')} "
                    f"{a['name']:<12} {str(a.get('kind') or ''):<8} {str(a.get('tier') or ''):<7} "
                    + c(col if busy else "d", (f"{a['task']} · " if a.get("task") else "") + a["state"]))
@@ -8345,26 +8616,223 @@ def render_board(vm, width=100, color=True, sel=None, note=""):
                        + (c("d", f"  {cut(e.get('why') or '', 50)}") if e.get("why") else ""))
     if note:
         out += ["", c("a", note)]
-    out += ["", c("d", "[↑↓] pick agent  [enter] jump to it  [w] web view  [q] close")]
+    out += ["", c("d", "[↑↓] pick  [enter] a milestone's changed files / jump to an agent  [f] changed files  "
+                       "[w] web view  [q] close")]
     return out
 
 
-def board_error_lines(e):
-    """What the live board shows when drawing the run failed, instead of ending (herdr would close the popup and the
-    error with it). The full traceback is saved for a bug report; the board tries again when the run changes."""
+def board_tree(vm):
+    """The milestones in the board's order, as a tree under each one's first dependency: [(id, prefix, sub-prefix)]."""
+    ms = {m["id"]: m for m in vm.get("milestones", [])}
+    kids, shown, rows = {}, set(), []
+    for m in vm.get("milestones", []):
+        for d in m["deps"][:1]:
+            kids.setdefault(d, []).append(m["id"])
+
+    def walk(tid, prefix, last, depth):
+        if tid in shown:
+            return
+        shown.add(tid)
+        conn = "" if depth == 0 else ("└─ " if last else "├─ ")
+        cont = prefix + ("" if depth == 0 else ("   " if last else "│  "))
+        rows.append((tid, prefix + conn, cont + "   "))
+        ch = [k for k in kids.get(tid, []) if k not in shown]
+        for i, k in enumerate(ch):
+            walk(k, cont, i == len(ch) - 1, depth + 1)
+    for m in vm.get("milestones", []):
+        if not any(d in ms for d in m["deps"][:1]):
+            walk(m["id"], "", True, 0)
+    for m in vm.get("milestones", []):
+        walk(m["id"], "", True, 0)
+    return rows
+
+
+def board_rows(vm):
+    """What [↑↓] moves through on the board: every milestone (board order), then every agent."""
+    return [("m", tid) for tid, _, _ in board_tree(vm)] + [("a", i) for i in range(len(vm.get("agents", [])))]
+
+
+def board_default_milestone(vm, row=None):
+    """The milestone [f] opens: the picked one, the picked agent's, else one being built, one that needs you, the
+    last landed, or the first."""
+    if row and row[0] == "m":
+        return row[1]
+    if row and row[0] == "a":
+        a = vm["agents"][row[1]]
+        if a.get("task"):
+            return a["task"]
+    ms = vm.get("milestones", [])
+    for groups in (("building", "checking", "review", "landing"), ("needs_you",)):
+        m = next((m for m in ms if m["group"] in groups), None)
+        if m:
+            return m["id"]
+    landed = [m for m in ms if m["group"] == "landed"]
+    return (landed[-1] if landed else ms[0])["id"] if ms else None
+
+
+def board_error_lines(e, what="this run", back="[q] close"):
+    """What the live board shows when drawing failed, instead of ending (herdr would close the popup and the error
+    with it). The full traceback is saved for a bug report; the board tries again when the run changes."""
     import traceback
     tb = traceback.format_exc()
     saved = share_dir() / "board-error.log"
     with contextlib.suppress(OSError):
         share_dir().mkdir(parents=True, exist_ok=True)
         saved.write_text(f"{time.strftime('%Y-%m-%d %H:%M:%S')} orch {installed_version()} in {ROOT}\n{tb}")
-    return ["orch board", "", f"The board could not draw this run: {type(e).__name__}: {e}",
+    return ["orch board", "", f"The board could not draw {what}: {type(e).__name__}: {e}",
             f"The full error is saved in {saved}: please send it with a bug report.",
-            "It tries again when the run changes. [q] close"]
+            f"It tries again when the run changes. {back}"]
+
+
+_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _safe(s, width=None):
+    """A file name or diff line made safe to print: no escape codes from the file reach the terminal."""
+    s = _CTRL.sub("·", str(s).expandtabs(4))
+    return s if width is None or len(s) <= width else s[:max(0, width - 1)] + "…"
+
+
+def _board_state():
+    return migrate(json.loads(STATE.read_text()))
+
+
+def render_changes(ch, width=100, height=40, color=True, sel=0, top=0):
+    """The board's changed-files screen for one milestone. Returns (lines, top): top keeps the picked file in view."""
+    def c(k, s):
+        return f"\x1b[{_C[k]}m{s}\x1b[0m" if color and k else s
+    g = ch["group"]
+    head = [c("a", "orch board · changed files") + c("d", f"   {time.strftime('%H:%M')}"
+                                                          + (" · live" if ch["kind"] == "live" else "")),
+            c(_GROUP_C.get(g, "d"), f"{_GROUP_ICON.get(g, '○')} ") + c("B", _safe(f"{ch['id']} {ch['title']}", width - 30))
+            + c("d", f"  {VIEW_WORDS.get(ch['status'], ch['status'])}" + (f" · {ch['worker']}" if ch.get("worker") else "")),
+            c("d", _safe(ch["note"], width))]
+    tot = ch["totals"]
+    if ch["files"]:
+        head.append(c("B", f"{tot['files']} file{'s' if tot['files'] != 1 else ''}  ") + c("g", f"+{tot['add']}")
+                    + " " + c("r", f"−{tot['del']}"))
+    if ch.get("error"):
+        head.append(c("r", _safe(ch["error"], width)))
+    foot = ["", c("d", "A added · M changed · D deleted · R renamed · U new, not added to git yet"),
+            c("d", "[↑↓] pick file  [enter] its diff  [←→] other milestone  [q] back")]
+    if not ch["files"]:
+        return head + ["", "No changed files to show." if ch["kind"] != "none" else "Nothing to show yet."] + foot, 0
+    body, rows = changes_tree_lines({**ch, "files": [{**f, "path": _safe(f["path"]), "old": f["old"] and _safe(f["old"])}
+                                                      for f in ch["files"]]}, width, color, sel)
+    if ch.get("more"):
+        body.append(c("d", f"… and {ch['more']} more files (`orch changes {ch['id']}` lists them all)"))
+    room = max(3, height - len(head) - len(foot) - 1)
+    r = rows[min(sel, len(rows) - 1)]
+    if r < top:
+        top = max(0, r - 1)                       # keep the file's folder line in view too
+    elif r >= top + room:
+        top = r - room + 1
+    top = max(0, min(top, max(0, len(body) - room)))
+    shown = body[top:top + room]
+    if top > 0:
+        shown[0] = c("d", f"  ↑ {top} more")
+    if top + room < len(body):
+        shown[-1] = c("d", f"  ↓ {len(body) - top - room + 1} more")
+    return head + [""] + shown + foot, top
+
+
+def render_diff(ch, f, lines, width=100, height=40, color=True, top=0, err=None):
+    """The board's diff screen for one file: coloured, cut to the width, scrolled to top. Returns (lines, top)."""
+    def c(k, s):
+        return f"\x1b[{_C[k]}m{s}\x1b[0m" if color and k else s
+    nums = "binary" if f["add"] is None else f"+{f['add']} −{f['del'] or 0}"
+    head = [c("a", "orch board · diff") + c("d", f"   {ch['id']} {_safe(ch['title'], 40)}"
+                                                 + (" · live" if ch["kind"] == "live" else "")),
+            c("B", _safe(f["path"], width - len(nums) - 6)) + "  " + c("d", f"{nums}  {f['status']}")]
+    if err:
+        head.append(c("r", _safe(err, width)))
+    foot = ["", c("d", "[↑↓] scroll  [space] page down  [u] page up  [q] back to the files")]
+    room = max(3, height - len(head) - len(foot) - 1)
+    body = lines[:CHANGES_MAX_DIFF]
+    if len(lines) > CHANGES_MAX_DIFF:
+        body.append(f"… cut at {CHANGES_MAX_DIFF} lines: see the rest with `orch changes {ch['id']} {f['path']}`")
+    top = max(0, min(top, max(0, len(body) - room)))
+
+    def paint(ln):
+        t = _safe(ln, width - 1)
+        if ln.startswith(("+++", "---", "diff --git", "index ", "new file", "deleted file", "similarity", "rename ")):
+            return c("d", t)
+        return c("g", t) if ln.startswith("+") else c("r", t) if ln.startswith("-") else \
+            c("t", t) if ln.startswith("@@") else t
+    shown = [paint(ln) for ln in body[top:top + room]]
+    if top + room < len(body):
+        shown.append(c("d", f"  ↓ {len(body) - top - room} more lines ({top + 1}-{top + room} of {len(body)})"))
+    return head + [""] + shown + foot, top
+
+
+def _board_key(fd, select):
+    ch = os.read(fd, 8).decode(errors="ignore")
+    if ch == "\x1b" and select.select([sys.stdin], [], [], 0.05)[0]:
+        ch += os.read(fd, 8).decode(errors="ignore")   # the rest of an escape sequence, not the Esc key
+    return {"\x1bOA": "\x1b[A", "\x1bOB": "\x1b[B", "\x1bOC": "\x1b[C", "\x1bOD": "\x1b[D"}.get(ch, ch)
+
+
+UP, DOWN, RIGHT, LEFT, PGDN, PGUP = "\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D", "\x1b[6~", "\x1b[5~"
+
+
+def cmd_changes(args):
+    """orch changes [Mn [file]] [--json] [--no-color] -> what each milestone changed (read-only git)."""
+    as_json = "--json" in args
+    color = "--no-color" not in args and sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    rest = [a for a in args if a not in ("--json", "--no-color")]
+    st = load()
+    width = shutil.get_terminal_size((100, 40)).columns
+    if not rest:
+        allc = [milestone_changes(st, tid) for tid in st["order"]]
+        if as_json:
+            print(json.dumps({"milestones": allc}, indent=1))
+            return
+        for ch in allc:
+            tot = ch["totals"]
+            print(f"{ch['id']:<4} {_safe(ch['title'], 34):<34} " + (
+                f"{tot['files']:>3} file{'s' if tot['files'] != 1 else ''}  +{tot['add']} −{tot['del']}  ({ch['kind']})"
+                if ch["files"] else ch["note"]))
+        print("\n`orch changes Mn` lists a milestone's files, `orch changes Mn <file>` shows one file's diff")
+        return
+    tid = rest[0]
+    if tid not in st["tasks"]:
+        die(f"no milestone {tid} in this run (`orch status` lists them)")
+    if len(rest) > 1:
+        lines, err = file_diff(st, tid, rest[1])
+        if as_json:
+            print(json.dumps({"id": tid, "path": rest[1], "lines": lines, "error": err}, indent=1))
+        else:
+            for ln in lines:
+                t = _safe(ln)
+                print(t if not color else f"\x1b[32m{t}\x1b[0m" if ln.startswith("+") and not ln.startswith("+++")
+                      else f"\x1b[31m{t}\x1b[0m" if ln.startswith("-") and not ln.startswith("---")
+                      else f"\x1b[36m{t}\x1b[0m" if ln.startswith("@@") else t)
+        if err:
+            die(err)
+        return
+    ch = milestone_changes(st, tid)
+    if as_json:
+        print(json.dumps(ch, indent=1))
+        return
+    tot = ch["totals"]
+    print(_safe(f"{tid} {ch['title']} · {VIEW_WORDS.get(ch['status'], ch['status'])}"
+                + (f" · {ch['worker']}" if ch.get("worker") else "")))
+    print(_safe(ch["note"]))
+    if ch["files"]:
+        print(f"{tot['files']} file{'s' if tot['files'] != 1 else ''}  +{tot['add']} −{tot['del']}\n")
+        body, _ = changes_tree_lines({**ch, "files": [{**f, "path": _safe(f["path"]),
+                                                       "old": f["old"] and _safe(f["old"])} for f in ch["files"]]},
+                                     width, color)
+        print("\n".join(body))
+        if ch["more"]:
+            print(f"… and {ch['more']} more files")
+    if ch.get("error"):
+        die(ch["error"])
 
 
 def cmd_board(args):
-    """orch board [--once] [--no-color] -> the run as text, redrawn when it changes (for a herdr pane or popup)."""
+    """orch board [--once] [--no-color] -> the run as text, redrawn when it changes (for a herdr pane or popup).
+    [f] or [enter] on a milestone opens its changed files, [enter] on a file its diff; q goes back one screen."""
     # live needs a keyboard and a screen: with stdin or stdout not a terminal, draw once (termios would fail)
     once = "--once" in args or not (sys.stdout.isatty() and sys.stdin.isatty())
     color = "--no-color" not in args and sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -8376,49 +8844,108 @@ def cmd_board(args):
     import tty
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
-    sel, note, last, drawn = None, "", None, 0.0
+    sel, note, last, fetched = None, "", None, 0.0
     opened, closed_by = time.time(), "an interrupt"
+    screen, vm, need, redraw = "run", {}, True, True   # need: read the run (and git) again; redraw: draw again
+    mid, ch, fsel, ftop = None, None, 0, 0       # the changed-files screen: milestone, its changes, picked file, scroll
+    dfile, dlines, derr, dtop = None, [], None, 0   # the diff screen
     try:
         tty.setcbreak(fd)
         sys.stdout.write("\x1b[?1049h\x1b[?25l")
         while True:
             k = _view_snapshot_key()
-            if k != last or time.time() - drawn > 30:
-                last, drawn = k, time.time()
+            live = screen != "run" and ch is not None and ch["kind"] == "live"
+            if k != last or time.time() - fetched > (2 if live else 30):   # a coder's unsaved files: look every 2s
+                last, need = k, True
+            if need or redraw:
                 size = shutil.get_terminal_size((100, 40))
                 try:
-                    vm = view_model()
-                    lines = render_board(vm, size.columns, color, sel, note)
+                    if need:
+                        fetched = time.time()
+                        vm = view_model()
+                        if screen != "run":
+                            st = _board_state()
+                            ch = milestone_changes(st, mid)
+                            if screen == "diff":
+                                dlines, derr = file_diff(st, mid, dfile["path"])
+                    need = redraw = False
+                    if screen == "run":
+                        lines = render_board(vm, size.columns, color, sel, note)
+                    elif screen == "files":
+                        fsel = min(fsel, max(0, len(ch["files"]) - 1))
+                        lines, ftop = render_changes(ch, size.columns, size.lines, color, fsel, ftop)
+                    else:
+                        f = next((x for x in ch["files"] if x["path"] == dfile["path"]), dfile)
+                        lines, dtop = render_diff(ch, f, dlines, size.columns, size.lines, color, dtop, derr)
                 except Exception as e:  # noqa: BLE001 - a popup closes when its program ends: show it, keep going
-                    vm = {}
-                    lines = board_error_lines(e)
+                    need = redraw = False
+                    lines = board_error_lines(e, "this run" if screen == "run" else f"{mid}'s changes",
+                                              "[q] close" if screen == "run" else "[q] back")
                 sys.stdout.write("\x1b[H\x1b[2J" + "\n".join(lines[:size.lines]))
                 sys.stdout.flush()
             r, _, _ = select.select([sys.stdin], [], [], 0.5)
             if not r:
                 continue
-            ch = os.read(fd, 8).decode(errors="ignore")
-            if ch == "\x1b" and select.select([sys.stdin], [], [], 0.05)[0]:
-                ch += os.read(fd, 8).decode(errors="ignore")   # the rest of an escape sequence, not the Esc key
+            key = _board_key(fd, select)
             if time.time() - opened < 0.5:
                 continue        # what a terminal sends as a pane opens (focus or size replies) is not a key press
-            n = len(vm.get("agents", []))
-            if ch in ("q", "Q", "\x1b"):
-                closed_by = repr(ch)
+            size = shutil.get_terminal_size((100, 40))
+            if screen == "diff":
+                page = max(3, size.lines - 8)
+                if key in ("q", "Q", "\x1b", LEFT, "h"):
+                    screen, need = "files", True
+                elif key in (UP, "k"):
+                    dtop = max(0, dtop - 1)
+                elif key in (DOWN, "j"):
+                    dtop += 1
+                elif key in (" ", PGDN):
+                    dtop += page
+                elif key in ("u", "U", PGUP):
+                    dtop = max(0, dtop - page)
+                elif key == "g":
+                    dtop = 0
+                redraw = True
+                continue
+            if screen == "files":
+                ids = [m["id"] for m in vm.get("milestones", [])]
+                n = len(ch["files"]) if ch else 0
+                if key in ("q", "Q", "\x1b"):
+                    screen, ch, need = "run", None, True
+                elif key in (UP, "k") and n:
+                    fsel = max(0, fsel - 1)
+                elif key in (DOWN, "j") and n:
+                    fsel = min(n - 1, fsel + 1)
+                elif key in (RIGHT, LEFT, "l", "h", "]", "[") and mid in ids:
+                    step = 1 if key in (RIGHT, "l", "]") else -1
+                    mid, fsel, ftop, need = ids[(ids.index(mid) + step) % len(ids)], 0, 0, True
+                elif key in ("\r", "\n") and n:
+                    dfile, dtop, screen, need = ch["files"][fsel], 0, "diff", True
+                redraw = True
+                continue
+            rows = board_rows(vm)
+            n = len(rows)
+            if key in ("q", "Q", "\x1b"):
+                closed_by = repr(key)
                 break
-            if ch in ("\x1b[A", "k"):
+            if key in (UP, "k"):
                 sel = (n - 1 if sel is None else max(0, sel - 1)) if n else None
-            elif ch in ("\x1b[B", "j"):
+            elif key in (DOWN, "j"):
                 sel = (0 if sel is None else min(n - 1, sel + 1)) if n else None
-            elif ch in ("\r", "\n") and sel is not None and n:
-                a = vm["agents"][sel]
+            elif key in ("f", "F") or (key in ("\r", "\n") and sel is not None and n and rows[sel][0] == "m"):
+                mid = board_default_milestone(vm, rows[sel] if sel is not None and sel < n else None)
+                if mid:
+                    screen, ch, fsel, ftop, need = "files", None, 0, 0, True
+                else:
+                    note = "no milestones in this run yet"
+            elif key in ("\r", "\n") and sel is not None and n:
+                a = vm["agents"][rows[sel][1]]
                 r2 = subprocess.run([HERDR, "agent", "focus", a["name"]], text=True, capture_output=True)
                 note = f"jumped to {a['name']}" if r2.returncode == 0 else f"herdr could not focus {a['name']}"
-            elif ch in ("w", "W"):
+            elif key in ("w", "W"):
                 r2 = subprocess.run([sys.executable, os.path.abspath(__file__), "view", "--bg"], text=True,
                                     capture_output=True, cwd=ROOT)
                 note = (r2.stdout.strip().splitlines() or ["orch view: could not start"])[0]
-            last = None
+            redraw = True
     except KeyboardInterrupt:
         pass
     finally:
@@ -8444,11 +8971,11 @@ COMMANDS = {
     "report": cmd_report, "events": cmd_events, "dispatch": cmd_dispatch, "answer": cmd_answer, "defer": cmd_defer,
     "escalate": cmd_escalate, "fix": cmd_fix, "plan": cmd_plan, "story": cmd_story, "manual": cmd_manual, "team": cmd_team, "bench": cmd_bench, "stop": cmd_stop,
     "free": cmd_free, "doctor": lambda a: cmd_doctor_crash(a), "check": lambda a: cmd_check(a), "sub": lambda a: cmd_sub(a),
-    "view": lambda a: cmd_view(a), "board": lambda a: cmd_board(a),
+    "view": lambda a: cmd_view(a), "board": lambda a: cmd_board(a), "changes": lambda a: cmd_changes(a),
 }
 # they lock per step instead of for the whole command (long-running, or they start the event manager after)
 UNLOCKED = {"manual", "autopilot", "poll", "merge", "events", "dispatch", "answer", "defer", "fix", "team", "resume", "bench", "stop",
-            "doctor", "check", "free", "view", "board"}
+            "doctor", "check", "free", "view", "board", "changes"}
 
 USAGE = """usage: orch <command> [args]
   version                  print the installed herdr-orchestra version
@@ -8514,7 +9041,10 @@ USAGE = """usage: orch <command> [args]
                            "needs you" alert, time and cost, replay. --lan: also from your phone, with a secret link
   view stop|status|herdr-config|plugin link|unlink|refresh
                            stop it / show its link / sidebar lines for herdr's config / the optional herdr plugin
-  board [--once]           the run as text, redrawn when it changes: for a herdr pane or popup (any terminal)
+  board [--once]           the run as text, redrawn when it changes: for a herdr pane or popup (any terminal);
+                           [f] or [enter] on a milestone shows its changed files, [enter] on a file its diff
+  changes [Mn [file]] [--json]  what each milestone changed: files with +/- counts, or one file's diff
+                           (live while a coder works, unsaved files included; landed = its commit). Read-only
   report [--json]          estimate vs actual time (why longer, who), rounds, first-pass rate, wasted work, tokens/cost
   ready                    free coder slots, FIX jobs (do these first), then READY milestones
   pick <Mn>                first available worker for the task (respects Tier, then Prefer), or NONE (exit 3)

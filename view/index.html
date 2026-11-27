@@ -66,6 +66,18 @@ button:hover{border-color:var(--accent)}
 .notes{margin:10px 16px 0;padding:8px 12px;border:1px solid var(--accent);border-radius:4px;color:var(--accent);font-size:13px;line-height:1.5}
 .notes div+div{margin-top:4px}
 .empty{padding:60px 20px;text-align:center;color:var(--muted);font-size:14px}
+.chg .dir{font-family:var(--mono);font-size:11.5px;color:var(--faint);margin-top:6px}
+.chg .f{display:grid;grid-template-columns:1fr auto 18px;gap:8px;align-items:center;font-family:var(--mono);font-size:12px;padding:2px 4px 2px 14px;border-radius:3px;cursor:pointer}
+.chg .f:hover{background:var(--s2)}.chg .f .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chg .f .st{text-align:center;font-weight:700}.st-A{color:var(--landed)}.st-D{color:var(--bad)}.st-M,.st-R,.st-T{color:var(--accent)}
+.add{color:var(--landed)}.del{color:var(--bad)}
+#diffbox{display:none;position:fixed;inset:4vh 4vw;background:var(--surface);border:1px solid var(--line2);border-radius:5px;z-index:10;flex-direction:column;box-shadow:0 10px 40px #000a}
+#diffbox.on{display:flex}
+#diffbox .dh{display:flex;gap:12px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12.5px}
+#diffbox .dh b{font-weight:700}#diffbox .dh button{margin-left:auto}
+#diffbox pre{flex:1;overflow:auto;margin:0;padding:10px 0;font-family:var(--mono);font-size:12px;line-height:1.5}
+#diffbox pre div{padding:0 14px;white-space:pre}
+.dl-a{background:#14261a;color:#b8e6a8}.dl-d{background:#2a1513;color:#f1a49c}.dl-h{color:var(--checking)}.dl-m{color:var(--faint)}
 @media (max-width:820px){
   .grid{grid-template-columns:1fr}.left{border-right:0}
   #ring{display:none}#graphwrap{display:none}#list{display:block}
@@ -82,6 +94,7 @@ button:hover{border-color:var(--accent)}
 </div>
 <div id="notes"></div>
 <div id="root"></div>
+<div id="diffbox"><div class="dh" id="diffhead"></div><pre id="diffbody"></pre></div>
 <script>
 "use strict";
 const Q = location.search;                      // carries ?t=<token> for `orch view --lan`
@@ -258,9 +271,72 @@ function detail(v) {
     <div class="muted" style="margin-top:6px">${esc([m.worker ? "coder " + m.worker : "", m.tier ? "tier " + m.tier : "", m.deps.length ? "after " + m.deps.join(", ") : "", m.door === "one-way" ? "hard to undo" : ""].filter(Boolean).join(" · "))}</div>
     ${you && how ? `<div style="margin-top:8px">Answer in the lead's pane, or run:</div><code>${esc(how)}</code>` : ""}
     ${m.attempts.length ? `<div class="h" style="margin:10px 0 4px">Steps so far</div><table>${m.attempts.map((a) => `<tr><td class="muted">${esc(a.kind || "step")} · ${esc(a.agent || "")}${a.model ? " · " + esc(a.model) : ""}</td><td>${mins(a.secs)} ${esc(a.outcome || "")}</td></tr>`).join("")}</table>` : ""}
-    ${m.files && m.files.length ? `<div class="h" style="margin:10px 0 4px">Files</div><div class="mono muted">${m.files.map(esc).join("<br>")}</div>` : ""}
+    <div class="h" style="margin:12px 0 2px">Changed files</div><div class="chg" id="chg" data-id="${esc(m.id)}">${chgHTML(m.id)}</div>
+    ${m.files && m.files.length ? `<div class="h" style="margin:10px 0 4px">Files the plan expects</div><div class="mono muted">${m.files.map(esc).join("<br>")}</div>` : ""}
   </div>`;
+  wireChanges();
+  loadChanges(m.id, m.status);
 }
+
+// What the picked milestone changed (read-only git on the server): a folder tree with +/- and A/M/D, click for the diff.
+// Live while a coder works (unsaved files included), so it is asked again every few seconds then.
+let CH = {id: null, key: null, at: 0, data: null, busy: false}, DIFF = null;
+const nums = (f) => f.add == null ? `<span class="faint">binary</span>` : `<span class="add">+${f.add}</span> <span class="del">−${f.del || 0}</span>`;
+function chgHTML(id) {
+  if (CH.id !== id || !CH.data) return `<div class="faint">loading…</div>`;
+  const d = CH.data;
+  if (d.error && !d.files.length) return `<div class="bad">${esc(d.error)}</div>`;
+  let h = `<div class="faint" style="margin-bottom:4px">${esc(d.note)}</div>`;
+  if (!d.files.length) return h;
+  h += `<div class="mono" style="margin-bottom:4px"><b>${d.totals.files} file${d.totals.files === 1 ? "" : "s"}</b> &nbsp;<span class="add">+${d.totals.add}</span> <span class="del">−${d.totals.del}</span></div>`;
+  let last = null;
+  d.files.forEach((f, i) => {
+    const slash = f.path.lastIndexOf("/"), dir = slash < 0 ? "" : f.path.slice(0, slash), name = f.path.slice(slash + 1);
+    if (dir !== last) { h += `<div class="dir">${esc(dir ? dir + "/" : "./")}</div>`; last = dir; }
+    h += `<div class="f" data-i="${i}" title="${esc(f.path)}${f.untracked ? " (not added to git yet)" : ""}"><span class="nm">${esc(name)}${f.old ? ` <span class="faint">← ${esc(f.old)}</span>` : ""}</span><span>${nums(f)}</span><span class="st st-${f.untracked ? "A" : esc(f.status)}">${f.untracked ? "U" : esc(f.status)}</span></div>`;
+  });
+  h += `<div class="faint" style="margin-top:6px;font-size:11px">A added · M changed · D deleted · R renamed · U new, not added to git yet. Click a file for its diff.</div>`;
+  if (d.more) h += `<div class="faint">… and ${d.more} more files (<code style="display:inline;padding:0 4px">orch changes ${esc(d.id)}</code>)</div>`;
+  if (d.error) h += `<div class="bad">${esc(d.error)}</div>`;
+  return h;
+}
+function wireChanges() {
+  document.querySelectorAll("#chg .f").forEach((el) => el.onclick = () => openDiff(CH.data.id, CH.data.files[+el.dataset.i]));
+}
+async function loadChanges(id, status, force) {
+  const key = id + ":" + status;
+  const live = CH.data && CH.id === id && CH.data.kind === "live";
+  if (!force && CH.busy) return;
+  if (!force && CH.id === id && CH.key === key && !(live && Date.now() - CH.at > 3000)) return;
+  CH.busy = true;
+  try {
+    const r = await fetch(`/api/changes${Q ? Q + "&" : "?"}m=${encodeURIComponent(id)}`);
+    const d = await r.json();
+    CH = {id, key, at: Date.now(), data: r.ok ? d : {id, files: [], note: "", error: d.error || "could not load", totals: {}}, busy: false};
+  } catch (e) { CH.busy = false; return; }
+  const el = $("chg");
+  if (el && el.dataset.id === id) { el.innerHTML = chgHTML(id); wireChanges(); }
+  if (DIFF && DIFF.id === id && CH.data.kind === "live") openDiff(id, CH.data.files.find((f) => f.path === DIFF.f.path) || DIFF.f, true);
+}
+setInterval(() => { if (CH.id && CH.data && CH.data.kind === "live") loadChanges(CH.id, (CH.key || "").split(":")[1]); }, 3000);
+async function openDiff(id, f, quiet) {
+  DIFF = {id, f};
+  $("diffhead").innerHTML = `<b>${esc(id)}</b><span>${esc(f.path)}</span><span>${nums(f)}</span><span class="st-${esc(f.status)}">${esc(f.status)}${f.untracked ? " · not added to git yet" : ""}</span><button id="diffclose">close (Esc)</button>`;
+  $("diffclose").onclick = closeDiff;
+  if (!quiet) { $("diffbody").innerHTML = `<div class="faint">loading…</div>`; }
+  $("diffbox").classList.add("on");
+  const r = await fetch(`/api/diff${Q ? Q + "&" : "?"}m=${encodeURIComponent(id)}&f=${encodeURIComponent(f.path)}`);
+  const d = await r.json();
+  if (!DIFF || DIFF.f.path !== f.path) return;
+  const cls = (l) => /^(\+\+\+|---|diff --git|index |new file|deleted file|similarity|rename )/.test(l) ? "dl-m" : l[0] === "+" ? "dl-a" : l[0] === "-" ? "dl-d" : l.startsWith("@@") ? "dl-h" : "";
+  const keep = $("diffbody").scrollTop;
+  $("diffbody").innerHTML = (d.error ? `<div class="bad">${esc(d.error)}</div>` : "") +
+    (d.lines || []).map((l) => `<div class="${cls(l)}">${esc(l) || " "}</div>`).join("") +
+    (d.cut ? `<div class="faint">… cut at ${d.lines.length} of ${d.total} lines: <code style="display:inline">orch changes ${esc(id)} ${esc(f.path)}</code> shows all</div>` : "");
+  if (quiet) $("diffbody").scrollTop = keep;
+}
+function closeDiff() { DIFF = null; $("diffbox").classList.remove("on"); }
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && DIFF) closeDiff(); });
 
 function cost(v) {
   const done = v.milestones.filter((m) => m.spent_s && m.estimate_s);
