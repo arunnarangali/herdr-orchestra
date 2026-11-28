@@ -19,4 +19,6 @@ title = "orch board"
 placement = "popup"
 width = "90%"
 height = "85%"
-command = ["sh", "board.sh"]
+# Herdr starts a popup in the folder given with --cwd (the run's repo) and resolves only a first word with a "/" against
+# the plugin folder, so "board.sh" alone would be looked for in the repo. HERDR_PLUGIN_ROOT is this plugin's folder.
+command = ["sh", "-c", 'exec sh "$HERDR_PLUGIN_ROOT/board.sh"']

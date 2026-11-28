@@ -2185,6 +2185,12 @@ check "orch board draws the milestones with their descriptions and who needs you
 INPTY="python3 -I $ROOT/tests/sim/inpty.py"; BSH="$ROOT/view/herdr-plugin/board.sh"
 out=$(PATH="$ROOT/bin:$PATH" $INPTY q 2 4 sh "$BSH")
 check "the board popup stays open in a terminal and draws the run until q" '[[ "$out" == *"M4 Totals"* && "$out" == *"EXIT 0" ]] && grep -q "closed by .q. after" "$ORCH_SHARE/board-last-close.log"'
+# ...and as herdr itself starts it: the manifest's command, in the repo given with --cwd, not in the plugin folder
+mkdir -p "$APP/sub"; HPOP="python3 -I $ROOT/tests/sim/herdr_popup.py $ROOT/view/herdr-plugin board"
+out=$(PATH="$ROOT/bin:$PATH" $HPOP "$APP" q 2 4)
+check "the board popup started the way herdr starts it (in the repo, manifest command) stays open until q" '[[ "$out" == *"M4 Totals"* && "$out" == *"EXIT 0" && "$out" != *"cannot open"* ]]'
+out=$(PATH="$ROOT/bin:$PATH" $HPOP "$APP/sub" "" 0 2.5)
+check "…also from a folder inside the repo" '[[ "$out" == *"M4 Totals"* && "$out" == *RUNNING ]]'
 out=$(PATH="$ROOT/bin:$PATH" $INPTY "\\x1b[I" 0.1 2.5 sh "$BSH")
 check "…what a terminal sends as the popup opens does not close it" '[[ "$out" == *RUNNING ]]'
 cp .orchestrate/state.json "$WORK/state.keep"

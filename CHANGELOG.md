@@ -2,6 +2,22 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org).
 
+## [6.32.0] - 2026-11-28
+
+The board key (`prefix+a`) opens the board again. Since 6.22.0 the popup flashed open and closed at once.
+
+Example: you press `prefix+a` in a pane of your repo. The popup showed for a moment and was gone. Now the board opens and stays until you press `q`.
+
+### Fixed
+- **The board popup found no `board.sh`.** The plugin told herdr to run `sh board.sh`. Herdr starts a popup in the folder given with `--cwd` (your repo, since 6.22.0) and resolves only a first word containing a `/` against the plugin folder (herdr 0.9.5, `plugin_command.rs`). So `sh` looked for `board.sh` in your repo, printed "cannot open board.sh" and ended, and herdr closed the popup at once. The 6.30.0 guard lives in `board.sh`, so it never ran. The command is now `sh -c 'exec sh "$HERDR_PLUGIN_ROOT/board.sh"'`; herdr sets `HERDR_PLUGIN_ROOT` to the plugin folder for every plugin pane.
+- A new test starts the popup the way herdr does (the manifest's command, in the repo folder, herdr's resolution rules and variables). Before this fix it fails with "cannot open board.sh"; with it, the board stays open until `q`.
+
+### Changed
+- Corrected note from 6.30.0: herdr stores the real folder behind a plugin link (it resolves the `current` link to the version folder). The link follows updates because every install and `orch update` re-links it (`orch view plugin refresh`), not because of the `current` path itself.
+
+### After updating
+Nothing to do: `orch update` re-links the plugin. If `prefix+a` still flashes, run `orch view plugin unlink` and then `orch view plugin link`.
+
 ## [6.31.0] - 2026-11-28
 
 See what each milestone changed, like GitLens shows it: the files by folder with `+/-` counts and A/M/D marks, and each file's diff. In the board popup and in the browser view.

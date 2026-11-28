@@ -7956,9 +7956,9 @@ description = "orch run board"
 
 
 def board_plugin_dir():
-    """The board plugin folder to give herdr. For an install it is the stable `current/view/herdr-plugin` path, not
-    the folder of the version running now: every update installs into a new folder and moves `current`, so a link to
-    the version folder would keep herdr on that version's popup forever. For a checkout it is the checkout's folder."""
+    """The board plugin folder to give herdr: `current/view/herdr-plugin` for an install, the checkout's folder for a
+    checkout. Herdr stores the real folder behind a link (it resolves `current` to the version folder), so a link
+    follows updates only because every install re-links it (`orch view plugin refresh`, run by install.sh)."""
     cur = share_dir() / "current" / "view" / "herdr-plugin"
     try:
         installed = Path(__file__).resolve().parent.parent.parent == share_dir().resolve()
